@@ -9,19 +9,30 @@ cargo xwin build --release --locked \
 cargo xwin build --release --locked --target x86_64-pc-windows-msvc -p xmem --lib --examples
 cp "$build/examples/coin_run.exe" "$build/"
 python3 tools/homebrew/triangle_shaders.py > "$build/triangle_shaders.h"
+compile_flags=()
 build_pe() {
     local output=$1 source=$2
     shift 2
-    clang-cl --target=x86_64-pc-windows-msvc -fuse-ld=lld /nologo /MT /EHsc /std:c++17 /I"$build" \
+    clang-cl "${compile_flags[@]}" --target=x86_64-pc-windows-msvc -fuse-ld=lld /nologo /MT /EHsc /std:c++17 /I"$build" \
         -imsvc "$sdk/crt/include" -imsvc "$sdk/sdk/include/ucrt" \
         -imsvc "$sdk/sdk/include/shared" -imsvc "$sdk/sdk/include/um" -imsvc "$sdk/sdk/include/winrt" \
         /Fo"$build/" /Fe"$output" "$source" \
         /link /libpath:"$sdk/crt/lib/x86_64" \
         /libpath:"$sdk/sdk/lib/um/x86_64" /libpath:"$sdk/sdk/lib/ucrt/x86_64" kernel32.lib "$@"
 }
+build_pe "$build/fidelityfx_probe.exe" tools/homebrew/fidelityfx_probe.cpp "$build/d3d12_xs.dll.lib"
 build_pe "$build/clear_pixel.exe" tools/homebrew/clear_pixel.cpp "$build/d3d12_xs.dll.lib"
 build_pe "$build/coin_window.exe" tools/homebrew/coin_window.cpp "$build/d3d12_xs.dll.lib" "$build/examples/coin_rules.lib" "$build/xmem.dll.lib" \
     /subsystem:windows /entry:mainCRTStartup user32.lib ole32.lib xinput.lib ntdll.lib advapi32.lib userenv.lib ws2_32.lib bcrypt.lib
+
+# Compile the same indirect draw under each observed caller ABI.
+for edition in legacy 260402 261000; do
+    compile_flags=()
+    if [[ $edition != legacy ]]; then compile_flags+=("/DFIXTURE_GXDK=\"$edition\""); fi
+    if [[ $edition == 260402 ]]; then compile_flags+=(/DFIXTURE_PIX_TIMING); fi
+    build_pe "$build/scarlett_commands_$edition.dll" tools/homebrew/scarlett_commands.cpp /dll
+done
+compile_flags=()
 
 # Keep the optional GameInput runtime separate from the host GameInput DLL.
 adapter="$build/gameinput-xinput"
