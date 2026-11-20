@@ -157,30 +157,28 @@ fn ssrc_is_lit(field: u32) -> bool {
 
 /// Decode a full ISA blob into instructions (to the end of the input).
 pub fn disassemble(isa: &[u8]) -> Vec<Insn> {
-    let words: Vec<u32> = isa
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect();
+    instructions(isa).collect()
+}
 
-    let mut out = Vec::new();
-    let mut i = 0usize;
-    while i < words.len() {
-        let w = words[i];
+/// Walk instruction boundaries lazily so extraction can stop before padding and constant tables.
+pub(crate) fn instructions(isa: &[u8]) -> impl Iterator<Item = Insn> + '_ {
+    let mut offset = 0;
+    std::iter::from_fn(move || {
+        let bytes = &isa[offset..];
+        let mut words = bytes.chunks_exact(4).map(|w| u32::from_le_bytes(w.try_into().unwrap()));
+        let w = words.next()?;
         let enc = classify(w);
-        // Determine instruction length (in dwords) and whether a trailing literal follows.
-        let (base_len, lit) = instr_len(enc, w, words.get(i + 1).copied());
-        let total = (base_len + if lit { 1 } else { 0 }).min(words.len() - i).max(1);
-        let raw: Vec<u32> = words[i..i + total].to_vec();
+        let (base, extended) = instr_len(enc, w, words.next());
+        let dwords = (base + usize::from(extended)).min(bytes.len() / 4);
+        let raw: Vec<_> = bytes[..dwords * 4].chunks_exact(4)
+            .map(|w| u32::from_le_bytes(w.try_into().unwrap())).collect();
         let op = opcode_field(enc, w);
         let mnemonic = mnemonic_for(enc, op);
         let (dst, src, aux) = decode_operands(enc, &raw);
-        let insn = Insn { offset: i * 4, dwords: total, enc, op, raw, mnemonic, dst, src, aux };
-        // Do not stop at `s_endpgm`: programs can end early on one path and continue
-        // on another. The caller passes exactly the program bytes.
-        out.push(insn);
-        i += total;
-    }
-    out
+        let ins = Insn { offset, dwords, enc, op, raw, mnemonic, dst, src, aux };
+        offset += dwords * 4;
+        Some(ins)
+    })
 }
 
 /// Human-readable operand string (for disassembly / debugging).
@@ -422,6 +420,7 @@ fn decode_operands(enc: Enc, raw: &[u32]) -> (Vec<Opnd>, Vec<Opnd>, InsnAux) {
 
 /// Base length (dwords) for an encoding, plus whether an inline literal source is present.
 fn instr_len(enc: Enc, w: u32, next: Option<u32>) -> (usize, bool) {
+    let extended_src = matches!(w & 0x1ff, 233 | 234 | SRC_SDWA | 250 | 255);
     match enc {
         // Scalar: 1 dword base. Literal when a source field == 255.
         Enc::Sop2 => (1, ssrc_is_lit(w & 0xff) || ssrc_is_lit((w >> 8) & 0xff)),
@@ -436,11 +435,10 @@ fn instr_len(enc: Enc, w: u32, next: Option<u32>) -> (usize, bool) {
         Enc::Vop2 => {
             // v_madmk/v_madak/v_fmamk/v_fmaak always carry a trailing 32-bit K constant.
             let op = (w >> 25) & 0x3f;
-            (1, (w & 0x1ff) == 255 || (w & 0x1ff) == SRC_SDWA || matches!(w & 0x1ff, 233 | 234 | 250) || matches!(op, 0x20 | 0x21 | 0x2c | 0x2d | 0x37 | 0x38))
+            (1, extended_src || matches!(op, 0x20 | 0x21 | 0x2c | 0x2d | 0x37 | 0x38))
         }
-        // A trailing dword follows for an inline literal (255) or an SDWA modifier (249).
-        Enc::Vop1 => (1, (w & 0x1ff) == 255 || (w & 0x1ff) == SRC_SDWA),
-        Enc::Vopc => (1, (w & 0x1ff) == 255 || (w & 0x1ff) == SRC_SDWA),
+        // DPP8, DPP16, SDWA and literal sources each carry a trailing dword.
+        Enc::Vop1 | Enc::Vopc => (1, extended_src),
         // VOP3/VOP3P: 2 dwords.
         Enc::Vop3 => {
             // GFX10 allows a trailing 32-bit literal on VOP3 when any source == 255.

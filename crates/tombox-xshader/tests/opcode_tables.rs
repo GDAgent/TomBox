@@ -85,3 +85,16 @@ fn nonexistent_vop3_opcode_is_not_named() {
     let m = mnemonic(&[(0b110101 << 26) | (0x16b << 16) | 3, 0x0000_0300]);
     assert!(!m.starts_with("v_mul"), "{m}");
 }
+
+#[test]
+fn dpp_lane_selectors_are_part_of_the_vector_instruction() {
+    for prefix in [0x7e06_0200u32, 0x7c84_0200] {
+        for selector in [233, 234, 250] {
+            let isa: Vec<_> = [prefix | selector, 0xde54_c101, 0xbf81_0000]
+                .into_iter().flat_map(u32::to_le_bytes).collect();
+            let ins = disassemble(&isa);
+            assert_eq!(ins.len(), 2);
+            assert_eq!((ins[1].offset, ins[1].mnemonic.as_str()), (8, "s_endpgm"));
+        }
+    }
+}

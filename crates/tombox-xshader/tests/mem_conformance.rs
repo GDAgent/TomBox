@@ -167,7 +167,7 @@ fn tex_value(t: &Texture, x: u32, y: u32, z: u32, layer: u32, mip: u32) -> Optio
     }
     let o = t.sub_offset(if t.dim == TexDim::D3 { 0 } else { layer }, mip) + (((z * h + y) * w + x) * t.texel_bytes) as usize;
     let c = |k: usize| u32::from_le_bytes(t.data[o + 4 * k..o + 4 * k + 4].try_into().unwrap());
-    Some([c(0), c(1), c(2), c(3)])
+    Some(if t.format == R32F { [c(0), 0, 0, f(1.0)] } else { [c(0), c(1), c(2), c(3)] })
 }
 
 // ---------------------------------------------------------------------------------------
@@ -247,6 +247,17 @@ fn cases() -> Vec<Case> {
             uav_check: None,
             sm66: false,
         });
+    }
+
+    for mask in [1, 2, 8, 11] {
+        let t = t2.clone();
+        let mut words = prologue(Some(0), None, None);
+        words.extend(mimg(0x0e,D2,mask,0,DATA as u32,T_SGPR,0,Flags::default()));
+        words.push(S_ENDPGM);
+        c.push(Case { name: format!("image_get_resinfo mip mask {mask}"), words, srv: vec![Binding::Texture(t.clone())],
+            samplers: vec![], uav: vec![], inputs: (0..t.mips).map(|m| ([m,0,0,0],[0;4])).collect(),
+            want: Box::new(move |a,_| { let (w,h,_) = t.mip_size(a[0]); packed([w,h,0,t.mips],mask) }),
+            uav_check: None, sm66: false });
     }
 
     // image_load_mip 2D: (x, y, mip).
@@ -515,23 +526,25 @@ fn buffer_cases(c: &mut Vec<Case>) {
     }
 
     // Typed store: element i <- data registers v8..v11.
-    {
+    for (name, op, components, fmt) in [
+        ("buffer_store_format_xyzw", STORE_FORMAT_XYZW, 4, RGBA32F), ("buffer_store_format_x", 4, 1, R32F),
+    ] {
         let mut words = prologue(None, None, Some(0));
-        words.extend(mubuf(STORE_FORMAT_XYZW, 0, false, true, 0, 8, U_SGPR));
+        words.extend(mubuf(op, 0, false, true, 0, 8, U_SGPR));
         words.push(S_ENDPGM);
         c.push(Case {
-            name: "buffer_store_format_xyzw rgba32f".into(),
+            name: name.into(),
             words,
             srv: vec![],
             samplers: vec![],
-            uav: vec![Binding::Buffer(BufferData { data: vec![0x55; (N * 16) as usize], format: RGBA32F, format_bytes: 16, stride: 0 })],
+            uav: vec![Binding::Buffer(BufferData { data: vec![0x55; (N * components * 4) as usize], format: fmt, format_bytes: components * 4, stride: 0 })],
             inputs: (0..N).map(|i| ([i, 0, 0, 0], [val(i, 0), val(i, 1), val(i, 2), val(i, 3)])).collect(),
             want: Box::new(|_, _| packed([0; 4], 0)),
             uav_check: Some(Box::new(move |b: &Binding| {
                 let Binding::Buffer(b) = b else { return Err("not a buffer".into()) };
                 for i in 0..N {
-                    for k in 0..4 {
-                        let o = (16 * i + 4 * k) as usize;
+                    for k in 0..components {
+                        let o = (4 * (components * i + k)) as usize;
                         let got = u32::from_le_bytes(b.data[o..o + 4].try_into().unwrap());
                         if got != val(i, k) {
                             return Err(format!("element {i}.{k} = {got:08x}, want {:08x}", val(i, k)));
@@ -541,6 +554,42 @@ fn buffer_cases(c: &mut Vec<Case>) {
                 Ok(())
             })),
             sm66: false,
+        });
+    }
+
+    for (name, op, width, signed) in [
+        ("buffer_load_ubyte",8,1,false), ("buffer_load_sbyte",9,1,true),
+        ("buffer_load_ushort",10,2,false), ("buffer_load_sshort",11,2,true),
+        ("buffer_store_byte",0x18,1,false), ("buffer_store_short",0x1a,2,false),
+    ] {
+        let store = name.starts_with("buffer_store");
+        let bytes: Vec<u8> = (0..N*4).map(|i| i.wrapping_mul(109) as u8).collect();
+        let buf = Binding::Buffer(BufferData { data: bytes.clone(), format: 0, format_bytes: 0, stride: 4 });
+        let mut words = prologue((!store).then_some(0), None, store.then_some(0));
+        words.extend(mubuf(op, 0, true, false, 0, if store {8} else {DATA as u32}, if store {U_SGPR} else {T_SGPR}));
+        words.push(S_ENDPGM);
+        let positions: Vec<_> = (0..N*4).step_by(width).collect();
+        let inputs = positions.iter().map(|&i| ([i,0,0,0], [0xfedc_9876 ^ i,0,0,0])).collect();
+        let mut expected = bytes.clone();
+        for i in positions {
+            expected[i as usize..i as usize+width].copy_from_slice(&(0xfedc_9876 ^ i).to_le_bytes()[..width]);
+        }
+        c.push(Case {
+            name: name.into(), words, inputs, samplers: vec![], sm66: false,
+            srv: if store { vec![] } else { vec![buf.clone()] }, uav: if store { vec![buf] } else { vec![] },
+            want: Box::new(move |a,_| {
+                if store { return packed([0;4],0); }
+                let i = a[0] as usize;
+                let x = match (width,signed) {
+                    (1,true) => bytes[i] as i8 as i32 as u32, (1,false) => u32::from(bytes[i]),
+                    (_,true) => i16::from_le_bytes([bytes[i], bytes[i+1]]) as i32 as u32,
+                    (_,false) => u32::from(u16::from_le_bytes([bytes[i], bytes[i+1]])),
+                };
+                packed([x,0,0,0],1)
+            }),
+            uav_check: if store { Some(Box::new(move |b| match b {
+                Binding::Buffer(b) if b.data == expected => Ok(()), _ => Err("subword UAV write mismatch".into())
+            })) } else { None },
         });
     }
 
@@ -639,6 +688,13 @@ fn atomic_cases(cases: &mut Vec<Case>) {
     const R32_UINT: u32 = 42;
     type Update = fn(u32, u32) -> u32;
     let ops: &[(&str, u32, Update)] = &[
+        ("buffer_atomic_xor", 0x3b, |a,b| a ^ b),
+        ("buffer_atomic_sub", 0x33, u32::wrapping_sub),
+        ("buffer_atomic_smin", 0x35, |a,b| (a as i32).min(b as i32) as u32),
+        ("buffer_atomic_smax", 0x37, |a,b| (a as i32).max(b as i32) as u32),
+        ("buffer_atomic_inc", 0x3c, |a,b| if a >= b { 0 } else { a+1 }),
+        ("buffer_atomic_dec", 0x3d, |a,b| if a == 0 || a > b { b } else { a-1 }),
+        ("buffer_atomic_cmpswap", 0x31, |_,b| b),
         ("buffer_atomic_add", 0x32, u32::wrapping_add),
         ("buffer_atomic_swap", 0x30, |_, new| new),
         ("buffer_atomic_and", 0x39, |a, b| a & b),
@@ -648,7 +704,7 @@ fn atomic_cases(cases: &mut Vec<Case>) {
         ("image_atomic_add", 0x11, u32::wrapping_add),
         ("image_atomic_umax", 0x17, u32::max),
     ];
-    let old = |i: u32| (i + 1).wrapping_mul(0xe16d_2937);
+    let old = |i: u32| i.wrapping_mul(0xe16d_2937);
     let operand = |i: u32| (64 - i).wrapping_mul(0x9715_50c3);
     for &(name, op, update) in ops {
         for glc in [false, true] {
@@ -675,6 +731,7 @@ fn atomic_cases(cases: &mut Vec<Case>) {
             };
             let mut words = prologue(None, None, Some(0));
             words.push(0x7e08_0308); // v4 = v8 (operand).
+            if op == 0x31 { words.push(0x7e0a_0309); } // v5 = compare operand from v9
             let mut atomic = if image {
                 mimg(
                     op,
@@ -705,13 +762,13 @@ fn atomic_cases(cases: &mut Vec<Case>) {
                     .map(|i| {
                         (
                             if image { [i % 8, i / 8, 0, 0] } else { [i, 0, 0, 0] },
-                            [operand(i), 0, 0, 0],
+                            [operand(i), old(i) ^ (i & 1), 0, 0],
                         )
                     })
                     .collect(),
                 want: Box::new(move |a, _| {
                     let i = if image { a[0] + 8 * a[1] } else { a[0] };
-                    packed([if glc { old(i) } else { operand(i) }, 0, 0, 0], 1)
+                    packed([if glc { old(i) } else { operand(i) }, old(i) ^ (i & 1), 0, 0], if op == 0x31 { 3 } else { 1 })
                 }),
                 uav_check: Some(Box::new(move |binding| {
                     let data = match binding {
@@ -719,7 +776,7 @@ fn atomic_cases(cases: &mut Vec<Case>) {
                         Binding::Buffer(b) => &b.data,
                         Binding::Null => return Err("missing atomic UAV".into()),
                     };
-                    let expected: Vec<_> = (0..64).map(|i| update(old(i), operand(i))).collect();
+                    let expected: Vec<_> = (0..64).map(|i| if op == 0x31 && i & 1 != 0 { old(i) } else { update(old(i), operand(i)) }).collect();
                     if *data != words_le(&expected) {
                         return Err("atomic UAV contents differ".into());
                     }
@@ -804,10 +861,12 @@ fn lod_cases(c: &mut Vec<Case>) {
 
     // image_sample_d 2D, NSA: [ddx.u ddx.v ddy.u ddy.v] u v from v8 v9 v10 v11 v0 v1.
     // Gradient 2^k texels per pixel -> LOD k.
-    {
+    for clamp in [false, true] {
         let tt = t.clone();
         let mut words = prologue(Some(0), Some(0), None);
-        words.extend(mimg_nsa(SAMPLE_D, D2, 0xf, &[8, 9, 10, 11, 0, 1], DATA as u32, T_SGPR, S_SGPR));
+        let mut regs = vec![8, 9, 10, 11, 0, 1];
+        if clamp { regs.push(3); }
+        words.extend(mimg_nsa(if clamp {0x23} else {SAMPLE_D}, D2, 0xf, &regs, DATA as u32, T_SGPR, S_SGPR));
         words.push(S_ENDPGM);
         let mut inputs = Vec::new();
         for k in 0..4u32 {
@@ -816,17 +875,17 @@ fn lod_cases(c: &mut Vec<Case>) {
             for a in grid(size, size, 1) {
                 let u = f((a[0] as f32 + 0.5) / size as f32);
                 let v = f((a[1] as f32 + 0.5) / size as f32);
-                inputs.push(([u, v, k, 0], [g, 0, 0, g]));
+                inputs.push(([u, v, k, f(2.0)], [g, 0, 0, g]));
             }
         }
         c.push(Case {
-            name: "image_sample_d 2d nsa".into(),
+            name: if clamp { "image_sample_d_cl" } else { "image_sample_d 2d nsa" }.into(),
             words,
             srv: vec![Binding::Texture(tt.clone())],
             samplers: vec![point],
             uav: vec![],
             inputs,
-            want: Box::new(move |a, _| packed(texel_at(&tt, a[0], a[1], a[2]), 0xf)),
+            want: Box::new(move |a, _| packed(texel_at(&tt, a[0], a[1], if clamp { a[2].max(2) } else { a[2] }), 0xf)),
             uav_check: None,
             sm66: false,
         });
@@ -840,11 +899,13 @@ fn lod_cases(c: &mut Vec<Case>) {
         ("image_sample 2d quad", SAMPLE, None, None),
         ("image_sample_b 2d quad +1", SAMPLE_B, Some(1.0f32), None),
         ("image_sample_b 2d quad -1", SAMPLE_B, Some(-1.0), None),
+        ("image_get_lod quad", 0x60, None, None),
+        ("image_sample_b_cl", 0x26, Some(-1.0), Some(1.0)),
         ("image_sample_cl 2d quad 2", SAMPLE_CL, None, Some(2.0f32)),
     ] {
         let tt = t.clone();
         let mut words = prologue(Some(0), Some(0), None);
-        words.extend(mimg(op, D2, 0xf, 0, DATA as u32, T_SGPR, S_SGPR, Flags::default()));
+        words.extend(mimg(op, D2, if op == 0x60 {3} else {0xf}, 0, DATA as u32, T_SGPR, S_SGPR, Flags::default()));
         words.push(S_ENDPGM);
         let mut inputs = Vec::new();
         for k in 0..3u32 {
@@ -856,7 +917,7 @@ fn lod_cases(c: &mut Vec<Case>) {
                         let v = f(((qy + dy) as f32 + 0.5) / size as f32);
                         // Address operands: [bias] u v [clamp].
                         let addr = match (bias, clamp) {
-                            (Some(b), _) => [f(b), u, v, 0],
+                            (Some(b), cl) => [f(b), u, v, f(cl.unwrap_or(0.0))],
                             (_, Some(cl)) => [u, v, f(cl), 0],
                             _ => [u, v, 0, 0],
                         };
@@ -869,10 +930,11 @@ fn lod_cases(c: &mut Vec<Case>) {
             name: name.into(),
             words,
             srv: vec![Binding::Texture(tt.clone())],
-            samplers: vec![point],
+            samplers: vec![if op == 0x60 { Sampler {max_lod: 1.0, ..point} } else { point }],
             uav: vec![],
             inputs,
             want: Box::new(move |_, s| {
+                if op == 0x60 { return packed([f(s[2].min(1) as f32), f(s[2] as f32), 0, 0],3); }
                 let mut m = s[2] as f32 + bias.unwrap_or(0.0);
                 if let Some(cl) = clamp {
                     m = m.max(cl);
@@ -940,31 +1002,34 @@ fn sample_cases(c: &mut Vec<Case>) {
 
     // image_sample_lz_o 2D with constant offsets: [offset] u v. The offset register is set
     // by v_mov_b32 in the program (HLSL needs a literal for Sample offsets).
-    for (ox, oy) in [(1, 0), (-1, 2), (3, -2), (-8, 7)] {
-        let t = t2.clone();
-        let mut words = prologue(Some(0), Some(0), None);
-        words.extend(v_mov_lit(0, offs(ox, oy)));
-        words.extend(mimg(SAMPLE_LZ_O, D2, 0xf, 0, DATA as u32, T_SGPR, S_SGPR, Flags::default()));
-        words.push(S_ENDPGM);
-        let inputs: Vec<_> = grid(8, 4, 1)
-            .into_iter()
-            .map(|a| ([0, f((a[0] as f32 + 0.5) / 8.0), f((a[1] as f32 + 0.5) / 4.0), 0], a))
-            .collect();
-        c.push(Case {
-            name: format!("image_sample_lz_o 2d ({ox},{oy})"),
-            words,
-            srv: vec![Binding::Texture(t.clone())],
-            samplers: vec![point],
-            uav: vec![],
-            inputs,
-            want: Box::new(move |_, s| {
-                packed(tex_value(&t, clampi(s[0] as i32 + ox, 8), clampi(s[1] as i32 + oy, 4), 0, 0, 0).unwrap(), 0xf)
-            }),
-            uav_check: None,
-            sm66: false,
-        });
+    for (name, op) in [("image_sample_lz_o",SAMPLE_LZ_O), ("image_sample_l_o",0x34), ("image_sample_o",0x30)] {
+        for (ox, oy) in [(1, 0), (-1, 2), (3, -2), (-8, 7)] {
+            let t = if op == 0x30 {make_tex(TexDim::D2,8,4,1,1)} else {t2.clone()};
+            let mut words = prologue(Some(0), Some(0), None);
+            words.extend(v_mov_lit(0, offs(ox, oy)));
+            words.extend(mimg(op, D2, 0xf, 0, DATA as u32, T_SGPR, S_SGPR, Flags::default()));
+            words.push(S_ENDPGM);
+            let mip = u32::from(op == 0x34);
+            let (w, h, _) = t.mip_size(mip);
+            let inputs: Vec<_> = grid(w, h, 1)
+                .into_iter()
+                .map(|a| ([0, f((a[0] as f32 + 0.5) / w as f32), f((a[1] as f32 + 0.5) / h as f32), f(1.0)], a))
+                .collect();
+            c.push(Case {
+                name: format!("{name} 2d ({ox},{oy})"),
+                words,
+                srv: vec![Binding::Texture(t.clone())],
+                samplers: vec![point],
+                uav: vec![],
+                inputs,
+                want: Box::new(move |_, s| {
+                    packed(tex_value(&t, clampi(s[0] as i32 + ox, w), clampi(s[1] as i32 + oy, h), 0, 0, mip).unwrap(), 0xf)
+                }),
+                uav_check: None,
+                sm66: op == 0x30,
+            });
+        }
     }
-
     // Cube: hardware (s, t, face) addressing, s and t in [1, 2] (what v_cubesc/v_cubetc/
     // v_cubema-based code produces), face as float. Face texel = ((s-1)*w, (t-1)*h).
     {
@@ -992,40 +1057,43 @@ fn sample_cases(c: &mut Vec<Case>) {
     // image_sample_c_lz 2D: [zref] u v against an R32_FLOAT texture holding x + 10 y, with a
     // LESS comparison sampler: result = (zref < texel) (D3D11.3 §22.4.19: "srcReferenceValue
     // {ComparisonFunction} texel.R"), replicated to the enabled channels.
-    for dmask in [0x1u32, 0x3] {
-        let mut t = Texture { dim: TexDim::D2, format: R32F, texel_bytes: 4, width: 8, height: 4, depth: 1, mips: 1, data: Vec::new() };
-        for y in 0..4 {
-            for x in 0..8 {
-                t.data.extend(((x + 10 * y) as f32).to_le_bytes());
+    for (name, op) in [("image_sample_c_lz",SAMPLE_C_LZ), ("image_sample_c",0x28), ("image_sample_c_l",0x2c)] {
+        for dmask in [0x1u32, 0x3] {
+            let mut t = Texture { dim: TexDim::D2, format: R32F, texel_bytes: 4, width: 8, height: 4, depth: 1, mips: 1, data: Vec::new() };
+            for y in 0..4 {
+                for x in 0..8 {
+                    t.data.extend(((x + 10 * y) as f32).to_le_bytes());
+                }
             }
-        }
-        let mut cmp = Sampler::point_clamp();
-        cmp.filter = 0x80; // COMPARISON_MIN_MAG_MIP_POINT
-        cmp.comparison = 2; // LESS
-        let mut words = prologue(Some(0), Some(0), None);
-        words.extend(mimg(SAMPLE_C_LZ, D2, dmask, 0, DATA as u32, T_SGPR, S_SGPR, Flags::default()));
-        words.push(S_ENDPGM);
-        let mut inputs = Vec::new();
-        for a in grid(8, 4, 1) {
-            let texel = (a[0] + 10 * a[1]) as f32;
-            for dz in [-0.5f32, 0.5] {
-                inputs.push(([f(texel + dz), f((a[0] as f32 + 0.5) / 8.0), f((a[1] as f32 + 0.5) / 4.0), 0], [(dz < 0.0) as u32, 0, 0, 0]));
+            let mut cmp = Sampler::point_clamp();
+            cmp.filter = 0x80; // COMPARISON_MIN_MAG_MIP_POINT
+            cmp.comparison = 2; // LESS
+            let mut words = prologue(Some(0), Some(0), None);
+            if op == 0x2c { words.extend(v_mov_lit(3,0)); }
+            words.extend(mimg(op, D2, dmask, 0, DATA as u32, T_SGPR, S_SGPR, Flags::default()));
+            words.push(S_ENDPGM);
+            let mut inputs = Vec::new();
+            for a in grid(8, 4, 1) {
+                let texel = (a[0] + 10 * a[1]) as f32;
+                for dz in [-0.5f32, 0.5] {
+                    inputs.push(([f(texel + dz), f((a[0] as f32 + 0.5) / 8.0), f((a[1] as f32 + 0.5) / 4.0), 0], [(dz < 0.0) as u32, 0, 0, 0]));
+                }
             }
+            c.push(Case {
+                name: format!("{name} 2d dmask {dmask:#x}"),
+                words,
+                srv: vec![Binding::Texture(t)],
+                samplers: vec![cmp],
+                uav: vec![],
+                inputs,
+                want: Box::new(move |_, s| {
+                    let r = f(if s[0] == 1 { 1.0 } else { 0.0 });
+                    packed([r; 4], dmask)
+                }),
+                uav_check: None,
+                sm66: op == 0x28,
+            });
         }
-        c.push(Case {
-            name: format!("image_sample_c_lz 2d dmask {dmask:#x}"),
-            words,
-            srv: vec![Binding::Texture(t)],
-            samplers: vec![cmp],
-            uav: vec![],
-            inputs,
-            want: Box::new(move |_, s| {
-                let r = f(if s[0] == 1 { 1.0 } else { 0.0 });
-                packed([r; 4], dmask)
-            }),
-            uav_check: None,
-            sm66: false,
-        });
     }
 }
 
@@ -1038,29 +1106,44 @@ fn gather_cases(c: &mut Vec<Case>) {
         let at = |dx: i32, dy: i32| tex_value(t, clampi(x + dx, 8), clampi(y + dy, 4), 0, 0, 0).unwrap()[ch];
         [at(0, 1), at(1, 1), at(1, 0), at(0, 0)]
     };
-    for (ch, dmask) in [1u32, 2, 4, 8].into_iter().enumerate() {
-        let tt = t.clone();
-        let mut words = prologue(Some(0), Some(0), None);
-        words.extend(mimg(GATHER4_LZ, D2, dmask, 0, DATA as u32, T_SGPR, S_SGPR, Flags::default()));
-        words.push(S_ENDPGM);
-        let inputs: Vec<_> = grid(7, 3, 1)
-            .into_iter()
-            .map(|a| {
-                let [u, v] = corner(&a);
-                ([u, v, 0, 0], a)
-            })
-            .collect();
-        c.push(Case {
-            name: format!("image_gather4_lz 2d dmask {dmask:#x}"),
-            words,
-            srv: vec![Binding::Texture(tt.clone())],
-            samplers: vec![point],
-            uav: vec![],
-            inputs,
-            want: Box::new(move |_, s| order(&tt, s[0] as i32, s[1] as i32, ch).map(|v| Some((v, !0)))),
-            uav_check: None,
-            sm66: false,
-        });
+    for (name,op) in [("image_gather4_lz",GATHER4_LZ),("image_gather4",0x40),("image_gather4_c",0x48),("image_gather4_c_lz",0x4f)] {
+        let cmp = op & 8 != 0;
+        for (ch, dmask) in [1u32, 2, 4, 8].into_iter().enumerate() {
+            if cmp && ch != 0 { continue; }
+            let tt = if cmp {
+                let mut tex = t.clone();
+                tex.format = R32F;
+                tex.texel_bytes = 4;
+                tex.data = t.data.chunks_exact(16).flat_map(|p| p[..4].iter().copied()).collect();
+                tex
+            } else { t.clone() };
+            let mut sampler = point;
+            if cmp { sampler.filter = 0x80; sampler.comparison = 2; }
+            let mut words = prologue(Some(0), Some(0), None);
+            words.extend(mimg(op, D2, dmask, 0, DATA as u32, T_SGPR, S_SGPR, Flags::default()));
+            words.push(S_ENDPGM);
+            let inputs: Vec<_> = grid(7, 3, 1)
+                .into_iter()
+                .map(|a| {
+                    let [u, v] = corner(&a);
+                    let reference = tex_value(&t,a[0],a[1],0,0,0).unwrap()[0];
+                    (if cmp { [reference,u,v,0] } else { [u,v,0,0] }, a)
+                })
+                .collect();
+            c.push(Case {
+                name: format!("{name} 2d dmask {dmask:#x}"),
+                words,
+                srv: vec![Binding::Texture(tt.clone())],
+                samplers: vec![sampler],
+                uav: vec![],
+                inputs,
+                want: Box::new(move |a, s| order(&tt, s[0] as i32, s[1] as i32, ch).map(|v| {
+                    Some((if cmp { f(if f32::from_bits(a[0]) < f32::from_bits(v) {1.0} else {0.0}) } else { v }, !0))
+                })),
+                uav_check: None,
+                sm66: op == 0x40 || op == 0x48,
+            });
+        }
     }
     // gather4_lz_o: constant offset (literal in the program) and run-time offset (per thread).
     for runtime in [false, true] {
@@ -1097,45 +1180,48 @@ fn gather_cases(c: &mut Vec<Case>) {
 fn uav_cases(c: &mut Vec<Case>) {
     // image_store 2D: data from v8.. (DMASK-packed); disabled components are written as 0
     // (RDNA2 ISA Table 41, DMASK: "missing components get 0").
-    for dmask in [0xfu32, 0x1, 0x6, 0x9] {
-        let mut t = make_tex(TexDim::D2, 8, 4, 1, 1);
-        t.data.iter_mut().for_each(|b| *b = 0x55); // distinct from every stored value
-        let mut words = prologue(None, None, Some(0));
-        words.extend(mimg(IMAGE_STORE, D2, dmask, 0, 8, U_SGPR, 0, Flags { unorm: true, ..Default::default() }));
-        words.push(S_ENDPGM);
-        let val = |x: u32, y: u32, k: u32| f((100 * k + 10 * y + x) as f32);
-        let inputs: Vec<_> = grid(8, 4, 1).into_iter().map(|a| (a, [val(a[0], a[1], 0), val(a[0], a[1], 1), val(a[0], a[1], 2), val(a[0], a[1], 3)])).collect();
-        c.push(Case {
-            name: format!("image_store 2d dmask {dmask:#x}"),
-            words,
-            srv: vec![],
-            samplers: vec![],
-            uav: vec![Binding::Texture(t)],
-            inputs,
-            // The data registers are not written by a store.
-            want: Box::new(|_, _| packed([0; 4], 0)),
-            uav_check: Some(Box::new(move |b: &Binding| {
-                let Binding::Texture(t) = b else { return Err("not a texture".into()) };
-                for y in 0..4 {
-                    for x in 0..8 {
-                        let got = tex_value(t, x, y, 0, 0, 0).unwrap();
-                        let mut want = [0u32; 4];
-                        let mut k = 0;
-                        for (ch, w) in want.iter_mut().enumerate() {
-                            if dmask >> ch & 1 != 0 {
-                                *w = val(x, y, k);
-                                k += 1;
+    for (name,op) in [("image_store",IMAGE_STORE), ("image_store_mip",0x09)] {
+        for dmask in [0xfu32, 0x1, 0x6, 0x9] {
+            let mut t = make_tex(TexDim::D2, 8, 4, 1, 1);
+            t.data.iter_mut().for_each(|b| *b = 0x55); // distinct from every stored value
+            let mut words = prologue(None, None, Some(0));
+            if op == 9 { words.extend(v_mov_lit(2,0)); }
+            words.extend(mimg(op, D2, dmask, 0, 8, U_SGPR, 0, Flags { unorm: true, ..Default::default() }));
+            words.push(S_ENDPGM);
+            let val = |x: u32, y: u32, k: u32| f((100 * k + 10 * y + x) as f32);
+            let inputs: Vec<_> = grid(8, 4, 1).into_iter().map(|a| (a, [val(a[0], a[1], 0), val(a[0], a[1], 1), val(a[0], a[1], 2), val(a[0], a[1], 3)])).collect();
+            c.push(Case {
+                name: format!("{name} 2d dmask {dmask:#x}"),
+                words,
+                srv: vec![],
+                samplers: vec![],
+                uav: vec![Binding::Texture(t)],
+                inputs,
+                // The data registers are not written by a store.
+                want: Box::new(|_, _| packed([0; 4], 0)),
+                uav_check: Some(Box::new(move |b: &Binding| {
+                    let Binding::Texture(t) = b else { return Err("not a texture".into()) };
+                    for y in 0..4 {
+                        for x in 0..8 {
+                            let got = tex_value(t, x, y, 0, 0, 0).unwrap();
+                            let mut want = [0u32; 4];
+                            let mut k = 0;
+                            for (ch, w) in want.iter_mut().enumerate() {
+                                if dmask >> ch & 1 != 0 {
+                                    *w = val(x, y, k);
+                                    k += 1;
+                                }
+                            }
+                            if got != want {
+                                return Err(format!("texel ({x},{y}) = {got:08x?}, want {want:08x?}"));
                             }
                         }
-                        if got != want {
-                            return Err(format!("texel ({x},{y}) = {got:08x?}, want {want:08x?}"));
-                        }
                     }
-                }
-                Ok(())
-            })),
-            sm66: false,
-        });
+                    Ok(())
+                })),
+                sm66: false,
+            });
+        }
     }
     // D16 image_store: enabled components come from the halves of v8, v9 (low half first).
     for dmask in [0xfu32, 0x7] {

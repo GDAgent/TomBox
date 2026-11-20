@@ -22,6 +22,8 @@ extern "system" {
     fn VirtualAlloc(addr: *mut c_void, size: usize, alloc_type: u32, protect: u32) -> *mut c_void;
     fn VirtualFree(addr: *mut c_void, size: usize, free_type: u32) -> i32;
     fn GetLastError() -> u32;
+    fn SetLastError(error: u32);
+    fn VirtualQueryEx(process: *mut c_void, addr: *const c_void, info: *mut u64, size: usize) -> usize;
 }
 const MEM_DECOMMIT: u32 = 0x0000_4000;
 /// Xbox title physical pages are 64 KiB.
@@ -176,6 +178,30 @@ pub extern "system" fn XMemVirtualAlloc(
         ),
     );
     p
+}
+
+/// GXDK 250405 BVH callers supply a process, an address and a 64-byte output.
+/// The x64 desktop MEMORY_BASIC_INFORMATION prefix supplies State and Protect
+/// at offsets 32 and 36. The builder separately checks console GPU access at
+/// offset 48. A desktop process mapping alone establishes no GPU access.
+///
+/// # Safety
+/// A non-null `information` must point to 64 writable bytes.
+#[no_mangle]
+pub unsafe extern "system" fn XMemVirtualQuery(
+    process: *mut c_void, address: *const c_void, information: *mut [u64; 8],
+) -> i32 {
+    if information.is_null() {
+        SetLastError(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    let mut info = [0u64; 8];
+    const HOST_INFO_SIZE: usize = 48;
+    if VirtualQueryEx(process, address, info.as_mut_ptr(), HOST_INFO_SIZE) != HOST_INFO_SIZE {
+        return 0;
+    }
+    information.write_unaligned(info);
+    1
 }
 
 // ---- Physical-page / unified-memory APIs ----

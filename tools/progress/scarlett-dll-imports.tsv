@@ -1195,7 +1195,7 @@ xboxbvhbuilder.dll	vcruntime140.dll	memcpy	Supplied DLL	resolved
 xboxbvhbuilder.dll	vcruntime140.dll	memmove	Supplied DLL	resolved
 xboxbvhbuilder.dll	vcruntime140.dll	memset	Supplied DLL	resolved
 xboxbvhbuilder.dll	vcruntime140_1.dll	__CxxFrameHandler4	Supplied DLL	resolved
-xboxbvhbuilder.dll	xmem.dll	XMemVirtualQuery	TomBox shim	missing
+xboxbvhbuilder.dll	xmem.dll	XMemVirtualQuery	TomBox shim	resolved
 xcurl.dll	api-ms-win-core-com-l1-1-0.dll	CoCreateGuid	Proton Experimental	resolved
 xcurl.dll	api-ms-win-core-debug-l1-1-0.dll	OutputDebugStringA	Proton Experimental	resolved
 xcurl.dll	api-ms-win-core-errorhandling-l1-1-0.dll	GetLastError	Proton Experimental	resolved

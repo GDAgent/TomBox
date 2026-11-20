@@ -36,3 +36,14 @@ extern "C" __declspec(dllexport) void record_draw(ID3D12GraphicsCommandList* lis
     packet(list, 0, &end, sizeof(end));
 #endif
 }
+
+// Returning a boolean also keeps the return address of this vtable call in the DLL.
+extern "C" __declspec(dllexport) bool check_device_slot(ID3D12Device* device) {
+    using Diagnostic = HRESULT (WINAPI*)(ID3D12Device*);
+    return xbox_method<Diagnostic>(device, 159)(device) == E_NOTIMPL;
+}
+
+extern "C" __declspec(dllexport) bool check_list_slot(ID3D12GraphicsCommandList* list) {
+    using Probe = UINT_PTR (WINAPI*)(ID3D12GraphicsCommandList*, UINT_PTR);
+    return xbox_method<Probe>(list, 148)(list, 0xf148) == 0;
+}

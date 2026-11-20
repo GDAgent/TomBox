@@ -835,6 +835,71 @@ fn cases() -> Vec<Case> {
         0x7e00_02ff, 0x3d00_3e00, 0x7e02_02ff, 0x3c02_3c01,
         0x7e06_02ff, 0x0001_8001, fmac, S_ENDPGM,
     ], [I; 3], |_, _, _, _| Want::U(0x3d03_3e01)));
+    for (name, words) in [
+        ("v_dot4c_i32_i8", vec![0x1a06_0300, S_ENDPGM]),
+        ("v_dot4_i32_i8", vop3p(0x16, 3, 0, 7, 0, 0)),
+    ] {
+        c.push(case(name, words, [I; 3], |a, b, acc, _| {
+            let products = a.to_le_bytes().into_iter().zip(b.to_le_bytes())
+                .map(|(x, y)| i32::from(x as i8) * i32::from(y as i8));
+            Want::U(acc.wrapping_add(products.sum::<i32>() as u32))
+        }));
+    }
+    for (name, op) in [("v_pk_add_u16", 10), ("v_pk_sub_u16", 11)] {
+        for (lo, hi) in [(0, 3), (1, 2)] {
+            let words = vop3p(op, 2, lo, hi, 0, 0);
+            c.push(case(&format!("{name} select {lo}/{hi}"), words, [I; 3], move |a, b, _, _| {
+                let lane = |select: u32| {
+                    let x = (a >> (16 * (select & 1u32))) as u16;
+                    let y = (b >> (16 * ((select >> 1) & 1u32))) as u16;
+                    u32::from(if op == 10 { x.wrapping_add(y) } else { x.wrapping_sub(y) })
+                };
+                Want::U(lane(lo) | lane(hi) << 16)
+            }));
+        }
+    }
+    for sel in 0..4 {
+        let words = vec![0xd711_0003 | sel << 11, 0x0202_0300, S_ENDPGM];
+        c.push(case(&format!("v_pack_b32_f16 select {sel}"), words, [I; 3], move |a, b, _, _| {
+            Want::U((a >> (16 * (sel & 1)) & 65535) | (b >> (16 * (sel >> 1))) << 16)
+        }));
+    }
+    for high in [false, true] {
+        // v[2:3] is both addend and destination. Read the selected half plus VCC.
+        let mut words = vec![0xd576_6a02, 0x040a_0300];
+        if !high { words.push(0x7e06_0302); }
+        words.push(S_ENDPGM);
+        let mut p = case(&format!("v_mad_u64_u32 high={high}"), words, [I; 3], |_,_,_,_| unreachable!());
+        p.out = Out::V3Carry;
+        p.want = Box::new(move |a,b,c,_| {
+            let sum = u128::from(a) * u128::from(b) + u128::from(c) * 0x1_0000_0001;
+            (Want::U((sum >> if high { 32 } else { 0 }) as u32), (sum >> 64) as u32)
+        });
+        c.push(p);
+    }
+    for (op, cc) in [(0xe2,"eq"), (0xe3,"le"), (0xe4,"gt"), (0xe5,"ne"),
+                      (0xf2,"eq"), (0xf4,"gt"), (0xf5,"ne")] {
+        let cmpx = op >= 0xf0;
+        for e64 in [false, true] {
+            // v[0:1] = (a,b), v[4:5] = (c,a).
+            let mut words = vec![0x7e08_0302, 0x7e0a_0300];
+            if e64 {
+                words.extend([0xd400_0000 | op << 16 | if cmpx {126} else {106}, 0x0002_0900]);
+            } else {
+                words.push(0x7c00_0900 | op << 17);
+            }
+            words.push(S_ENDPGM);
+            let name = format!("v_{}_{cc}_u64 e{}", if cmpx { "cmpx" } else { "cmp" }, if e64 { 64 } else { 32 });
+            c.push(Case { out: if cmpx {Out::Exec} else {Out::Vcc}, vcc_in: true,
+                ..case(&name, words, [I; 3], move |a,b,c,_| {
+                    let lhs = u64::from(a) | u64::from(b) << 32;
+                    let rhs = u64::from(c) | u64::from(a) << 32;
+                    Want::U(u32::from(match cc { "eq" => lhs == rhs, "ne" => lhs != rhs,
+                        "gt" => lhs > rhs, "le" => lhs <= rhs, _ => unreachable!() }))
+                })
+            });
+        }
+    }
     // --- packed half floats (VOP3P, default op_sel)
     let pk: [(&str, u32, usize, fn(f32, f32, f32) -> f32); 5] = [
         ("v_pk_fma_f16", 0x0e, 3, |a, b, c| ((a as f64) * (b as f64) + c as f64) as f32),
@@ -919,6 +984,17 @@ fn coin_scalar_arithmetic() -> Vec<Case> {
     let sop2 = |op: u32| 0x8010_1110 | (op << 23); // s16, s16, s17
     let sopk = |op: u32, imm: i16| 0xb010_0000 | (op << 23) | u32::from(imm as u16);
     let probes: &[(&str, u32, Model)] = &[
+        ("s_bitcmp0_b32", 0xbf0c_1110, |a,b,_| (a, a.rotate_right(b) & 1 == 0)),
+        ("s_bitcmp1_b32", 0xbf0d_1110, |a,b,_| (a, a.rotate_right(b) & 1 != 0)),
+        ("s_nand_b32", sop2(0x18), |a,b,_| (!(a & b), !(a & b) != 0)),
+        ("s_xnor_b32", sop2(0x1c), |a,b,_| (!(a ^ b), !(a ^ b) != 0)),
+        ("s_lshl3_add_u32", sop2(0x30), |a,b,_| (a << 3).overflowing_add(b)),
+        ("s_pack_ll_b32_b16", sop2(0x32), |a,b,scc| (a & 65535 | b << 16, scc)),
+        ("s_flbit_i32_b32", 0xbe90_1511, |_,b,scc| (if b == 0 { u32::MAX } else { b.leading_zeros() }, scc)),
+        ("s_wqm_b32", 0xbe90_0911, |_,b,_| {
+            let mask = (0..8).filter(|k| b & (15 << (4*k)) != 0).fold(0, |m,k| m | (15 << (4*k)));
+            (mask, b != 0)
+        }),
         ("s_and_b32", sop2(14), |a, b, _| (a & b, a & b != 0)),
         ("s_andn2_b32", sop2(0x14), |a, b, _| (a & !b, a & !b != 0)),
         ("s_or_b32", sop2(16), |a, b, _| (a | b, a | b != 0)),
@@ -1037,11 +1113,29 @@ fn scalar_field(data: u32, control: u32, signed: bool) -> (u32, bool) {
     (result, result != 0)
 }
 
+fn scalar_field64(data: u64, control: u64, signed: bool) -> (u64, bool) {
+    let offset = control & 63;
+    let width = ((control >> 16) & 127).min(64 - offset);
+    if width == 0 { return (0, false); }
+    let bits = (data >> offset) & (u64::MAX >> (64 - width));
+    let sign = 1 << (width - 1);
+    let result = if signed { (bits ^ sign).wrapping_sub(sign) } else { bits };
+    (result, result != 0)
+}
+
 /// Run each register-pair operation twice so both words and SCC reach the CPU.
 fn coin_scalar_pairs() -> Vec<Case> {
     type Model = fn(u64, u64, bool) -> (u64, bool);
     let sop2 = |op: u32| 0x8010_1210 | (op << 23); // s[16:17], s[16:17], s[18:19]
     let probes: &[(&str, u32, Model)] = &[
+        ("s_cmov_b64", 0xbe90_0612, |x,y,scc| (if scc { y } else { x }, scc)),
+        ("s_not_b64", 0xbe90_0810, |x,_,_| (!x, !x != 0)),
+        ("s_nand_b64", sop2(0x19), |x,y,_| (!(x & y), !(x & y) != 0)),
+        ("s_xnor_b64", sop2(0x1d), |x,y,_| (!(x ^ y), !(x ^ y) != 0)),
+        ("s_lshr_b64", sop2(0x21), |x,y,_| { let v = x.wrapping_shr(y as u32); (v, v != 0) }),
+        ("s_ashr_i64", sop2(0x23), |x,y,_| { let v = (x as i64).wrapping_shr(y as u32); (v as u64, v != 0) }),
+        ("s_bfe_u64", sop2(0x29), |x,y,_| scalar_field64(x, y, false)),
+        ("s_bfe_i64", sop2(0x2a), |x,y,_| scalar_field64(x, y, true)),
         ("s_and_b64", sop2(15), |x, y, _| (x & y, x & y != 0)),
         ("s_or_b64", sop2(17), |x, y, _| (x | y, x | y != 0)),
         ("s_xor_b64", sop2(19), |x, y, _| (x ^ y, x != y)),
@@ -1111,6 +1205,15 @@ fn coin_branches() -> Vec<Case> {
 fn coin_vector_ops() -> Vec<Case> {
     use Dom::{F, H, I};
     let mut cases = vec![
+        case("v_movrelsd_b32", vec![0x7e20_0502, 0x8710_8110, 0xbefc_0310, 0x7e02_8900, 0x7e06_0302, S_ENDPGM], [I; 3],
+             |_, b, c, _| Want::U(if c & 1 != 0 { b } else { c })),
+        case("v_rsq_f16", vec![0x7e06_ad00, S_ENDPGM], [H,I,I], |a,_,_,_| Want::H(f16_from(1.0 / f16_to(a & 65535).sqrt(), false))),
+        case("v_fmamk_f16", vec![0x6e06_0300, 0x3900, S_ENDPGM], [H,H,I], |a,b,_,_| Want::H(fma_half(a,0x3900,b))),
+        case("v_madmk_f32", vec![0x4006_0300, 0x3f40_0000, S_ENDPGM], [F,F,I], |a,b,_,_| mad_any(f(a), 0.75, f(b))),
+        case("v_mullit_f32", vop3(0x150, 3, Mods::default(), 3, None), [F; 3], |a,b,c,_| {
+            let (x,y,limit) = (f(a), f(b), f(c));
+            fl(if !(limit > 0.0) || y.is_nan() || y <= f32::MIN { f32::MIN } else { legacy_mul(x,y) })
+        }),
         case("v_swap_b32 read v3", vec![0x7e00_cb03, S_ENDPGM], [I; 3], |a, _, _, _| Want::U(a)),
         case("v_swap_b32 read v0", vec![0x7e00_cb03, 0x7e06_0300, S_ENDPGM], [I; 3], |_, _, c, _| Want::U(c)),
         case("v_rcp_f16", vec![0x7e06_a900, S_ENDPGM], [H, I, I], |a, _, _, _| {
@@ -1120,7 +1223,7 @@ fn coin_vector_ops() -> Vec<Case> {
             mad_any(f(a), f(b), 0.75)
         }),
     ];
-    for (name, opcode) in [("v_lshlrev_b64", 0xd6ff_0002), ("v_lshrrev_b64", 0xd700_0002)] {
+    for (name, opcode) in [("v_lshlrev_b64", 0xd6ff_0002), ("v_lshrrev_b64", 0xd700_0002), ("v_ashrrev_i64", 0xd701_0002)] {
         for (half, shift) in [("low", 0), ("high", 32)] {
             // Shift v[0:1] by v2, overwriting v[2:3]. Return each half independently.
             let mut words = vec![opcode, 0x0202_0102];
@@ -1128,7 +1231,7 @@ fn coin_vector_ops() -> Vec<Case> {
             words.push(S_ENDPGM);
             cases.push(case(&format!("{name} {half}"), words, [I; 3], move |a, b, c, _| {
                 let value = u64::from(a) | (u64::from(b) << 32);
-                let result = if name == "v_lshrrev_b64" { value.wrapping_shr(c) } else { value.wrapping_shl(c) };
+                let result = match name { "v_lshrrev_b64" => value.wrapping_shr(c), "v_ashrrev_i64" => (value as i64).wrapping_shr(c) as u64, _ => value.wrapping_shl(c) };
                 Want::U((result >> shift) as u32)
             }));
         }
@@ -1233,11 +1336,20 @@ fn coin_run_valu_conformance() {
     let mut graphics = BTreeSet::new();
     for (file, required) in [
         ("graphics-gs.dxbc", &["s_sendmsg"][..]),
-        ("graphics-ps.dxbc", &["exp", "ds_swizzle_b32", "v_interp_mov_f32", "v_interp_p1_f32", "v_interp_p2_f32"][..]),
+        ("graphics-ps.dxbc", &["exp", "s_waitcnt_expcnt", "ds_swizzle_b32", "v_interp_mov_f32", "v_interp_p1_f32", "v_interp_p2_f32"][..]),
     ] {
         let blob = std::fs::read(dir.join(file)).expect("shader from passing pixel readback");
         let shader = tombox_xshader::extract(&blob).expect("valid graphics probe");
         let program = tombox_xshader::rdna2::disassemble(&shader.isa);
+        if file == "graphics-ps.dxbc" {
+            let end = shader.isa_offset_in_fssm + shader.isa.len();
+            assert_eq!(&shader.fssm[end..end + 4], &0xbf9f_0000u32.to_le_bytes());
+            let last_move = &program[program.len() - 2];
+            assert_eq!(last_move.mnemonic, "v_mov_b32");
+            assert_eq!(last_move.raw.last(), Some(&0xbf9f_0000));
+            assert_eq!(program.last().unwrap().mnemonic, "s_endpgm");
+            graphics.insert("s_code_end");
+        }
         for &name in required {
             assert!(program.iter().any(|ins| ins.mnemonic == name), "{file} lost its {name} probe");
             graphics.insert(name);

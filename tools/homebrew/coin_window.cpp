@@ -6,6 +6,7 @@
 #include "coin_scene.h"
 #include "coin_controller.h"
 #include "coin_audio.h"
+#include "scarlett_libraries.h"
 #include "bc1_reference.h"
 #include <vector>
 #include <algorithm>
@@ -226,6 +227,103 @@ static int check_readback(Frame& frame, const char* operation, UINT slot, Expect
     std::printf("%s slot %u: %u/%u texels match\n", operation, slot,
                 frame.width * frame.height - mismatches, frame.width * frame.height);
     return mismatches != 0;
+}
+
+// These entries have an explicit diagnostic binding in the TomBox wrapper.
+static int check_device_diagnostics() {
+    ComPtr<ID3D12Device> dev;
+    CHECK(D3D12XboxCreateDevice(nullptr, nullptr, IID_PPV_ARGS(&dev)));
+    using Diagnostic = HRESULT (WINAPI*)(ID3D12Device*);
+    for (UINT slot = 91; slot < 160; ++slot) {
+        const HRESULT hr = xbox_method<Diagnostic>(dev.Get(), slot)(dev.Get());
+        if (hr != E_NOTIMPL) {
+            std::fprintf(stderr, "device diagnostic %u returned 0x%08lx\n", slot, hr);
+            return 1;
+        }
+    }
+    HMODULE fixture = LoadLibraryW(L"scarlett_commands_261000.dll");
+    if (!fixture) return 1;
+    using CheckSlot = bool (*)(ID3D12Device*);
+    auto check = reinterpret_cast<CheckSlot>(GetProcAddress(fixture, "check_device_slot"));
+    const bool passed = check && check(dev.Get());
+    FreeLibrary(fixture);
+    return passed ? 0 : 1;
+}
+
+static int check_bvh_counter(Frame& frame) {
+    // Copy three nonzero words to the GPU, clear only the middle one, and read all three back.
+    ComPtr<ID3D12Resource> data, upload;
+    D3D12_RESOURCE_DESC desc = frame.readback->GetDesc();
+    desc.Width = 12;
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    heap.CreationNodeMask = heap.VisibleNodeMask = 1;
+    CHECK(frame.dev->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+          D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&data)));
+    heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    CHECK(frame.dev->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+          D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload)));
+    const UINT source[] = {13, 29, 71};
+    void* mapped = nullptr;
+    D3D12_RANGE no_reads{};
+    CHECK(upload->Map(0, &no_reads, &mapped));
+    std::memcpy(mapped, source, sizeof(source));
+    upload->Unmap(0, nullptr);
+    D3D12_RESOURCE_BARRIER transition{};
+    transition.Transition = {data.Get(), 0, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST};
+    auto* list = frame.list.Get();
+    list->ResourceBarrier(1, &transition);
+    list->CopyBufferRegion(data.Get(), 0, upload.Get(), 0, sizeof(source));
+    HMODULE dll = LoadLibraryW(L"bvh_commands.dll");
+    if (!dll) return 1;
+    using Clear = void (*)(ID3D12GraphicsCommandList*, UINT64, UINT);
+    auto clear = reinterpret_cast<Clear>(GetProcAddress(dll, "clear_counter"));
+    if (!clear) { FreeLibrary(dll); return 1; }
+    const UINT64 base = data->GetGPUVirtualAddress();
+    clear(list, base, 1);       // Unknown batch-final semantics must preserve this word.
+    clear(list, base + 4, 0);
+    transition.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    transition.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    list->ResourceBarrier(1, &transition);
+    clear(list, base + 8, 0);   // The earlier COPY_DEST transition has expired.
+    FreeLibrary(dll);
+    list->CopyBufferRegion(frame.readback.Get(), 0, data.Get(), 0, sizeof(source));
+    CHECK(list->Close());
+    ID3D12CommandList* lists[] = {list};
+    frame.queue->ExecuteCommandLists(1, lists);
+    if (frame.wait_for_gpu()) return 1;
+    const UINT expected[] = {13, 0, 71};
+    const D3D12_RANGE range{0, sizeof(expected)};
+    CHECK(frame.readback->Map(0, &range, &mapped));
+    const bool ok = std::memcmp(mapped, expected, sizeof(expected)) == 0;
+    frame.readback->Unmap(0, &no_reads);
+    if (!ok) std::fputs("BVH counter or guard words differ\n", stderr);
+    return !ok;
+}
+
+static int check_command_list_diagnostics() {
+    Frame frame;
+    if (frame.init(16, 9) || frame.begin({1, 0, 1, 1})) return 1;
+    using Probe = UINT_PTR (WINAPI*)(ID3D12GraphicsCommandList*, UINT_PTR);
+    for (UINT slot = 27; slot <= 148; ++slot) {
+        if ((slot >= 32 && slot <= 55) || (slot >= 59 && slot <= 61) ||
+            slot == 67 || slot == 68 || slot == 80 || slot == 83 || slot == 85 || slot == 146) continue;
+        if (xbox_method<Probe>(frame.list.Get(), slot)(frame.list.Get(), 0xc000 + slot) != 0) {
+            std::fprintf(stderr, "Unexpected diagnostic return at CommandList slot %u\n", slot);
+            return 1;
+        }
+    }
+    HMODULE module = LoadLibraryW(L"scarlett_commands_261000.dll");
+    if (!module) return 1;
+    using Check = bool (*)(ID3D12GraphicsCommandList*);
+    auto check = reinterpret_cast<Check>(GetProcAddress(module, "check_list_slot"));
+    const bool passed = check && check(frame.list.Get());
+    FreeLibrary(module);
+    if (!passed || frame.finish()) return 1;
+    if (check_readback(frame, "CommandList diagnostics", 148, [](LONG, LONG) { return Color{255, 0, 255, 255}; })) return 1;
+    CHECK(frame.alloc->Reset());
+    CHECK(frame.list->Reset(frame.alloc.Get(), nullptr));
+    return check_bvh_counter(frame);
 }
 
 static int check_shader_pixels(const char* directory) {
@@ -808,6 +906,10 @@ static HWND game_window() {
 }
 
 int main(int argc, char** argv) {
+    if (argc == 2 && !std::strcmp(argv[1], "--gamechat-test")) return !scarlett_libraries::check_game_chat();
+    if (argc == 2 && !std::strcmp(argv[1], "--scarlett-libraries-test")) return scarlett_libraries::run();
+    if (argc == 2 && !std::strcmp(argv[1], "--command-list-test")) return check_command_list_diagnostics();
+    if (argc == 2 && !std::strcmp(argv[1], "--device-diagnostics-test")) return check_device_diagnostics();
     if (argc == 3 && !std::strcmp(argv[1], "--rdna2-test")) return check_packed_compute() || check_rdna2(argv[2]) || check_shader_pixels(argv[2]);
     if (argc == 2 && !std::strcmp(argv[1], "--thread-dispatch-test")) return check_compute(ComputeProbe::ThreadDispatch);
     if (argc == 2 && !std::strcmp(argv[1], "--compute-barrier-test")) return check_compute(ComputeProbe::UavBarrier);
@@ -835,7 +937,7 @@ int main(int argc, char** argv) {
     const bool headless = audio_test || placed || (argc == 2 && !std::strcmp(argv[1], "--test"));
     const bool present_test = argc == 2 && !std::strcmp(argv[1], "--present-test");
     if (argc != 1 && !headless && !present_test && !cpu_tiled && !reference && !state_test && !stream_test && !scene_3d) {
-        std::fputs("usage: coin_window.exe [--rdna2-test DIRECTORY | --thread-dispatch-test | --compute-barrier-test | --pso-fallback-test | --indirect-test | --scarlett-copy-test | --discard-test | --uav-test | --audio-test | --test | --placed-test | --present-test | --tiled | --tiled-test | --tiled-reference FILE | --mip-reference FILE | --bc1-reference FILE | --rect-{rgba,bc1}-{wide,tall} FILE | --array-{rgba-tall,bc1-wide} FILE | --cube-test FILE | --state-test | --stream-test FILE | --3d | --3d-test | --controller-test | --gameinput-test]\n", stderr);
+        std::fputs("usage: coin_window.exe [--gamechat-test | --command-list-test | --device-diagnostics-test | --scarlett-libraries-test | --rdna2-test DIRECTORY | --thread-dispatch-test | --compute-barrier-test | --pso-fallback-test | --indirect-test | --scarlett-copy-test | --discard-test | --uav-test | --audio-test | --test | --placed-test | --present-test | --tiled | --tiled-test | --tiled-reference FILE | --mip-reference FILE | --bc1-reference FILE | --rect-{rgba,bc1}-{wide,tall} FILE | --array-{rgba-tall,bc1-wide} FILE | --cube-test FILE | --state-test | --stream-test FILE | --3d | --3d-test | --controller-test | --gameinput-test]\n", stderr);
         return 1;
     }
     HWND window = headless ? nullptr : game_window();

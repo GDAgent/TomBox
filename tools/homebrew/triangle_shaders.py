@@ -228,7 +228,9 @@ if __name__ == "__main__":
         # Use an intermediate P1 value and custom I/J weights in alpha.
         0x7E1202FF, 0x3E800000, 0x7E1402F0,  # v9=.25, v10=.5
         0xC81C0209, 0x060E0EFF, 0x3E000000, 0xC81D020A,
-        0xF800080F, 0x07060804, end,
+        0xF800080F, 0x07060804,  # export and wait for the source VGPRs to be consumed
+        0xBCFD0000, 0x7E0802FF, 0xBF9F0000, end,  # overwrite v4 with a padding-shaped literal
+        0xBF9F0000, 0xBF9F0000,  # s_code_end is padding after termination
     ], signature(("SV_Position", 1, 0), ("TEXCOORD", 0, 7), ("COLOR", 0, 1)), signature(("SV_Target", 64, 0))))
     # Fixed tilted view and perspective projection of camera-relative world positions.
     # gfx1030 encodings assembled with llvm-mc. UVs pass through to the atlas sampler.

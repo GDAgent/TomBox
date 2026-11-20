@@ -92,18 +92,35 @@ def imports():
     return groups, labels, detail
 
 def d3d12x():
-    groups = {}
+    groups, labels = {}, {}
     for name in ("Device", "CommandList"):
         d = cfg["d3d12x"][name]
         done, part = ranges(d["done"]), ranges(d["partial"])
         unmapped = ranges(d["observed_unmapped"])
-        conflicts = (done & part) | (done & unmapped) | (part & unmapped)
+        diagnostic = ranges(d.get("diagnostic_only", ""))
+        conflicts = (done & part) | (done & unmapped) | (part & unmapped) | (diagnostic & (done | part))
         if conflicts:
             raise ValueError(f"{name} slots with conflicting statuses: {sorted(conflicts)}")
-        highest = max(done | part | unmapped, default=-1)
+        highest = max(done | part | diagnostic | unmapped, default=-1)
         count = max(d["baseline_slots"], highest + 1)
-        groups[name] = ["done" if i in done else "partial" if i in part else "none" for i in range(count)]
-    return groups
+        groups[name] = ["done" if i in done else "partial" if i in part or i in diagnostic else "none" for i in range(count)]
+        labels[name] = []
+        for slot, state in enumerate(groups[name]):
+            if name == "Device" and 91 <= slot <= 159 and state == "partial":
+                evidence = "Coin Run verified caller module, slot, return address and E_NOTIMPL; method unidentified"
+            elif slot in diagnostic:
+                evidence = "Coin Run verified the slot, first argument, caller and zero return; no desktop command"
+                if slot in unmapped:
+                    evidence += "; retail call observed, behavior unmapped"
+            elif name == "CommandList" and slot == 90:
+                evidence = "GXDK 250405 counter clear passed GPU readback in COPY_DEST; final-batch flag unresolved"
+            elif slot in unmapped:
+                evidence = "retail call observed, method unmapped"
+            else:
+                evidence = {"done": "implemented or forwarded", "partial": "partial implementation or diagnostic binding",
+                            "none": "unidentified slot"}[state]
+            labels[name].append(f"{name} slot {slot}: {evidence}")
+    return groups, labels
 
 def instructions():
     src = open(os.path.join(root, "crates", "tombox-xshader", "src", "rdna2", "mnem.rs"), encoding="utf-8").read()
@@ -157,9 +174,19 @@ def instructions():
         if n in memory:
             evidence.append("vector memory GPU probe passed")
         if n in graphics:
-            evidence.append("Coin Run graphics pixel reference passed")
+            evidence.append("Coin Run rendered the padded shader and verified its executable boundary"
+                            if n == "s_code_end" else "Coin Run graphics pixel reference passed")
         if n in cache:
             evidence.append({"uav_visibility": "cross-wave UAV visibility passed", "state_preserved": "instruction-prefetch state preservation passed"}[cache[n]])
+        scope = {
+            "image_get_resinfo": "2D width, height and mip count",
+            "image_store_mip": "UAV view-relative mip zero",
+            "image_sample_c_l": "statically zero compare LOD",
+            "s_round_mode": "MODE field and FP32-to-FP16 conversion",
+            "s_denorm_mode": "MODE field and FP32-to-FP16 conversion",
+        }.get(n)
+        if scope and n in probed:
+            evidence.append(scope)
         labels.setdefault(family, []).append(f"{n}: {', '.join(evidence) or 'no retail or GPU probe evidence'}")
     detail = (f" · GPU checks {len(probed & used.keys())}/{len(used)} retail"
               f" · {len(cache)} cache probes · {len(probed - used.keys())} others checked")
@@ -247,7 +274,8 @@ def pct_colour(p):
 o, y = [], 0
 import_groups, import_labels, import_detail = imports()
 y, a_done, a_n = section(o, y, "Fortnite and Scarlett DLL imports", import_groups, 300, import_detail, import_labels)
-y, b_done, b_n = section(o, y, "Direct3D 12.x interface methods", d3d12x(), 170)
+d3d_groups, d3d_labels = d3d12x()
+y, b_done, b_n = section(o, y, "Direct3D 12.x interface methods", d3d_groups, 170, labels=d3d_labels)
 isa_groups, isa_labels, isa_detail, tag_groups, tag_labels = instructions()
 kernel_results = []
 for library, counts in cfg["audited_compute_shaders"].items():

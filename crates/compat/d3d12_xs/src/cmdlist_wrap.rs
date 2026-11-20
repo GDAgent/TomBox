@@ -14,8 +14,8 @@ extern "system" {
 }
 const PAGE_READWRITE: u32 = 0x04;
 
-/// Include the enhanced barrier entry observed in GXDK 250405.
-const N: usize = 147;
+/// Slot 148 is used by the GXDK 250405 BVH builder.
+const N: usize = 149;
 static XBOX_VT: [AtomicUsize; N] = [const { AtomicUsize::new(0) }; N];
 static BUILT: std::sync::Once = std::sync::Once::new();
 static mut REAL_VT_PTR: *const usize = core::ptr::null();
@@ -46,24 +46,17 @@ unsafe extern "system" fn inserted_stub() {
     )
 }
 
-// High-slot diagnostic: the verified contiguous +4 mapping ends at DiscardResource.
-// Past that the Xbox command list has its own extension methods, so our naive map
-// sends calls to the wrong PC method (e.g. a texture-copy landed on DispatchMesh ->
-// device removal). Install logging no-op probes across the high range to capture,
-// for every high slot the game actually calls, the slot + first arg + caller RVA,
-// so we can reconstruct the true mapping. No-op avoids recording invalid GPU work.
-static EXE_BASE: AtomicUsize = AtomicUsize::new(0);
-static PROBE_HITS: AtomicUsize = AtomicUsize::new(0);
-
-unsafe extern "system" fn probe_impl(_this: *mut c_void, a: u64, caller: usize, slot: u64) {
-    let h = PROBE_HITS.fetch_add(1, Ordering::Relaxed);
+// Unidentified guest slots can have unrelated desktop methods at the same index.
+// Capture the first argument and the guest return address without recording GPU work.
+unsafe extern "system" fn probe_impl(_this: *mut c_void, a: usize, caller: usize, slot: usize) -> usize {
     static PER: [AtomicUsize; N] = [const { AtomicUsize::new(0) }; N];
-    let _ = h;
-    if PER[slot as usize].fetch_add(1, Ordering::Relaxed) < 4 {
-        let base = EXE_BASE.load(Ordering::Relaxed);
-        record("d3d12_xs", "cmdlist.hi",
-            &format!("slot={slot} arg1={a:#x} caller={:#x}", caller.wrapping_sub(base)));
+    INSERTED_HITS.fetch_add(1, Ordering::Relaxed);
+    if PER[slot].fetch_add(1, Ordering::Relaxed) < 4 {
+        let caller = crate::gxdk_edition::caller_location(caller);
+        record("d3d12_xs", "cmdlist.hi", &format!("slot={slot} arg1={a:#x} caller={caller} -> 0"));
     }
+    // Unknown return ABI. Preserve the zero fallback, including for pointer-valued entries.
+    0
 }
 
 macro_rules! make_probes {
@@ -117,6 +110,7 @@ macro_rules! make_probes {
     };
 }
 make_probes!(
+    (p27,27),(p28,28),(p29,29),(p30,30),(p31,31),
     (p47,47),(p48,48),(p49,49),(p51,51),(p52,52),(p53,53),(p54,54),(p55,55),(p56,56),(p57,57),
     (p58,58),(p59,59),(p60,60),(p61,61),(p62,62),(p63,63),(p64,64),(p65,65),(p66,66),(p67,67),
     (p68,68),(p69,69),(p70,70),(p71,71),(p72,72),(p73,73),(p74,74),(p75,75),(p76,76),(p77,77),
@@ -125,7 +119,10 @@ make_probes!(
     (p98,98),(p99,99),(p100,100),(p101,101),(p102,102),(p103,103),(p104,104),(p105,105),(p106,106),
     (p107,107),(p108,108),(p109,109),(p110,110),(p111,111),(p112,112),(p113,113),(p114,114),(p115,115),
     (p116,116),(p117,117),(p118,118),(p119,119),(p120,120),(p121,121),(p122,122),(p123,123),(p124,124),
-    (p125,125),(p126,126),(p127,127),(p146,146),
+    (p125,125),(p126,126),(p127,127),
+    (p128,128),(p129,129),(p130,130),(p131,131),(p132,132),(p133,133),(p134,134),
+    (p135,135),(p136,136),(p137,137),(p138,138),(p139,139),(p140,140),(p141,141),
+    (p142,142),(p143,143),(p144,144),(p145,145),(p146,146),(p147,147),(p148,148),
 );
 
 unsafe extern "system" fn release_list(this: *mut c_void) -> u32 {
@@ -234,6 +231,7 @@ route_by_caller!(route59, 59);
 route_by_caller!(route60, 60);
 route_by_caller!(route61, 61);
 route_by_caller!(route80, 80);
+route_by_caller!(route90, 90);
 route_by_caller!(route146, 146);
 
 unsafe extern "system" fn select_command(caller: usize, slot: u32) -> usize {
@@ -248,6 +246,8 @@ unsafe extern "system" fn select_command(caller: usize, slot: u32) -> usize {
         (_, 60) => p60 as usize,
         (Gxdk250405, 80) => dispatch_threads as usize,
         (_, 80) => p80 as usize,
+        (Gxdk250405, 90) => clear_bvh_counter as *const () as usize,
+        (_, 90) => p90 as *const () as usize,
         (Gxdk250405, 146) => compute_uav_barrier as usize,
         (_, 146) => p146 as usize,
         _ => p61 as usize,
@@ -411,7 +411,6 @@ pub fn apply(real_list: *mut c_void) {
                 XBOX_VT[i].store(p, Ordering::Relaxed);
             }
             extern "system" { fn GetModuleHandleW(n: *const u16) -> *mut c_void; }
-            EXE_BASE.store(GetModuleHandleW(core::ptr::null()) as usize, Ordering::Relaxed);
             REAL_VT_PTR = real_vt;
             // SAFETY: a valid ID3D12GraphicsCommandList has all 60 base methods.
             install_probes(&XBOX_VT, &*real_vt.cast::<[usize; PC_LAST_SLOT + 1]>());
@@ -462,6 +461,7 @@ struct ListShim {
     real: *mut c_void,
     guest_tail: [u8; SHIM_SIZE - SHIM_REAL_OFF - size_of::<usize>()],
     group: [u32; 3],
+    copy_dest: core::ops::Range<u64>,
 }
 
 const _: () = assert!(core::mem::offset_of!(ListShim, real) == SHIM_REAL_OFF);
@@ -519,9 +519,75 @@ unsafe extern "system" fn shim_reset(shim: &mut ListShim, allocator: *mut c_void
     let hr = reset(shim.real, allocator, pso);
     if hr >= 0 {
         crate::texture_state::TRACKER.lock().unwrap().reset(shim.real as usize);
+        shim.copy_dest = 0..0;
         shim.remember_pipeline(pso);
     }
     hr
+}
+
+// Track only the most recent explicit COPY_DEST buffer transition in this recording.
+// No resource pointer is retained. A split, aliasing or later transition invalidates the range.
+unsafe extern "system" fn shim_barrier(shim: &mut ListShim, count: u32, barriers: *const u8) {
+    resource_barrier_traced(shim.real, count, barriers);
+    if count == 0 || barriers.is_null() { return; }
+    shim.copy_dest = 0..0;
+    let last = barriers.add((count as usize - 1) * 32);
+    let word = |offset| last.add(offset).cast::<u32>().read_unaligned();
+    if word(0) != 0 || word(4) != 0 || !matches!(word(16), 0 | u32::MAX) || word(24) != 0x400 { return; }
+    let resource = last.add(8).cast::<*mut c_void>().read_unaligned();
+    if resource.is_null() { return; }
+    let vt = *resource.cast::<*const usize>();
+    let describe: unsafe extern "system" fn(*mut c_void, *mut u64) -> *mut u64 = core::mem::transmute(*vt.add(10));
+    let address: unsafe extern "system" fn(*mut c_void) -> u64 = core::mem::transmute(*vt.add(11));
+    let mut desc = [0u64; 8];
+    describe(resource, desc.as_mut_ptr());
+    if desc[0] as u32 == 1 { // D3D12_RESOURCE_DIMENSION_BUFFER, Width at offset 16.
+        let base = address(resource);
+        if let Some(end) = base.checked_add(desc[2]) {
+            if base != 0 { shim.copy_dest = base..end; }
+        }
+    }
+}
+
+// GXDK 250405 issues slot 90 once per scratch counter. Only the zero write
+// without the final-batch flag has a verified desktop equivalent.
+unsafe extern "system" fn clear_bvh_counter(shim: &ListShim, address: u64, value: u32, flags: u32) {
+    if value != 0 || flags != 0 || address % 4 != 0 || !shim.copy_dest.contains(&address)
+        || shim.copy_dest.end - address < 4 {
+        record("d3d12_xs", "cmdlist.counter", "slot=90 unsupported counter range, value or flags");
+        return;
+    }
+    use crate::device_wrap::Guid;
+    type Query = unsafe extern "system" fn(*mut c_void, *const u8, *mut *mut c_void) -> i32;
+    type Release = unsafe extern "system" fn(*mut c_void) -> u32;
+    let vt = *shim.real.cast::<*const usize>();
+    let get_device: Query = core::mem::transmute(*vt.add(7));
+    let list_type: unsafe extern "system" fn(*mut c_void) -> u32 = core::mem::transmute(*vt.add(8));
+    let mut device = core::ptr::null_mut();
+    if get_device(shim.real, crate::IID_ID3D12Device.as_ptr(), &mut device) < 0 { return; }
+    let dev_vt = *device.cast::<*const usize>();
+    let feature: unsafe extern "system" fn(*mut c_void, u32, *mut u32, u32) -> i32 = core::mem::transmute(*dev_vt.add(13));
+    let mut options3 = [0u32; 5];
+    let hr = feature(device, 21, options3.as_mut_ptr(), core::mem::size_of_val(&options3) as u32);
+    let release: Release = core::mem::transmute(*dev_vt.add(2));
+    release(device);
+    if hr < 0 || options3[2] & 1u32.checked_shl(list_type(shim.real)).unwrap_or(0) == 0 {
+        record("d3d12_xs", "cmdlist.counter", "slot=90 host does not support immediate writes on this list");
+        return;
+    }
+
+    const LIST2: Guid = Guid { d1: 0x38c3e585, d2: 0xff17, d3: 0x412c, d4: [0x91,0x50,0x4f,0xc6,0xf9,0xd7,0x2a,0x28] };
+    let query: Query = core::mem::transmute(*vt);
+    let mut list = core::ptr::null_mut();
+    if query(shim.real, (&LIST2 as *const Guid).cast(), &mut list) < 0 { return; }
+    #[repr(C)]
+    struct Write { destination: u64, value: u32, pad: u32 }
+    let methods = *list.cast::<*const usize>();
+    let write: unsafe extern "system" fn(*mut c_void, u32, *const Write, *const u32) = core::mem::transmute(*methods.add(66));
+    write(list, 1, &Write { destination: address, value, pad: 0 }, core::ptr::null());
+    let release: Release = core::mem::transmute(*methods.add(2));
+    release(list);
+    record("d3d12_xs", "cmdlist.counter", "slot=90 recorded 32-bit zero write");
 }
 
 unsafe extern "system" fn shim_clear(shim: &mut ListShim, pso: *mut c_void) {
@@ -587,7 +653,9 @@ unsafe fn build_shim_thunks() {
             10 => shim_reset as usize,
             11 => shim_clear as usize,
             25 => shim_set_pso as usize,
+            26 => shim_barrier as *const () as usize,
             80 => route80 as usize,
+            90 => route90 as *const () as usize,
             _ => p as usize,
         };
         SHIM_VT[i].store(entry, Ordering::Relaxed);
@@ -631,8 +699,7 @@ pub fn unwrap(p: *mut c_void) -> *mut c_void {
     }
 }
 
-/// How many times an Xbox-inserted (unmapped) slot was called — a nonzero value
-/// means the game needs one of those 4 methods implemented.
+/// Number of calls to diagnostic-only command-list bindings.
 pub fn inserted_hits() -> usize {
     INSERTED_HITS.load(Ordering::Relaxed)
 }

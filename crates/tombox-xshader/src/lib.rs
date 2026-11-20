@@ -373,27 +373,15 @@ fn range_contains_endpgm(sect: &[u8]) -> bool {
     false
 }
 
-/// Trim an ISA section to end just after the first `s_endpgm`, dropping `s_code_end` pad.
+/// Include all reachable forward branch targets before trimming end-of-program padding.
 fn trim_to_endpgm(sect: &[u8]) -> Vec<u8> {
-    // A program may contain early `s_endpgm`s (e.g. a pixel-kill path) with more code
-    // after them, so the program ends at the LAST `s_endpgm` before the `s_code_end`
-    // padding, not the first one.
-    //
-    // Preferred rule: decode instruction by instruction, tracking the furthest forward
-    // branch target; the program ends at the first `s_endpgm` at or beyond it (data that
-    // merely looks like `s_endpgm` can follow the real end). Fallback: last raw match.
-    let code_end = {
-        let mut p = 0;
-        while p + 4 <= sect.len() {
-            if u32::from_le_bytes([sect[p], sect[p + 1], sect[p + 2], sect[p + 3]]) == S_CODE_END {
-                break;
-            }
-            p += 4;
-        }
-        p
-    };
     let mut max_target = 0i64;
-    for ins in rdna2::disassemble(&sect[..code_end]) {
+    let mut code_end = sect.len();
+    for ins in rdna2::instructions(sect) {
+        if ins.raw[0] == S_CODE_END {
+            code_end = ins.offset;
+            break;
+        }
         if ins.enc != rdna2::Enc::Sopp {
             continue;
         }
@@ -403,13 +391,11 @@ fn trim_to_endpgm(sect: &[u8]) -> Vec<u8> {
             return sect[..ins.offset + 4].to_vec();
         }
     }
+    // Preserve the raw end-marker fallback for streams with unknown instruction lengths.
     let mut last_end = None;
     let mut p = 0;
-    while p + 4 <= sect.len() {
+    while p + 4 <= code_end {
         let w = u32::from_le_bytes([sect[p], sect[p + 1], sect[p + 2], sect[p + 3]]);
-        if w == S_CODE_END {
-            break;
-        }
         if w == S_ENDPGM {
             last_end = Some(p + 4);
         }

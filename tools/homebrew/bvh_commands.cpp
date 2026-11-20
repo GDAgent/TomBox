@@ -18,3 +18,8 @@ extern "C" __declspec(dllexport) void dispatch_threads(ID3D12GraphicsCommandList
     using Dispatch = void (WINAPI*)(ID3D12GraphicsCommandList*, UINT, UINT, UINT, UINT);
     xbox_method<Dispatch>(list, 80)(list, x, 1, 1, flags);
 }
+
+extern "C" __declspec(dllexport) void clear_counter(ID3D12GraphicsCommandList* list, UINT64 dest, UINT flags) {
+    using Write = void (WINAPI*)(ID3D12GraphicsCommandList*, UINT64, UINT, UINT);
+    xbox_method<Write>(list, 90)(list, dest, 0, flags);
+}

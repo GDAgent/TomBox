@@ -24,6 +24,8 @@ s_and_saveexec_b32 1 1
 s_and_saveexec_b64 4 0
 s_andn2_b32 18 14
 s_andn2_b64 3 0
+s_andn2_wrexec_b32 1 0
+s_andn2_wrexec_b64 3 0
 s_barrier 4 1
 s_bcnt1_i32_b32 1 0
 s_bfe_u32 28 14
@@ -81,8 +83,6 @@ s_orn2_b64 3 0
 s_sub_i32 19 13
 s_waitcnt 29 14
 s_waitcnt_depctr 3 0
-sop1<0x3a> 3 0
-sop1<0x47> 1 0
 v_add3_u32 20 10
 v_add_co_ci_u32 18 13
 v_add_f32 16 1
@@ -119,6 +119,8 @@ v_cvt_f32_u32 20 14
 v_cvt_i32_f32 2 1
 v_cvt_pk_u8_f32 14 1
 v_cvt_u32_f32 19 13
+v_dot4_i32_i8 13 0
+v_dot4c_i32_i8 13 0
 v_exp_f32 4 1
 v_floor_f32 1 1
 v_fma_f16 1 1
@@ -152,13 +154,16 @@ v_nop 29 14
 v_not_b32 4 0
 v_or3_b32 5 0
 v_or_b32 10 1
+v_pack_b32_f16 1 0
 v_permlanex16_b32 5 0
 v_pk_add_f16 1 0
+v_pk_add_u16 1 0
 v_pk_fma_f16 1 0
 v_pk_fmac_f16 2 1
 v_pk_max_f16 1 0
 v_pk_min_f16 1 0
 v_pk_mul_f16 2 1
+v_pk_sub_u16 1 0
 v_rcp_f16 1 0
 v_rcp_f32 22 14
 v_readfirstlane_b32 8 0
@@ -171,8 +176,3 @@ v_subrev_nc_u32 19 13
 v_swap_b32 2 0
 v_writelane_b32 2 0
 v_xor_b32 28 14
-vop2<0xd> 13 0
-vop3<0x311> 1 0
-vop3<0x40a> 1 0
-vop3<0x40b> 1 0
-vop3<0x416> 13 0

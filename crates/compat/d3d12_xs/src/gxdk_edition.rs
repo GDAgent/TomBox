@@ -122,6 +122,21 @@ pub(crate) fn at_address(pc: usize) -> Edition {
     Edition::Unknown
 }
 
+pub(crate) fn caller_location(caller: usize) -> String {
+    extern "system" {
+        fn GetModuleHandleExW(flags: u32, address: usize, module: *mut usize) -> i32;
+        fn GetModuleFileNameW(module: usize, path: *mut u16, size: u32) -> u32;
+    }
+    let mut base = 0;
+    let mut path = [0u16; 512];
+    // FROM_ADDRESS | UNCHANGED_REFCOUNT. The caller is still on the stack.
+    if unsafe { GetModuleHandleExW(6, caller, &mut base) } == 0 { return format!("{caller:#x}"); }
+    let n = unsafe { GetModuleFileNameW(base, path.as_mut_ptr(), path.len() as u32) } as usize;
+    if n == 0 || n == path.len() { return format!("{caller:#x}"); }
+    let name = String::from_utf16_lossy(&path[..n]);
+    format!("{}+{:#x}", name.rsplit(['/', '\\']).next().unwrap_or("?"), caller - base)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

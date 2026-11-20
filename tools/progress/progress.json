@@ -7,19 +7,24 @@
     "Xbox BVH Builder": {"readback": 16, "observed": 52}
   },
   "import_notes": {
-    "xmem.dll!XMemGetWorkingSetStatistics": "returns E_NOTIMPL"
+    "xmem.dll!XMemGetWorkingSetStatistics": "returns E_NOTIMPL",
+    "xmem.dll!XMemVirtualQuery": "Coin Run verified desktop region state and protection; GPU access flags unavailable",
+    "gamechat2.dll!(delay-loaded)": "optional Windows GDK provider loaded under Proton; Fortnite delay-load symbols and voice sessions unverified",
+    "api-ms-win-core-libraryloader-l1-2-0.dll!GetModuleHandleExW": "native module address resolved to its expected owner in the Scarlett library fixture",
+    "kernel32.dll!GetModuleFileNameW": "returned the expected app-local paths in the Scarlett library fixture"
   },
   "import_overrides": {
     "comment": "partial = resolved but a stub, a forwarder, or not verified to work; none = not provided",
     "AcpHal.dll": "partial", "MFPlat.DLL": "partial", "MFReadWrite.dll": "partial",
-    "XAudio2_9.dll": "partial", "GameInput.dll": "partial", "GameChat2.dll": "none",
+    "XAudio2_9.dll": "partial", "GameInput.dll": "partial", "GameChat2.dll": "partial",
+    "api-ms-win-core-libraryloader-l1-2-0.dll!GetModuleHandleExW": "done", "kernel32.dll!GetModuleFileNameW": "done",
     "GameInput.dll!#1": "done", "XAudio2_9.dll!#1": "done",
     "XMemGetWorkingSetStatistics": "partial", "XMemTransferMemory": "partial",
     "D3D12XboxSetProcessDebugFlags": "partial"
   },
   "d3d12x": {
-    "comment": "Track each interface from slot zero through its baseline or highest recorded slot, whichever is larger. Each slot counts once across GXDK editions. Done = forwarded or implemented. Partial = incomplete behavior or an existing device diagnostic binding. Observed unmapped = evidenced call site without a translation, shown in grey. See docs/COMPATIBILITY.md for middleware call sites.",
-    "Device": {"baseline_slots": 160, "done": "0-43,44,48,55,60-62,73,76,78-81", "partial": "45-47,49-54,56-59,63-72,74-75,77,82-90", "observed_unmapped": ""},
-    "CommandList": {"baseline_slots": 128, "done": "0-26,32-55,59,61,67,68,83,85", "partial": "60,80,146", "observed_unmapped": "71,73,90,141,148"}
+    "comment": "Track each interface from slot zero through its baseline or highest recorded slot, whichever is larger. Each slot counts once across GXDK editions. Done = forwarded or implemented. Partial = incomplete behavior or a verified diagnostic binding. Observed unmapped records retail calls with unknown behavior, including calls covered by a diagnostic. See docs/COMPATIBILITY.md for middleware call sites.",
+    "Device": {"baseline_slots": 160, "done": "0-43,44,48,55,60-62,73,76,78-81", "partial": "45-47,49-54,56-59,63-72,74-75,77,82-159", "observed_unmapped": ""},
+    "CommandList": {"baseline_slots": 128, "done": "0-26,32-55,59,61,67,68,83,85", "partial": "60,80,90,146", "diagnostic_only": "27-31,56-58,62-66,69-79,81-82,84,86-89,91-145,147-148", "observed_unmapped": "71,73,141,148"}
   }
 }

@@ -60,7 +60,8 @@ static int create_fsr3(HMODULE loader) {
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     const bool context = argc == 2 && !std::strcmp(argv[1], "--context");
-    if (argc != 1 && !context) return 2;
+    const bool provider = argc == 2 && !std::strcmp(argv[1], "--verify-provider");
+    if (argc != 1 && !context && !provider) return 2;
     HMODULE loader = LoadLibraryW(L"amd_fidelityfx_loader_xbox.dll");
     if (!loader) {
         std::fprintf(stderr, "LoadLibrary(FidelityFX) failed with %lu\n", GetLastError());
@@ -69,6 +70,15 @@ int main(int argc, char** argv) {
     auto query = reinterpret_cast<Query>(GetProcAddress(loader, "ffxQuery"));
     if (!query) return 1;
     int result = check_resolutions(query);
+    if (result == 0 && provider) {
+        // Query the supplied provider directly as well as through the loader.
+        // The native DLL fixture runs from an isolated application directory.
+        HMODULE upscaler = LoadLibraryW(L".\\amd_fidelityfx_upscaler_xbox.dll");
+        auto direct = upscaler ? reinterpret_cast<Query>(GetProcAddress(upscaler, "ffxQuery")) : nullptr;
+        result = direct ? check_resolutions(direct) : 1;
+        if (upscaler) FreeLibrary(upscaler);
+        if (result == 0) std::puts("Local loader and upscaler passed all four resolution queries.");
+    }
     if (result == 0 && context) result = create_fsr3(loader);
     FreeLibrary(loader);
     return result;

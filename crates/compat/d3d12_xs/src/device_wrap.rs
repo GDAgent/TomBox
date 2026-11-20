@@ -1191,47 +1191,25 @@ unsafe extern "system" fn create_sampler_x(this: *mut DeviceWrapper, xdesc: *con
     }
 }
 
-// Per-slot logging stubs for the Xbox device extensions (44+): capture slot +
-// caller RVA and return S_OK (most are hints like SetFrameIntervalX that the RHI
-// only checks for success). This reveals which Xbox device methods the game needs.
-static DEVSTUB_EXE_BASE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-static DEVSTUB_HITS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-unsafe extern "system" fn dev_stub_impl(_this: *mut c_void, _a: u64, caller: usize, slot: u64) -> i32 {
+// Keep the legacy hint result for slots 44..90. Unknown higher slots return
+// E_NOTIMPL. Record the calling module and return-address RVA for future ABI work.
+unsafe extern "system" fn dev_stub_impl(_this: *mut c_void, _a: u64, caller: usize, slot: usize) -> i32 {
     static PER_SLOT: [core::sync::atomic::AtomicUsize; 160] = [const { core::sync::atomic::AtomicUsize::new(0) }; 160];
-    DEVSTUB_HITS.fetch_add(1, Ordering::Relaxed);
-    if PER_SLOT[(slot as usize).min(159)].fetch_add(1, Ordering::Relaxed) < 3 {
-        if DEVSTUB_EXE_BASE.load(Ordering::Relaxed) == 0 {
-            extern "system" { fn GetModuleHandleW(n: *const u16) -> *mut c_void; }
-            DEVSTUB_EXE_BASE.store(unsafe { GetModuleHandleW(core::ptr::null()) } as usize, Ordering::Relaxed);
-        }
-        let base = DEVSTUB_EXE_BASE.load(Ordering::Relaxed);
-        record("d3d12_xs", "dev_ext", &format!("slot={slot} caller={:#x} -> S_OK", caller.wrapping_sub(base)));
+    let (hr, result) = if slot > 90 { (0x8000_4001u32 as i32, "E_NOTIMPL") } else { (S_OK, "S_OK") };
+    if PER_SLOT[slot].fetch_add(1, Ordering::Relaxed) < 3 {
+        let location = crate::gxdk_edition::caller_location(caller);
+        record("d3d12_xs", "dev_ext", &format!("slot={slot} caller={location} -> {result}"));
     }
-    S_OK
+    hr
 }
-macro_rules! dev_stubs {
-    ($(($name:ident, $slot:literal)),* $(,)?) => {
-        $(
-            #[unsafe(naked)]
-            unsafe extern "system" fn $name() -> i32 {
-                core::arch::naked_asm!(
-                    "mov r8, [rsp]", "mov r9d, {s}", "jmp {i}",
-                    s = const $slot, i = sym dev_stub_impl,
-                );
-            }
-        )*
-        unsafe fn install_dev_stubs(v: &mut [usize]) {
-            $( v[$slot] = $name as usize; )*
-        }
-    };
+#[unsafe(naked)]
+unsafe extern "system" fn dev_diagnostic<const SLOT: usize>() -> i32 {
+    core::arch::naked_asm!("mov r8, [rsp]", "mov r9d, {s}", "jmp {i}", s = const SLOT, i = sym dev_stub_impl);
 }
-dev_stubs!(
-    (d44,44),(d45,45),(d46,46),(d47,47),(d49,49),(d50,50),(d51,51),(d52,52),(d53,53),(d54,54),
-    (d55,55),(d56,56),(d57,57),(d58,58),(d59,59),(d60,60),(d61,61),(d62,62),(d63,63),(d64,64),
-    (d65,65),(d66,66),(d67,67),(d68,68),(d69,69),(d70,70),(d71,71),(d72,72),(d74,74),(d75,75),
-    (d76,76),(d77,77),(d78,78),(d79,79),(d80,80),(d81,81),(d82,82),(d83,83),(d84,84),(d85,85),
-    (d86,86),(d87,87),(d88,88),(d89,89),(d90,90),
-);
+
+macro_rules! install_dev_stubs {
+    ($v:ident, $($slot:literal),+ $(,)?) => { $( $v[$slot] = dev_diagnostic::<$slot> as *const () as usize; )+ };
+}
 
 fn vtable() -> *const usize {
     static VT: OnceLock<usize> = OnceLock::new();
@@ -1252,7 +1230,14 @@ fn vtable() -> *const usize {
         while v.len() < 160 {
             v.push(dev_stub as usize);
         }
-        unsafe { install_dev_stubs(&mut v); } // 44..90: logging S_OK stubs (diagnostic)
+        install_dev_stubs!(v,
+            45,46,47,49,50,51,52,53,54,56,57,58,59,63,64,65,66,68,69,70,71,72,74,75,77,
+            82,83,84,85,86,87,88,89,90,
+            91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,
+            111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,130,
+            131,132,133,134,135,136,137,138,139,140,141,142,143,144,145,146,147,148,149,150,
+            151,152,153,154,155,156,157,158,159,
+        );
         // Frame pacing (see frame.rs).
         v[78] = crate::frame::set_frame_interval_x as usize;
         v[79] = crate::frame::schedule_frame_event_x as usize;

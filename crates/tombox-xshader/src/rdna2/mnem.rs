@@ -11,6 +11,7 @@ pub fn vop2(op: u32) -> Option<&'static str> {
         0x01 => "v_cndmask_b32", 0x03 => "v_add_f32", 0x04 => "v_sub_f32", 0x05 => "v_subrev_f32",
         0x07 => "v_mul_legacy_f32", 0x08 => "v_mul_f32", 0x09 => "v_mul_i32_i24",
         0x0a => "v_mul_hi_i32_i24", 0x0b => "v_mul_u32_u24", 0x0c => "v_mul_hi_u32_u24",
+        0x0d => "v_dot4c_i32_i8",
         0x0f => "v_min_f32", 0x10 => "v_max_f32", 0x11 => "v_min_i32", 0x12 => "v_max_i32",
         0x13 => "v_min_u32", 0x14 => "v_max_u32", 0x16 => "v_lshrrev_b32", 0x18 => "v_ashrrev_i32",
         0x1a => "v_lshlrev_b32", 0x1b => "v_and_b32", 0x1c => "v_or_b32", 0x1d => "v_xor_b32",
@@ -110,6 +111,8 @@ pub fn vopc(op: u32) -> Option<&'static str> {
         0xc8..=0xcf => H[(op - 0xc8) as usize],
         0xd0..=0xd7 => UX[(op - 0xd0) as usize],
         0xd8..=0xdf => HX[(op - 0xd8) as usize],
+        0xe2 => "v_cmp_eq_u64", 0xe3 => "v_cmp_le_u64", 0xe4 => "v_cmp_gt_u64", 0xe5 => "v_cmp_ne_u64",
+        0xf2 => "v_cmpx_eq_u64", 0xf4 => "v_cmpx_gt_u64", 0xf5 => "v_cmpx_ne_u64",
         0xe8..=0xef => H[(op - 0xe8 + 8) as usize],
         0xf8..=0xff => HX[(op - 0xf8 + 8) as usize],
         _ => return None,
@@ -136,6 +139,7 @@ pub fn vop3(op: u32) -> Option<&'static str> {
         0x152 => "v_min3_i32", 0x153 => "v_min3_u32", 0x154 => "v_max3_f32", 0x155 => "v_max3_i32",
         0x156 => "v_max3_u32", 0x157 => "v_med3_f32", 0x158 => "v_med3_i32", 0x159 => "v_med3_u32",
         0x169 => "v_mul_lo_u32", 0x16a => "v_mul_hi_u32", 0x16c => "v_mul_hi_i32",
+        0x176 => "v_mad_u64_u32", 0x311 => "v_pack_b32_f16",
         0x178 => "v_xor3_b32", 0x345 => "v_xad_u32", 0x346 => "v_lshl_add_u32", 0x347 => "v_add_lshl_u32",
         0x36d => "v_add3_u32", 0x36f => "v_lshl_or_b32", 0x371 => "v_and_or_b32", 0x372 => "v_or3_b32",
         0x30f => "v_add_co_u32", 0x310 => "v_sub_co_u32", 0x319 => "v_subrev_co_u32",
@@ -143,6 +147,7 @@ pub fn vop3(op: u32) -> Option<&'static str> {
         0x378 => "v_permlanex16_b32",
         0x360 => "v_readlane_b32", 0x361 => "v_writelane_b32", 0x363 => "v_bfm_b32", 0x364 => "v_bcnt_u32_b32",
         0x34b => "v_fma_f16",
+        0x40a => "v_pk_add_u16", 0x40b => "v_pk_sub_u16", 0x416 => "v_dot4_i32_i8",
         0x40e => "v_pk_fma_f16", 0x40f => "v_pk_add_f16", 0x410 => "v_pk_mul_f16", 0x411 => "v_pk_min_f16", 0x412 => "v_pk_max_f16",
         0x421 => "v_fma_mixlo_f16", 0x422 => "v_fma_mixhi_f16",
         0x420 => "v_fma_mix_f32", // VOP3P opcode 0x20 (see rdna2.rs: VOP3P opcodes are offset by 0x400)
@@ -181,6 +186,7 @@ pub fn sop1(op: u32) -> Option<&'static str> {
         0x1f => "s_getpc_b64", 0x20 => "s_setpc_b64", 0x21 => "s_swappc_b64",
         0x24 => "s_and_saveexec_b64", 0x25 => "s_or_saveexec_b64", 0x26 => "s_xor_saveexec_b64",
         0x27 => "s_andn2_saveexec_b64", 0x28 => "s_orn2_saveexec_b64", 0x29 => "s_nand_saveexec_b64",
+        0x3a => "s_andn2_wrexec_b64", 0x47 => "s_andn2_wrexec_b32",
         0x34 => "s_abs_i32", 0x37 => "s_andn1_saveexec_b64", 0x3c => "s_and_saveexec_b32",
         0x3d => "s_or_saveexec_b32", 0x3e => "s_xor_saveexec_b32", 0x3f => "s_andn2_saveexec_b32",
         _ => return None,
@@ -293,6 +299,7 @@ pub fn lookup(enc: Enc, op: u32) -> Option<&'static str> {
         },
         Enc::Ds => match op {
             0x35 => Some("ds_swizzle_b32"),
+            0xb3 => Some("ds_bpermute_b32"),
             0x00 => Some("ds_add_u32"),
             0x20 => Some("ds_add_rtn_u32"),
             // Same opcode order as ds_add (0x00) .. ds_write (0x0d): min/max/and/or/xor, and +0x20 for the value-returning forms.

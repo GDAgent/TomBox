@@ -1,23 +1,33 @@
 #!/usr/bin/env bash
 set -eu
-if [[ ${1:-} == --bvh-sort-test || ${1:-} == --fsr-postpass-test || ${1:-} == --fsr-prepass-test ]]; then
+if [[ ${1:-} == --gamechat-test || ${1:-} == --bvh-sort-test || ${1:-} == --fsr-postpass-test || ${1:-} == --fsr-prepass-test ]]; then
     if [[ $# != 2 || ! -f $2 ]]; then
         echo "Usage: $0 $1 path-to-retail-library.dll" >&2
         exit 2
     fi
     library_path=$(realpath -- "$2")
 fi
+if [[ ${1:-} == --scarlett-libraries-test ]]; then
+    [[ $# == 2 && -d $2 ]] || { echo "Usage: $0 $1 DIRECTORY" >&2; exit 2; }
+    library_dir=$(realpath -- "$2")
+fi
 cd "$(dirname "$0")/../.."
 : "${PROTON:?Set PROTON to the absolute path of the Proton Experimental proton executable}"
 build="$PWD/target/x86_64-pc-windows-msvc/release"
 required=(coin_window.exe)
-if [[ ${1:-} == --rdna2-test ]]; then
-    [[ $# == 1 ]] || exit 2
-    # Verify the translator in the working tree even when an older game build exists.
-    tools/homebrew/build-clear.sh
-fi
+case ${1:-} in
+    --gamechat-test) tools/homebrew/build-clear.sh ;;
+    --rdna2-test|--command-list-test|--device-diagnostics-test|--scarlett-libraries-test)
+        [[ $1 == --scarlett-libraries-test || $# == 1 ]] || exit 2
+        # Run these coverage checks against the current game, fixture DLLs and translator.
+        tools/homebrew/build-clear.sh
+        ;;
+esac
 if [[ ${1:-} == --fidelityfx-test || ${1:-} == --fidelityfx-context ]]; then
     required+=(fidelityfx_probe.exe d3d12_xs.dll xmem.dll)
+fi
+if [[ ${1:-} == --scarlett-libraries-test ]]; then
+    required+=(fidelityfx_probe.exe xmem.dll d3d12_xs.dll)
 fi
 if [[ ${1:-} == --bvh-sort-test ]]; then
     required+=(bvh_sort_probe.exe bvh_commands.dll)
@@ -50,6 +60,21 @@ export TOMBOX_LOG="${TOMBOX_LOG:-coin-window.log}"
 # The Windows GUI executable has no console of its own. Capture its scripted
 # checks through cmd so Linux callers see pixel mismatches and the exit status.
 case "${1:-}" in
+    --gamechat-test)
+        # Reproduce app-local loading by basename with the caller's selected provider.
+        scratch=$(mktemp -d gamechat-check.XXXXXXXX)
+        trap 'rm -f -- "$scratch"/{coin_window.exe,GameChat2.dll,d3d12_xs.dll,xmem.dll,chat.log,coin-window.log}; rmdir -- "$scratch"' EXIT
+        cp -- coin_window.exe d3d12_xs.dll xmem.dll "$scratch/"
+        cp -- "$library_path" "$scratch/GameChat2.dll"
+        status=0
+        (cd "$scratch" && WINEDLLOVERRIDES="GameChat2=n;${WINEDLLOVERRIDES:-}" "$PROTON" run cmd.exe /d /c "coin_window.exe --gamechat-test > chat.log 2>&1") || status=$?
+        cat "$scratch/chat.log"
+        exit "$status"
+        ;;
+    --scarlett-libraries-test)
+        python3 "$repo/tools/homebrew/scarlett_libraries.py" "$library_dir"
+        exit $?
+        ;;
     --bvh-sort-test|--fsr-postpass-test|--fsr-prepass-test)
         export TOMBOX_DXC_DIR="${TOMBOX_DXC_DIR:-Z:$PWD}"
         if [[ $1 == --bvh-sort-test ]]; then
@@ -87,7 +112,7 @@ case "${1:-}" in
         TOMBOX_LOG=fidelityfx-context.log python3 "$repo/tools/homebrew/fidelityfx_fixture.py" "$1"
         exit $?
         ;;
-    --test|--thread-dispatch-test|--compute-barrier-test|--pso-fallback-test|--indirect-test|--scarlett-copy-test|--uav-test|--discard-test|--placed-test|--present-test|--tiled-test|--tiled-reference|--mip-reference|--bc1-reference|--rect-test|--array-test|--cube-test|--state-test|--stream-test|--3d-test|--controller-test|--gameinput-test|--audio-test)
+    --command-list-test|--device-diagnostics-test|--test|--thread-dispatch-test|--compute-barrier-test|--pso-fallback-test|--indirect-test|--scarlett-copy-test|--uav-test|--discard-test|--placed-test|--present-test|--tiled-test|--tiled-reference|--mip-reference|--bc1-reference|--rect-test|--array-test|--cube-test|--state-test|--stream-test|--3d-test|--controller-test|--gameinput-test|--audio-test)
         if [[ $# == 1 ]]; then
             scratch=$(mktemp -d coin-check.XXXXXXXX)
             trap 'rm -f -- "$scratch/result.txt" "$scratch/barriers.log" "$scratch/"*.bin; rmdir -- "$scratch"' EXIT
@@ -110,6 +135,42 @@ case "${1:-}" in
                 if [[ -f $scratch/result.txt ]]; then cat "$scratch/result.txt"; fi
                 return "$status"
             }
+            if [[ $1 == --command-list-test ]]; then
+                TOMBOX_LOG="$scratch/barriers.log" run_check "$1"
+                python3 - "$scratch/barriers.log" <<'PYTHON'
+from pathlib import Path
+import re
+import sys
+trace = Path(sys.argv[1]).read_text(errors="replace")
+expected = set(range(27, 32)) | set(range(56, 149))
+expected -= {59, 60, 61, 67, 68, 80, 83, 85, 146}
+entries = re.findall(r"cmdlist.hi slot=(\d+) arg1=(0x[0-9a-f]+) caller=coin_window\.exe\+0x[1-9a-f][0-9a-f]* -> 0", trace, re.I)
+if sorted((int(s), int(arg, 16)) for s, arg in entries) != sorted((s, 0xc000+s) for s in expected):
+    sys.exit("Missing or unexpected CommandList diagnostic")
+if not re.search(r"cmdlist.hi slot=148 arg1=0xf148 caller=scarlett_commands_261000\.dll\+0x[1-9a-f][0-9a-f]* -> 0", trace, re.I):
+    sys.exit("Missing high-slot diagnostic from the fixture DLL")
+if trace.count("cmdlist.counter slot=90 recorded 32-bit zero write") != 1 or trace.count("cmdlist.counter slot=90 unsupported counter range, value or flags") != 2:
+    sys.exit("BVH counter did not take the expected translated and unsupported paths")
+print(f"Verified {len(expected)} command-list diagnostics and the DLL caller at slot 148.")
+PYTHON
+                exit 0
+            fi
+            if [[ $1 == --device-diagnostics-test ]]; then
+                TOMBOX_LOG="$scratch/barriers.log" run_check "$1"
+                python3 - "$scratch/barriers.log" <<'PYTHON'
+from pathlib import Path
+import re
+import sys
+trace = Path(sys.argv[1]).read_text(errors="replace")
+slots = {int(s) for s in re.findall(r"dev_ext slot=(\d+) caller=coin_window\.exe\+0x[0-9a-f]+ -> E_NOTIMPL", trace, re.I)}
+if slots != set(range(91, 160)):
+    sys.exit(f"Device diagnostic trace mismatch: {sorted(slots ^ set(range(91, 160)))}")
+if not re.search(r"dev_ext slot=159 caller=scarlett_commands_261000\.dll\+0x[1-9a-f][0-9a-f]* -> E_NOTIMPL", trace, re.I):
+    sys.exit("Missing Device slot 159 trace from the fixture DLL")
+print("Device slots 91–159 returned E_NOTIMPL and recorded the calling module and RVA.")
+PYTHON
+                exit 0
+            fi
             if [[ $1 == --compute-barrier-test ]]; then
                 # GPU scheduling can happen to serialize both passes even through a no-op.
                 TOMBOX_LOG="$scratch/barriers.log" run_check "$1"

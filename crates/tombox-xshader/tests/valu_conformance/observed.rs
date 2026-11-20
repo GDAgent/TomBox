@@ -20,6 +20,13 @@ fn lds_cases(cases: &mut Vec<Case>) {
         ("ds_min_u32", 7, u32::min),
         ("ds_max_u32", 8, u32::max),
         ("ds_or_b32", 10, |a, b| a | b),
+        ("ds_and_b32", 9, |a,b| a & b),
+        ("ds_xor_b32", 11, |a,b| a ^ b),
+        ("ds_min_rtn_u32", 0x27, u32::min),
+        ("ds_max_rtn_u32", 0x28, u32::max),
+        ("ds_and_rtn_b32", 0x29, |a,b| a & b),
+        ("ds_or_rtn_b32", 0x2a, |a,b| a | b),
+        ("ds_xor_rtn_b32", 0x2b, |a,b| a ^ b),
         ("ds_add_rtn_u32", 0x20, u32::wrapping_add),
     ];
     // v8 addresses LDS byte 32. Distinct offsets and independent reads check scaling.
@@ -32,13 +39,13 @@ fn lds_cases(cases: &mut Vec<Case>) {
         words.push(WAIT);
         words.extend(ds(0x36, 12, 8, 0, 0, 3));
         words.push(WAIT);
-        if op == 0x20 {
+        if op >= 0x20 {
             // Mix the returned old word with the final value; dropping either is observable.
             words.push(0x3a06_0903); // v_xor_b32 v3,v3,v4
         }
         words.push(S_ENDPGM);
         cases.push(case(name, words, [Dom::I; 3], move |a, b, _, _| {
-            Want::U(model(a, b) ^ if op == 0x20 { a } else { 0 })
+            Want::U(model(a, b) ^ if op >= 0x20 { a } else { 0 })
         }));
     }
     for (name, op, offsets, bytes) in [
@@ -111,32 +118,29 @@ fn lds_cases(cases: &mut Vec<Case>) {
         cases.push(case(&format!("ds_write_b128 word {k}"), words, [Dom::I; 3],
             move |a, b, c, _| Want::U([a, b, c, 29][k as usize])));
     }
-    for (name, read_half) in [("ds_read_u16", true), ("ds_write_b16", false)] {
-        for offset in [0, 2] {
+    for (name, op, width, store, signed) in [
+        ("ds_read_u16", 0x3c, 2, false, false), ("ds_read_i16", 0x3b, 2, false, true),
+        ("ds_read_i8", 0x39, 1, false, true), ("ds_read_u8", 0x3a, 1, false, false),
+        ("ds_write_b16", 0x1f, 2, true, false), ("ds_write_b8", 0x1e, 1, true, false),
+    ] {
+        for offset in (0..4).step_by(width) {
             let mut words = vec![base];
             words.extend(ds(0x0d, 0, 8, 0, 0, 0));
             words.push(WAIT);
-            if read_half {
-                words.extend(ds(0x3c, offset, 8, 0, 0, 3));
-            } else {
-                words.extend(ds(0x1f, offset, 8, 1, 0, 0));
+            words.extend(ds(op, offset, 8, 1, 0, 3));
+            if store {
                 words.push(WAIT);
                 words.extend(ds(0x36, 0, 8, 0, 0, 3));
             }
             words.extend([WAIT, S_ENDPGM]);
-            cases.push(case(
-                &format!("{name} byte {offset}"),
-                words,
-                [Dom::I; 3],
-                move |a, b, _, _| {
-                    let shift = 8 * offset;
-                    Want::U(if read_half {
-                        (a >> shift) & 65535
-                    } else {
-                        (a & !(65535 << shift)) | ((b & 65535) << shift)
-                    })
-                },
-            ));
+            cases.push(case(&format!("{name} byte {offset}"), words, [Dom::I; 3], move |a,b,_,_| {
+                let bits = 8 * width;
+                let mask = u32::MAX >> (32 - bits);
+                let shift = 8 * offset;
+                let field = (a >> shift) & mask;
+                Want::U(if store { (a & !(mask << shift)) | ((b & mask) << shift) }
+                        else if signed { ((field << (32-bits)) as i32 >> (32-bits)) as u32 } else { field })
+            }));
         }
     }
 }
@@ -313,7 +317,36 @@ fn control_cases(cases: &mut Vec<Case>) {
     );
     p.vcc_in = true;
     cases.push(p);
-    for (name, wait) in [("s_waitcnt", WAIT), ("s_waitcnt_vscnt", 0xbbfd_0000)] {
+    // Read back both mode nibbles after overwriting just one of them.
+    for (name, op, shift) in [("s_round_mode",0x24,0), ("s_denorm_mode",0x25,4)] {
+        let words = vec![0x7e20_0500, 0xb990_3801, 0xbf80_0000, 0xbf80_0009 | (op << 16),
+                         0xb911_3801, vmov(3,17), S_ENDPGM];
+        cases.push(case(name, words, [Dom::I;3], move |a,_,_,_| Want::U((a & 255 & !(15 << shift)) | (9 << shift))));
+    }
+    for rounding in 0..4 {
+        for retain_output in [false, true] {
+            let name = format!("{} half conversion {rounding} {retain_output}",
+                if retain_output { "s_round_mode" } else { "s_denorm_mode" });
+            let words = vec![0xbfa4_0000 | (rounding << 2), 0xbfa5_0000 | if retain_output {12} else {0},
+                             0x7e06_1500, S_ENDPGM];
+            cases.push(case(&name, words, [Dom::F, Dom::I, Dom::I], move |a,_,_,_| {
+                let x = f(a);
+                let mut h = f16_from(x, rounding != 0);
+                if x.is_finite() && f16_to(h).abs() < x.abs() &&
+                    ((x > 0.0 && rounding == 1) || (x < 0.0 && rounding == 2)) { h += 1; }
+                if !retain_output && h & 0x7fff < 0x400 { h &= 0x8000; }
+                Want::H(h)
+            }));
+        }
+    }
+    let mut lds_wait = vec![vmov(8,0x80)];
+    lds_wait.extend(ds(0x0d, 0, 8, 1, 0, 0));
+    lds_wait.push(0xbd7d_0000);
+    lds_wait.extend(ds(0x36, 0, 8, 0, 0, 3));
+    lds_wait.extend([0xbd7d_0000, S_ENDPGM]);
+    cases.push(case("s_waitcnt_lgkmcnt", lds_wait, [Dom::I;3], |_,b,_,_| Want::U(b)));
+    cases.push(case("s_version", vec![vmov(3, 256), 0xb080_1234, S_ENDPGM], [Dom::I; 3], |a,_,_,_| Want::U(a)));
+    for (name, wait) in [("s_waitcnt", WAIT), ("s_waitcnt_vscnt", 0xbbfd_0000), ("s_waitcnt_vmcnt", 0xbc7d_0000)] {
         cases.push(case(
             name,
             vec![
@@ -359,7 +392,16 @@ fn control_cases(cases: &mut Vec<Case>) {
         p.vcc_in = true;
         cases.push(p);
     }
-    for (name, op, wide) in [("s_or_saveexec_b32", 0x3d, false), ("s_or_saveexec_b64", 0x25, true)] {
+    type MaskOp = fn(u32, u32) -> u32;
+    let mask_ops: &[(&str,u32,bool,MaskOp)] = &[
+        ("s_andn2_wrexec_b64", 0x3a, true, |s,e| s & !e),
+        ("s_andn2_wrexec_b32", 0x47, false, |s,e| s & !e),
+        ("s_or_saveexec_b32",0x3d,false,|s,e|s|e), ("s_or_saveexec_b64",0x25,true,|s,e|s|e),
+        ("s_xor_saveexec_b32",0x3e,false,|s,e|s^e), ("s_xor_saveexec_b64",0x26,true,|s,e|s^e),
+        ("s_andn2_saveexec_b32",0x3f,false,|s,e|s & !e), ("s_andn2_saveexec_b64",0x27,true,|s,e|s & !e),
+        ("s_orn2_saveexec_b64",0x28,true,|s,e|s | !e), ("s_andn1_saveexec_b64",0x37,true,|s,e|!s & e),
+    ];
+    for &(name, op, wide, apply) in mask_ops {
         for (label, reg) in [("saved low", 16), ("saved high", 17), ("new low", 22), ("new high", 23), ("SCC", 24)] {
             // Alias the source and destination. Both original words must be read before either write.
             let words = vec![
@@ -370,9 +412,11 @@ fn control_cases(cases: &mut Vec<Case>) {
                 0xbefe_0381, 0xbeff_0380, vmov(3, reg), S_ENDPGM,
             ];
             let mut p = case(&format!("{name} {label}"), words, [Dom::I; 3], move |a, b, c, old| {
-                let low = a | old;
-                let high = if wide { b | c } else { c };
+                let low = apply(a, old);
+                let high = if wide { apply(b,c) } else { c };
                 Want::U(match reg {
+                    16 if name.contains("_wrexec_") => low,
+                    17 if wide && name.contains("_wrexec_") => high,
                     16 => old, 17 => if wide { c } else { b }, 22 => low, 23 => high,
                     24 => u32::from(low != 0 || (wide && high != 0)),
                     _ => unreachable!(),
@@ -401,7 +445,7 @@ fn control_cases(cases: &mut Vec<Case>) {
             Want::U(if name == "s_swappc_b64" { a ^ 12 } else { a })
         }));
     }
-    for (name, reg) in [("s_setreg_imm32_b32", 20), ("s_getreg_b32", 21)] {
+    for (name, reg) in [("s_setreg_imm32_b32", 20), ("s_getreg_b32", 21), ("s_setreg_b32", 20)] {
         // Initialize both hardware words, replace only bits 15:8 in one,
         // then read the full word. A wrong selector or exhausted literal fails.
         cases.push(case(
@@ -429,10 +473,7 @@ fn control_cases(cases: &mut Vec<Case>) {
         vec![0x7006_0300, 0x3900, S_ENDPGM],
         [Dom::H; 3],
         |a, b, _, _| {
-            Want::H(f16_from(
-                f16_to(a & 65535).mul_add(f16_to(b & 65535), 0.625),
-                false,
-            ))
+            Want::H(super::fma_half(a, b, 0x3900))
         },
     ));
 }
@@ -490,6 +531,15 @@ fn integer_wave_sums(cases: &mut Vec<Case>, width: u32) {
 fn group_cases(cases: &mut Vec<Case>) {
     type Model = fn(u32, u32, u32) -> u32;
     let probes: &[(&str, u32, &[u32], Model)] = &[
+        // Each lane gathers the next lane's XOR, including lane 31 wrapping to 0.
+        ("ds_bpermute_b32", 32, &[0x3a12_2900, 0x3410_2882, 0xdacc_0004, 0x0300_0908],
+            |a, _, _| a ^ (a.wrapping_add(1) & 31)),
+        // Disable odd lanes, gather from an odd neighbor, then restore EXEC.
+        // Active destinations receive zero. Disabled destinations retain v3.
+        ("ds_bpermute_b32 masked", 32,
+            &[0x3a12_2900, 0x3410_2882, 0x3614_2881, 0x7da4_1480,
+              0xdacc_0004, 0x0300_0908, 0xbefe_0381],
+            |a, _, c| if a & 1 == 0 { 0 } else { c }),
         // v9 = input xor local ID. All 32 lanes see a different value.
         (
             "v_readfirstlane_b32",

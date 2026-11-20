@@ -111,6 +111,10 @@ atlas. Restarting restores the original pixels using the same GPU resources.
 
 | Command from the repo root | What it exercises |
 |---|---|
+| `tools/homebrew/play-coins.sh --device-diagnostics-test` | Calls each Device slot from 91 through 159 and checks its HRESULT, slot number and caller location in the trace. |
+| `tools/homebrew/play-coins.sh --command-list-test` | Checks 89 diagnostic paths through slot 148 and their caller traces. A tagged BVH fixture clears a GPU counter and verifies both neighboring words. |
+| `tools/homebrew/play-coins.sh --gamechat-test /path/to/GameChat2.dll` | Loads the supplied desktop provider by basename, changes audio and networking thread affinity, checks both getters, then restores the previous settings. |
+| `tools/homebrew/play-coins.sh --scarlett-libraries-test /path/to/dlls` | Checks the 16 supplied libraries using native calls, exported symbols and embedded GPU programs. [Probe scope](#local-scarlett-libraries) |
 | `tools/homebrew/play-coins.sh --rdna2-test` | Verifies arithmetic and branches through the game's Xbox compute pipeline, runs the memory conformance suite, and checks rendering and dispatch. [Requirements and coverage report](#rdna2-verification) |
 | `tools/homebrew/play-coins.sh --3d` | Play on a perspective board with raised walls, octagonal coins and a camera that follows the player. Uses the same controls and rules. |
 | `tools/homebrew/play-coins.sh --3d-test` | Runs the 20-frame route in 3D, checking textured top and side faces, camera movement and depth occlusion by GPU readback. Requires a display. |
@@ -241,6 +245,8 @@ The companion memory suite checks buffer and texture reads,
 writes and atomic results. A 16×16 graphics probe checks geometry emission, exports,
 flat attributes, both interpolation steps and a pixel-quad swizzle against a CPU image.
 The final game runs check the 2D and 3D scenes, texture arrays, cube faces and thread dispatch.
+The texture probes cover comparison sampling at a statically zero LOD, UAV stores at relative mip zero and 2D resource dimensions. Other cases check bounded atomics, neighboring subword stores, 64-bit register pairs and packed signed-byte dot products against CPU results. The pixel fixture contains the same bit pattern in a move literal and in the padding after termination, and verifies both boundaries. [RDNA 2 instruction reference](https://docs.amd.com/v/u/en-US/rdna2-shader-instruction-set-architecture)
+
 The launcher publishes the report only after every check passes. On RADV, use the desktop
 display for the full run if Xvfb reports missing DRI3 support during the presentation tests.
 
@@ -251,6 +257,12 @@ reference coverage. The `cache_probe` column records cross-wave UAV visibility f
 `buffer_gl0_inv` and `buffer_gl1_inv`, and preservation of a register value and
 condition flag in all three defined `s_inst_prefetch` modes. Physical cache contents
 and instruction-fetch distance remain unmeasured. [Recorded results](../progress/coin-rdna2-coverage.tsv)
+
+### Local Scarlett libraries
+
+Pass the directory containing all 16 DLLs from the audit. The launcher stages the local libraries in a temporary directory and selects their native versions under Proton. Coin Run checks the module path before probing each runtime or middleware DLL. The BVH builder loads through the XMem shim. Coin Run checks the memory query against reserved and committed regions and verifies the failure path. The FidelityFX probe sends four render-resolution queries through the loader and directly to the upscaler. The remaining GPU checks use the actual programs embedded in the upscaler and BVH builder. The four-pass BVH radix sort requires a wave64-capable device. The launcher reports failures after running the independent probes. [Per-DLL operations and limits](../../docs/COMPATIBILITY.md#scarlett-dll-audit)
+
+Fortnite delay-loads `GameChat2.dll` separately. The optional `--gamechat-test` passed with the x64 desktop provider from Microsoft.GDK.Windows 2610.0.9661. It tests local loading and thread configuration. Voice chat and Fortnite’s delay-load path need a title run. [Microsoft GDK package](https://www.nuget.org/packages/Microsoft.GDK.Windows/2610.0.9661)
 
 ### Retail FidelityFX prepass
 

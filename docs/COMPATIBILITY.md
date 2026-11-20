@@ -35,7 +35,7 @@ no-op/offline impl to pass startup), **Translate** (reimpl that maps onto a host
 | `dxcompiler_xs.dll` | 1 | Runtime DXIL compiler (DXC) | Reuse PC `dxcompiler.dll` | LOW-MED | `DxcCreateInstance` |
 | `xgameruntime.dll` | **dynamic** | GDK services dispatcher | Reimpl | MED-HIGH | `QueryApiImpl` dispatch; loader must intercept its LoadLibrary |
 | `EOSSDK-XboxOneGDK-Shipping.dll` | 48 | Epic Online Services | Stub (offline) | LOW→HIGH | 48 fns, mostly RTC/voice + Platform init; stub to pass startup |
-| `GameChat2.dll` | delay | GDK chat | Stub | LOW | delay-loaded |
+| `GameChat2.dll` | delay | GDK chat | Partial | LOW | Coin Run loaded the desktop provider and round-tripped audio and network thread affinity. Fortnite chat remains untested. |
 
 \* "low*" = the API-set *contract* is standard, but Xbox GameOS implementations may diverge
 behind identical names; each must be validated, not assumed (CLAUDE.md principle; assumption A3).
@@ -72,31 +72,28 @@ entries. The supplied sibling DLLs and the built TomBox shims were checked by
 export name or ordinal. A Windows probe resolved all 492 distinct host imports
 across 61 modules with `LoadLibraryExA` and `GetProcAddress` under Proton
 Experimental `experimental-11.0-20261027b`. This checks symbol availability.
-The GPU results below come from dispatching the embedded shaders separately. The progress map merges these imports with Fortnite’s by dependency DLL and exact symbol name or ordinal. [Audit snapshot](../tools/progress/scarlett-dll-imports.tsv) · [Progress map](img/progress.svg)
+Coin Run also exercised the local libraries and dispatched the embedded shaders separately. The progress map merges these imports with Fortnite’s by dependency DLL and exact symbol name or ordinal. [Reproduce the library checks](../tools/homebrew/README.md#local-scarlett-libraries) · [Audit snapshot](../tools/progress/scarlett-dll-imports.tsv) · [Progress map](img/progress.svg)
 
-**One static import is missing.** The BVH builder asks for `xmem!XMemVirtualQuery`.
-Its caller reads Xbox-specific memory information beyond the desktop query
-fields. The upscaler also imports `XMemGetWorkingSetStatistics`. TomBox exports
-it and returns `E_NOTIMPL`.
+**All 611 distinct static imports resolve.** Coin Run checks the BVH builder’s `xmem!XMemVirtualQuery` against reserved and committed process memory, including an invalid-handle case. The shim returns host memory state and protection, and reports zero for the console GPU-access fields. The upscaler’s `XMemGetWorkingSetStatistics` still returns `E_NOTIMPL`. Two host imports now have execution evidence from the staged libraries. Coin Run uses `GetModuleHandleExW` to recover the owning module from an export address and `GetModuleFileNameW` to check that module’s on-disk path.
 
 | Supplied DLL | Import entries | Exports | Translation evidence and open work |
 |---|---:|---:|---|
-| `amd_fidelityfx_loader_xbox.dll` | 22 | 5 | Names the supplied upscaler and a separate frame-generation provider. The latter DLL was absent from the supplied set. Provider selection happens at runtime. |
-| `amd_fidelityfx_upscaler_xbox.dll` | 86 | 5 | 14/29 compute shaders compile and pass GPU readback, including the input prepass. Fifteen kernels and full-frame upscaling remain open. The long model-specific DLL name in this file is its own PE export name. |
-| `XboxBvhBuilder.dll` | 57 | 12 | 16/52 compute shaders compile and pass GPU readback. The other 36 kernels, the virtual-memory query and the command-list gaps below remain open. |
-| `Bink2Scarlett.dll` | 60 | 74 | The host resolves `XAudio2_9!#1` to `XAudio2Create`. Bink playback, including synchronized audio and video, needs a functional test. |
-| `libHttpClient.GDK.dll` | 198 | 129 | WinHTTP and Crypt32 imports resolve. The binary also names `xgameruntime.dll` and `QueryApiImpl`. GDK service calls, HTTP and WebSocket behavior remain unverified. |
-| `XCurl.dll` | 140 | 61 | WinHTTP and Crypt32 imports resolve. Strings identify `xgameruntime.dll`, `gameplatformservices.dll`, `QueryApiImpl` and a URL-security query. These dynamic paths need runtime testing. |
-| `concrt140.dll` | 103 | 291 | Concurrency runtime. All static imports resolve. |
-| `msvcp140.dll` | 187 | 1493 | C++ standard library. All static imports resolve. The binary also names `appmodel.dll`. |
-| `msvcp140_1.dll` | 33 | 7 | C++ runtime extension. All static imports resolve. |
-| `msvcp140_2.dll` | 96 | 44 | C++ runtime extension. All static imports resolve. |
-| `msvcp140_atomic_wait.dll` | 64 | 32 | All static imports resolve. The binary also names `icu.dll`. |
-| `msvcp140_codecvt_ids.dll` | 24 | 4 | Character-conversion facet IDs. All static imports resolve. |
-| `vccorlib140.dll` | 114 | 256 | C++/CX runtime. Static WinRT imports resolve. The binary also names `gcombase.dll`. Activation behavior remains unverified. |
-| `vcomp140.dll` | 78 | 113 | OpenMP runtime. All static imports resolve. The binary also names `vcomp120ui.dll`. |
-| `vcruntime140.dll` | 41 | 71 | Compiler runtime. All static imports resolve. |
-| `vcruntime140_1.dll` | 34 | 3 | Exception-handling runtime. All static imports resolve. |
+| `amd_fidelityfx_loader_xbox.dll` | 22 | 5 | Four render-resolution queries returned the expected sizes through the loader. The separate frame-generation provider was absent. |
+| `amd_fidelityfx_upscaler_xbox.dll` | 86 | 5 | The same four queries passed directly on the provider. Fourteen of 29 embedded kernels pass GPU readback. Fifteen kernels and full-frame upscaling remain open. The model-specific DLL name is the provider’s own PE export name. |
+| `XboxBvhBuilder.dll` | 57 | 12 | Sixteen of 52 embedded kernels pass GPU readback. Four of them also complete a stable radix sort of 16,384 key/index pairs. The native DLL loads and its validator export resolves. A complete acceleration-structure build remains unverified. |
+| `Bink2Scarlett.dll` | 60 | 74 | Coin Run set and retrieved a Bink error string. The host resolves the XAudio2 ordinal. Synchronized audio and video playback remains unverified. |
+| `libHttpClient.GDK.dll` | 198 | 129 | Coin Run queried the library version. WinHTTP and Crypt32 imports resolve. The DLL names `xgameruntime.dll` and `QueryApiImpl`. GDK service, HTTP and WebSocket calls remain unverified. |
+| `XCurl.dll` | 140 | 61 | URL decoding returned three bytes including an embedded NUL, and the DLL freed the result. Strings name `xgameruntime.dll`, `gameplatformservices.dll`, `QueryApiImpl` and a URL-security query. Network transfers and these dynamic lookups remain unverified. |
+| `concrt140.dll` | 103 | 291 | The native concurrency runtime reported an available processor count within the host system limit. |
+| `msvcp140.dll` | 187 | 1493 | The native library reported zero uncaught exceptions outside an exception handler. The binary also names `appmodel.dll`. |
+| `msvcp140_1.dll` | 33 | 7 | The initial aligned default memory resource matched the aligned new/delete resource. |
+| `msvcp140_2.dll` | 96 | 44 | The native beta function returned 1/12 for inputs 2 and 3. |
+| `msvcp140_atomic_wait.dll` | 64 | 32 | Four allocated words were zero-initialized and released. Atomic wait/wake behavior remains unverified. The binary also names `icu.dll`. |
+| `msvcp140_codecvt_ids.dll` | 24 | 4 | The two exported character-conversion facet IDs resolved to distinct addresses. |
+| `vccorlib140.dll` | 114 | 256 | The C++/CX initialization export resolved from the supplied DLL. WinRT activation remains unverified. The binary also names `gcombase.dll`. |
+| `vcomp140.dll` | 78 | 113 | The serial OpenMP team reported one thread with index zero. The binary also names `vcomp120ui.dll`. |
+| `vcruntime140.dll` | 41 | 71 | An overlapping native memmove produced the expected bytes and returned the destination pointer. |
+| `vcruntime140_1.dll` | 34 | 3 | The native exception-handler export resolved. Exception unwinding remains unverified. |
 
 Only the upscaler and BVH builder contain identifiable DXBC shader containers.
 The ten Microsoft runtime DLLs report version 14.29.30157.0. Their static imports
@@ -171,16 +168,21 @@ The translation covers whole groups for a subset of straight-line shaders using 
 
 The supplied `XboxBvhBuilder.dll` (GXDK 250405, SHA-256 `99f803ac22c01ef329dddb1d40be67238d2a812d01e8d040b3cb5135bc23707e`) uses a table of four-byte counters. At RVAs `0xd679` and `0xd6de`, command-list slots 73 and 71 receive the same counter address. Slot 73 receives a comparison value and a 32-bit mask. Slot 71 receives an incremented value and either zero or `0x1000`. Slot 90 receives a counter address and zero at RVA `0xe836`. Microsoft's pipelined postprocessing sample demonstrates GPU-side waits and bottom-of-pipe writes with *64-bit* counters. The 32-bit flags and ordering between queues remain open. [Microsoft synchronization sample](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Samples/Graphics/PipelinedPostprocess/PipelinedPostprocess.cpp#L278-L300)
 
-The exported `BuildRaytracingAccelerationStructure` at RVA `0x21610` copies the 48-byte build description into a batch entry. At `0xd069` the builder copies the field at byte 40 into the job. That field matches `ScratchAccelerationStructureData`, a GPU virtual address. Slots 71, 73 and 90 address four-byte words within this scratch buffer. A desktop immediate write requires the destination buffer in `COPY_DEST`; translating it also requires knowing the backing resource and its state at that point in the command list. [Build description](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_build_raytracing_acceleration_structure_desc) · [Desktop immediate-write requirements](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12graphicscommandlist2-writebufferimmediate)
+The exported `BuildRaytracingAccelerationStructure` at RVA `0x21610` copies the 48-byte build description into a batch entry. At `0xd069` the builder copies the field at byte 40 into the job. That field matches `ScratchAccelerationStructureData`, a GPU virtual address. Slots 71, 73 and 90 address four-byte words within this scratch buffer. TomBox translates the non-final zero write from slot 90 when the last explicit barrier establishes an aligned destination in a `COPY_DEST` buffer and the host supports immediate writes. Coin Run initialized three adjacent words to `[13, 29, 71]` and read back `[13, 0, 71]` on NVIDIA and AMD. The first word exercised the final-batch flag and the last exercised a buffer transitioned to `COPY_SOURCE`. Both cases are logged and skipped. [Build description](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_build_raytracing_acceleration_structure_desc) · [Desktop immediate-write requirements](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12graphicscommandlist2-writebufferimmediate)
 
 ### D3D12.x slot tracking
 
-The map covers device slots 0–159 and command-list slots 0–148. Each interface keeps its original baseline and grows through the highest recorded slot, including the intervening positions. Grey covers both unidentified positions and observed calls that still need a translation. [Tracker data](../tools/progress/progress.json)
+The map covers device slots 0–159 and command-list slots 0–148. Each interface keeps its original baseline and grows through the highest recorded slot, including the intervening positions. The map distinguishes diagnostic bindings from translated behavior in each slot’s tooltip. [Tracker data](../tools/progress/progress.json)
+
+Device has 56 implemented or forwarded slots and 104 partial slots. For each slot from 91 through 159, Coin Run verified that the wrapper logs the slot, caller module and return-address RVA, then returns `E_NOTIMPL`. A tagged fixture DLL independently called slot 159 and appeared in its trace. These 69 diagnostic bindings can identify future retail callers. The method names, signatures and behavior are still unknown. [Run the Device probe](../tools/homebrew/README.md#graphical-coin-run)
+
+CommandList has 57 implemented or forwarded slots and 92 partial slots. Of the partials, 88 have diagnostic bindings only. Coin Run calls those slots plus slot 90 through the untagged guest vtable, verifies the zero return and caller location, then checks GPU readback. A tagged DLL independently exercises slot 148. The following retail calls have additional evidence. [Run the CommandList probe](../tools/homebrew/README.md#graphical-coin-run)
 
 | Command-list slot | Caller and call RVA | Evidence | Status |
 |---|---|---|---|
-| 71, 73, 90 | BVH builder 250405 · `0xd6de`, `0xd679`, `0xe836` respectively | The three calls address counters in the build scratch buffer. | Unmapped |
+| 71, 73 | BVH builder 250405 · `0xd6de`, `0xd679` | Both calls address the same scratch counter. Their ordering and flag semantics remain open. | Diagnostic only |
 | 80 | BVH builder 250405 · `0x149ba`, `0x1525d` | Thread-count dispatch translates whole groups for the verified shader subset. | Partial |
-| 141 | FidelityFX 260402 · `0x68a5`, 261000 · `0x65f8` | Both callers pass the GPU address and size of the buffer they name `FFX_XBox_ComputeScratch`. The name is at RVA `0x67478` in April and `0x482b0` in October. | Unmapped |
+| 90 | BVH builder 250405 · `0xe836` | The non-final 32-bit counter clear passes GPU readback in an explicitly transitioned buffer. | Partial |
+| 141 | FidelityFX 260402 · `0x68a5`, 261000 · `0x65f8` | Both callers pass the GPU address and size of the buffer they name `FFX_XBox_ComputeScratch`. The name is at RVA `0x67478` in April and `0x482b0` in October. | Diagnostic only |
 | 146 | BVH builder 250405 · `0xd7b4`, `0xd80a` | The single global compute UAV barrier form passes GPU readback under Proton. | Partial |
-| 148 | BVH builder 250405 · `0x114af`, `0x14afb` | Callers pass a byte size and 8 or 16. The second caller writes records through the returned pointer. | Unmapped |
+| 148 | BVH builder 250405 · `0x114af`, `0x14afb` | Callers pass a byte size and 8 or 16. The second caller writes records through the returned pointer. | Diagnostic only |
