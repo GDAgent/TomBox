@@ -964,3 +964,62 @@ half-resolution chain).
 Not done: SRVs created before a slot is rebound still show as "no descriptor recorded" in
 some tables (scene depth); `R16_UINT` targets are not decoded by the capture; whole-archive
 DXC sweep not rerun with these changes.
+
+## 2026-11-20 — Vector-ALU conformance on the GPU; opcode tables checked against AMD's specs
+
+Goal: find translator semantic bugs systematically instead of one at a time in the lobby.
+Done without game data (no dump on this machine); everything below runs from the repo.
+
+**Opcode tables vs. AMD's machine-readable ISA specs.** `tools/dev/isa_table_check.py`
+compares `rdna2/mnem.rs` with GPUOpen's `amdgpu_isa_rdna1.xml` / `amdgpu_isa_rdna2.xml`.
+Both references are needed: the 46 shader fixtures contain GFX10.1-only opcodes (VOP2
+`v_mac_f32` ×9, `v_madak_f32` ×37; VOP3 `v_mad_f32` ×15, `v_mad_legacy_f32` ×78) next to
+RDNA2 ones, so the console ISA is neither reference alone (opcode census:
+`cargo run --release -p tombox-xshader --example opstat -- <shaders>`). Wrong entries found
+and fixed (all unused by the fixtures, so latent for this title):
+- VOPC 0xd0–0xd7 are `v_cmpx_*_u32` (write EXEC); they were decoded as `v_cmp_{u..tru}_f16`
+  (write VCC) — a silent miscompile. The f16 U..TRU compares are at 0xe8–0xef. All 32-bit
+  and f16 `v_cmpx_*` forms are now decoded and translated (EXEC only, see TECHNICAL_DEBT).
+- FLAT 0x0e/0x0f: `load_dwordx4` / `load_dwordx3` were swapped (the same mistake as the
+  MUBUF swap of 2026-11-17).
+- VOP2 0x36–0x38 are `v_fmac/fmamk/fmaak_f16`, not `mac/madmk/madak`.
+- VOP3 0x16b does not exist in either reference (was labelled `v_mul_lo_i32`).
+After the fixes all 496 entries match (`python -I tools/dev/isa_table_check.py <xml dir>`).
+
+**GPU conformance harness.** `hlsl::translate_valu_probe` wraps hand-assembled VALU words
+in a compute shader using the same per-instruction emitter as real shaders; `gpu::Gpu` is a
+minimal D3D12 compute runner (raw vtables). `tests/valu_conformance.rs` runs 207 cases
+(VOP1/VOP2/VOP3/VOPC/VOP3P, modifiers, carries, compares including CMPX) over ~3,000–6,000
+input vectors each (special values + random) against reference models written from the RDNA2
+ISA guide (2020-11-30, downloaded from docs.amd.com) and compares on this machine's GPU.
+First run: 179 pass, 23 mismatch, 5 refused. Findings:
+- **Half-float rounding.** RDNA2 rounds f32→f16 to nearest even; D3D requires round-toward-
+  zero for float-to-smaller-float conversion (D3D11.3 functional spec §3.2.2), and HLSL
+  `f32tof16` on this GPU truncates accordingly. Every f16 result (`v_cvt_f16_f32`, f16
+  arithmetic, packed f16, `v_cvt_f16_{u16,i16}`, `v_fma_mix{lo,hi}`) was 1 ulp off in about
+  a third of cases. Now an integer-only round-to-nearest-even helper (`tb_f16_rne`).
+- **`v_cvt_pkrtz_f16_f32`** is round-toward-zero; it used `f32tof16`, whose rounding is the
+  driver's (RTZ by the D3D rule, so this GPU already matched). Now an explicit integer-only
+  RTZ (`tb_f16_rtz`). *Correction of a working hypothesis:* this does not explain the bloom
+  infinities — D3D also clamps out-of-range floats written to 16-bit float render targets to
+  ±65504 (spec §3.2.2), the same as the console's RTZ pack.
+- **`v_cmp_o/u_{f32,f16}` (+CMPX) were wrong for NaN:** `x == x` is folded to true under
+  DXC's default floating-point assumptions. Now bit-level NaN tests (`tb_isnan`). Relevance:
+  HLSL `isnan` guards compile to these; with the fold they never fired.
+- **`v_cmp_lg` / `nlg`** used `!=` (unordered); LG is the ordered not-equal. Fixed.
+- **`v_bfe_i32`** was wrong when offset + width > 32 (a shift amount wrapped); now LLVM
+  AMDGPU's definition (the guide's pseudocode omits the sign extension).
+- **`v_med3_f32`** with a NaN operand now follows the ISA (min3 of the three).
+- **`v_cvt_i16_f16` / `v_cvt_u16_f16`** of NaN now give 0; **`v_fract_f16`** stays below 1.
+- Newly translated (were refused): `v_ffbh_i32`, `v_mul_hi_i32_i24`, `v_mul_hi_u32_u24`,
+  `v_alignbyte_b32`, `v_ldexp_f32`.
+- `v_mad_legacy_f32` mismatches were denormal products flushed by the GPU; the harness
+  accepts a flushed denormal product (D3D leaves f32 denormals to the implementation).
+
+**Result:** 207/207 cases pass; `cargo test --release` (workspace) passes; all 43 unique
+fixture shaders translate and compile with DXC (`xscan --compile 1` over the concatenated
+fixtures). Also fixed: compare type inference treated `v_cmp_f_i32` as float evidence.
+
+**Not verified:** none of this has been run in the game (no dump here). Whether the
+`v_cmp_u` fix affects the lobby's bloom depends on whether its shaders use that opcode —
+the next run should count it with `opstat` over the frame's shaders.

@@ -1,6 +1,9 @@
-//! GFX10.3 (RDNA2) opcode → mnemonic tables. Numbers follow the public RDNA2 ISA
-//! reference / LLVM AMDGPU / Mesa ACO for GFX10. Opcodes not listed are reported as
-//! `family<0xNN>` — never guessed.
+//! GFX10 opcode → mnemonic tables for Xbox Series shaders. Every entry matches AMD's
+//! machine-readable ISA specification for RDNA1 (GFX10.1) or RDNA2 (GFX10.3); the console's
+//! shaders use opcodes from both (GFX10.1-only `v_mac_f32` / `v_mad_f32` appear next to
+//! RDNA2 instructions), so neither reference alone describes them. Check with
+//! `tools/dev/isa_table_check.py`. Opcodes not listed are reported as `family<0xNN>` — never
+//! guessed.
 use super::Enc;
 
 pub fn vop2(op: u32) -> Option<&'static str> {
@@ -17,7 +20,8 @@ pub fn vop2(op: u32) -> Option<&'static str> {
         0x2b => "v_fmac_f32", 0x2c => "v_fmamk_f32", 0x2d => "v_fmaak_f32",
         0x2f => "v_cvt_pkrtz_f16_f32",
         0x32 => "v_add_f16", 0x33 => "v_sub_f16", 0x34 => "v_subrev_f16", 0x35 => "v_mul_f16",
-        0x36 => "v_mac_f16", 0x37 => "v_madmk_f16", 0x38 => "v_madak_f16", 0x39 => "v_max_f16", 0x3a => "v_min_f16",
+        // GFX10 names these FMA forms (both the RDNA1 and RDNA2 references): fused multiply-add.
+        0x36 => "v_fmac_f16", 0x37 => "v_fmamk_f16", 0x38 => "v_fmaak_f16", 0x39 => "v_max_f16", 0x3a => "v_min_f16",
         _ => return None,
     })
 }
@@ -44,11 +48,20 @@ pub fn vop1(op: u32) -> Option<&'static str> {
 }
 
 pub fn vopc(op: u32) -> Option<&'static str> {
+    // Opcode map checked against AMD's machine-readable RDNA1 and RDNA2 specifications
+    // (identical for these ranges). V_CMPX_* write EXEC instead of VCC/SDST. The f16 compares
+    // are split in two blocks (F..O at 0xc8, U..TRU at 0xe8); 0xd0..0xd7 are V_CMPX_*_U32.
     const F: [&str; 16] = [
         "v_cmp_f_f32", "v_cmp_lt_f32", "v_cmp_eq_f32", "v_cmp_le_f32", "v_cmp_gt_f32",
         "v_cmp_lg_f32", "v_cmp_ge_f32", "v_cmp_o_f32", "v_cmp_u_f32", "v_cmp_nge_f32",
         "v_cmp_nlg_f32", "v_cmp_ngt_f32", "v_cmp_nle_f32", "v_cmp_neq_f32", "v_cmp_nlt_f32",
         "v_cmp_tru_f32",
+    ];
+    const FX: [&str; 16] = [
+        "v_cmpx_f_f32", "v_cmpx_lt_f32", "v_cmpx_eq_f32", "v_cmpx_le_f32", "v_cmpx_gt_f32",
+        "v_cmpx_lg_f32", "v_cmpx_ge_f32", "v_cmpx_o_f32", "v_cmpx_u_f32", "v_cmpx_nge_f32",
+        "v_cmpx_nlg_f32", "v_cmpx_ngt_f32", "v_cmpx_nle_f32", "v_cmpx_neq_f32", "v_cmpx_nlt_f32",
+        "v_cmpx_tru_f32",
     ];
     const H: [&str; 16] = [
         "v_cmp_f_f16", "v_cmp_lt_f16", "v_cmp_eq_f16", "v_cmp_le_f16", "v_cmp_gt_f16",
@@ -56,20 +69,41 @@ pub fn vopc(op: u32) -> Option<&'static str> {
         "v_cmp_nlg_f16", "v_cmp_ngt_f16", "v_cmp_nle_f16", "v_cmp_neq_f16", "v_cmp_nlt_f16",
         "v_cmp_tru_f16",
     ];
+    const HX: [&str; 16] = [
+        "v_cmpx_f_f16", "v_cmpx_lt_f16", "v_cmpx_eq_f16", "v_cmpx_le_f16", "v_cmpx_gt_f16",
+        "v_cmpx_lg_f16", "v_cmpx_ge_f16", "v_cmpx_o_f16", "v_cmpx_u_f16", "v_cmpx_nge_f16",
+        "v_cmpx_nlg_f16", "v_cmpx_ngt_f16", "v_cmpx_nle_f16", "v_cmpx_neq_f16", "v_cmpx_nlt_f16",
+        "v_cmpx_tru_f16",
+    ];
     const I: [&str; 8] = [
         "v_cmp_f_i32", "v_cmp_lt_i32", "v_cmp_eq_i32", "v_cmp_le_i32", "v_cmp_gt_i32",
         "v_cmp_ne_i32", "v_cmp_ge_i32", "v_cmp_t_i32",
+    ];
+    const IX: [&str; 8] = [
+        "v_cmpx_f_i32", "v_cmpx_lt_i32", "v_cmpx_eq_i32", "v_cmpx_le_i32", "v_cmpx_gt_i32",
+        "v_cmpx_ne_i32", "v_cmpx_ge_i32", "v_cmpx_t_i32",
     ];
     const U: [&str; 8] = [
         "v_cmp_f_u32", "v_cmp_lt_u32", "v_cmp_eq_u32", "v_cmp_le_u32", "v_cmp_gt_u32",
         "v_cmp_ne_u32", "v_cmp_ge_u32", "v_cmp_t_u32",
     ];
+    const UX: [&str; 8] = [
+        "v_cmpx_f_u32", "v_cmpx_lt_u32", "v_cmpx_eq_u32", "v_cmpx_le_u32", "v_cmpx_gt_u32",
+        "v_cmpx_ne_u32", "v_cmpx_ge_u32", "v_cmpx_t_u32",
+    ];
     Some(match op {
         0x00..=0x0f => F[op as usize],
+        0x10..=0x1f => FX[(op - 0x10) as usize],
         0x80..=0x87 => I[(op - 0x80) as usize],
-        0xc0..=0xc7 => U[(op - 0xc0) as usize],
         0x88 => "v_cmp_class_f32",
-        0xc8..=0xd7 => H[(op - 0xc8) as usize],
+        0x90..=0x97 => IX[(op - 0x90) as usize],
+        0x98 => "v_cmpx_class_f32",
+        0xc0..=0xc7 => U[(op - 0xc0) as usize],
+        0xc8..=0xcf => H[(op - 0xc8) as usize],
+        0xd0..=0xd7 => UX[(op - 0xd0) as usize],
+        0xd8..=0xdf => HX[(op - 0xd8) as usize],
+        0xe8..=0xef => H[(op - 0xe8 + 8) as usize],
+        0xf8..=0xff => HX[(op - 0xf8 + 8) as usize],
         _ => return None,
     })
 }
@@ -92,7 +126,7 @@ pub fn vop3(op: u32) -> Option<&'static str> {
         0x14f => "v_alignbyte_b32", 0x150 => "v_mullit_f32", 0x151 => "v_min3_f32",
         0x152 => "v_min3_i32", 0x153 => "v_min3_u32", 0x154 => "v_max3_f32", 0x155 => "v_max3_i32",
         0x156 => "v_max3_u32", 0x157 => "v_med3_f32", 0x158 => "v_med3_i32", 0x159 => "v_med3_u32",
-        0x169 => "v_mul_lo_u32", 0x16a => "v_mul_hi_u32", 0x16b => "v_mul_lo_i32", 0x16c => "v_mul_hi_i32",
+        0x169 => "v_mul_lo_u32", 0x16a => "v_mul_hi_u32", 0x16c => "v_mul_hi_i32",
         0x178 => "v_xor3_b32", 0x345 => "v_xad_u32", 0x346 => "v_lshl_add_u32", 0x347 => "v_add_lshl_u32",
         0x36d => "v_add3_u32", 0x36f => "v_lshl_or_b32", 0x371 => "v_and_or_b32", 0x372 => "v_or3_b32",
         0x30f => "v_add_co_u32", 0x310 => "v_sub_co_u32", 0x319 => "v_subrev_co_u32",
@@ -242,8 +276,9 @@ pub fn lookup(enc: Enc, op: u32) -> Option<&'static str> {
         Enc::Flat => match op & 0x7f {
             0x0c => Some("flat_load_dword"),
             0x0d => Some("flat_load_dwordx2"),
-            0x0e => Some("flat_load_dwordx3"),
-            0x0f => Some("flat_load_dwordx4"),
+            // dwordx4 precedes dwordx3 in the GFX10 opcode space (as for MUBUF).
+            0x0e => Some("flat_load_dwordx4"),
+            0x0f => Some("flat_load_dwordx3"),
             _ => None,
         },
         Enc::Ds => match op {

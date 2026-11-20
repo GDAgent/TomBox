@@ -16,6 +16,8 @@
 pub mod hlsl;
 #[cfg(windows)]
 pub mod dxc;
+#[cfg(windows)]
+pub mod gpu;
 pub mod meta;
 pub mod decls;
 pub mod uearchive;

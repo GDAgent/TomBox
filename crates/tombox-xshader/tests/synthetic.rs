@@ -71,7 +71,9 @@ fn integer_colour_export_keeps_the_integer() {
     assert!(t.hlsl.contains("uint4 o0 : SV_Target0"), "{}", t.hlsl);
     assert!(t.hlsl.contains("o.o0 = (uint4)(uint4(tb_pk0a, tb_pk0b, tb_pk1a, tb_pk1b).xyzw);"), "{}", t.hlsl);
     assert!(t.hlsl.contains("tb_pk0a = v2;"), "{}", t.hlsl);
-    assert!(!t.hlsl.contains("f16tof32"), "integer export must not go through half floats:\n{}", t.hlsl);
+    // Only the shader body counts: the shared helper preamble mentions f16tof32.
+    let body = &t.hlsl[t.hlsl.find(" main(").expect("entry point")..];
+    assert!(!body.contains("f16tof32"), "integer export must not go through half floats:\n{}", t.hlsl);
 }
 
 /// The same tail feeding a float render target exports the unpacked floats (the target's own

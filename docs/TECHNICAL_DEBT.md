@@ -166,3 +166,29 @@ Honest ledger. Updated continuously.
 - **Binding trace cost.** Diagnostic only; it holds a reference on every buffer and a map
   entry per descriptor. Not suitable for normal runs as written. The same tracking is what
   a run-time check of structured-buffer strides would need.
+
+## Vector-ALU semantics (2026-11-20)
+
+- **Covered by the GPU conformance test** (`tests/valu_conformance.rs`, 207 cases): only
+  single instructions on one host GPU. Not covered: SDWA/DPP forms, `v_readlane` /
+  `v_writelane`, 64-bit ops, `v_movrel*`, interpolation, scalar ALU, memory and image ops,
+  and interactions inside larger shaders.
+- **Fused vs. unfused multiply-add is not controlled.** HLSL has no single-precision FMA;
+  `a * b + c` may or may not be fused by DXC/the driver, while the console fuses `v_fma*` /
+  `v_fmac*` and does not fuse `v_mad*` / `v_mac*`. The test accepts either.
+- **DXC's default floating-point assumptions.** Shaders are compiled without `-Gis`; the
+  conformance test caught `x == x` being folded (now avoided), and other NaN-sensitive
+  rewrites inside larger shaders cannot be excluded. Compiling with `-Gis` (and adding the
+  flag to the cache key) is the general fix; its cost and effect in the game are unmeasured.
+- **f32 denormals** are left to the host implementation (inputs with denormals are not
+  tested). The console's denormal mode for these shaders is unknown.
+- **`v_cmpx_*` write only EXEC**, not VCC/SDST. Inferred from LLVM's GFX10 encodings and
+  the ISA guide ("write exec"); not observed on console. If they also wrote VCC, a shader
+  reading VCC after a CMPX would differ.
+- **The console ISA is a mix of GFX10.1 and GFX10.3** (see the 2026-11-20 log): an opcode
+  valid in only one reference is accepted. An opcode whose meaning differs between the two
+  would be mistranslated; none was found among the table entries.
+- **Transcendentals** (`exp`, `log`, `rcp`, `rsq`, `sqrt`, `sin`, `cos`) match within the
+  D3D minimum precision, not bit-exactly; `sin`/`cos` only for |x| ≤ 64 turns (the console's
+  results for large arguments are not reproduced).
+
