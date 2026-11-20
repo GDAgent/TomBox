@@ -1,4 +1,4 @@
-//! Register provenance for the 256-thread FSPX prepass. Descriptor contents
+//! Register provenance for FSPX prepass and sharpening shaders. Descriptor contents
 //! never enter shader arithmetic except for the compiler's raw-view conversion.
 use super::*;
 use crate::meta::RootRange;
@@ -56,9 +56,36 @@ fn raw_view(words: &[Scalar], b: Binding) -> bool {
     words == [Buffer(b, 0), NoStride(b), ByteCount(b), RawOob(b)]
 }
 
+fn table_register(ranges: &[RootRange], index: u32) -> Result<u32, String> {
+    let mut next = 0;
+    let mut slot = None;
+    for range in ranges {
+        let start = if range.offset_in_table == u32::MAX {
+            next
+        } else {
+            range.offset_in_table
+        };
+        next = start
+            .checked_add(range.num)
+            .ok_or("descriptor range overflow")?;
+        if (start..next).contains(&index) {
+            if slot.is_some() {
+                return Err("overlapping descriptor ranges".into());
+            }
+            slot = Some(
+                range
+                    .base_register
+                    .checked_add(index - start)
+                    .ok_or("descriptor register overflow")?,
+            );
+        }
+    }
+    slot.ok_or_else(|| "descriptor outside root range".into())
+}
+
 fn smem(
     ex: &ShaderExtract,
-    ranges: [&RootRange; 2],
+    ranges: [&[RootRange]; 2],
     r: &mut Registers,
     plan: &mut PackedRoot,
     idx: usize,
@@ -85,16 +112,9 @@ fn smem(
         if r[a + 1] != Literal(0) || off % 32 != 0 {
             return Err("invalid descriptor table address".into());
         }
-        let range = ranges[usize::from(uav)];
-        let first = off / 32;
-        if first + n.div_ceil(8) as u32 > range.num {
-            return Err("descriptor outside root range".into());
-        }
         for k in 0..n {
-            let slot = range
-                .base_register
-                .checked_add(first + (k / 8) as u32)
-                .ok_or("descriptor register overflow")?;
+            let index = off / 32 + (k / 8) as u32;
+            let slot = table_register(ranges[usize::from(uav)], index)?;
             let b = Binding { slot, uav };
             r[d + k] = if n >= 8 && has(ex, if uav { 6 } else { 3 }, slot) {
                 Image(b, k % 8)
@@ -139,12 +159,12 @@ fn scalar_op(i: &Insn, r: &mut Registers) -> Result<(), String> {
         ("s_bfm_b32", [Literal(n), Literal(shift)]) => {
             Literal(((1u32 << (n & 31)) - 1) << (shift & 31))
         }
-        ("s_mov_b64", [Literal(v)]) => {
+        ("s_mov_b64", [lo @ (Literal(_) | Cbv(_, 0))]) => {
             let d = d
                 .filter(|d| d + 1 < r.len())
                 .ok_or("invalid literal pair")?;
             r[d + 1] = operand(r, hi(&i.src[0]));
-            Literal(*v)
+            *lo
         }
         ("s_bfe_u32", [Buffer(b, 1), Literal(0xe0010)]) => Stride(*b),
         ("s_max_u32", [Stride(b), Literal(1)]) => NonzeroStride(*b),
@@ -224,21 +244,20 @@ pub(super) fn bindings(
     ex: &ShaderExtract,
     insns: &[Insn],
     uav: &RootRange,
-    srv: &RootRange,
+    srvs: &[RootRange],
+    cbv_count: usize,
 ) -> Result<PackedRoot, String> {
     use Scalar::*;
-    if srv.space != 0 || !matches!(srv.offset_in_table, 0 | u32::MAX) {
-        return Err("unsupported SRV range".into());
-    }
     let mut r = [Unknown; 106];
     r[4] = Table(true);
     r[5] = Table(false);
-    for slot in 0..4 {
+    for slot in 0..cbv_count {
         for k in 0..2 {
             r[6 + 2 * slot + k] = Cbv(slot as u32, k);
         }
     }
-    r[14..16].fill(Data);
+    let group = 6 + 2 * cbv_count;
+    r[group..group + 2].fill(Data);
     let mut plan = PackedRoot {
         abi: RootAbi::RegisterWave32,
         ..Default::default()
@@ -284,7 +303,14 @@ pub(super) fn bindings(
                         i.mnemonic.as_str(),
                         "s_waitcnt" | "s_inst_prefetch" | "s_clause"
                     ) => {}
-                Enc::Smem => smem(ex, [srv, uav], &mut r, &mut plan, idx, i)?,
+                Enc::Smem => smem(
+                    ex,
+                    [srvs, std::slice::from_ref(uav)],
+                    &mut r,
+                    &mut plan,
+                    idx,
+                    i,
+                )?,
                 Enc::Mubuf => {
                     let a = sg(i.src[1])?;
                     let Some(Buffer(b, 0)) = r.get(a).copied() else {
@@ -336,7 +362,15 @@ pub(super) fn bindings(
                         && (i.op < 0x100
                             || matches!(
                                 i.mnemonic.as_str(),
-                                "v_mul_f32" | "v_pk_mul_f16" | "v_lshrrev_b64"
+                                "v_mul_f32"
+                                    | "v_pk_mul_f16"
+                                    | "v_lshrrev_b64"
+                                    | "v_pack_b32_f16"
+                                    | "v_pk_add_u16"
+                                    | "v_pk_sub_u16"
+                                    | "v_pk_add_f16"
+                                    | "v_pk_min_f16"
+                                    | "v_pk_max_f16"
                             )) {
                         &i.src[..2]
                     } else {
@@ -359,4 +393,30 @@ pub(super) fn bindings(
         return Err("invalid forward branch target".into());
     }
     Ok(plan)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_descriptor_indices_across_ranges_and_rejects_ambiguous_slots() {
+        let range = |base_register, num, offset_in_table| RootRange {
+            range_type: 0,
+            num,
+            base_register,
+            space: 0,
+            offset_in_table,
+        };
+        let ranges = [range(6, 1, 0), range(17, 2, u32::MAX)];
+        assert_eq!(table_register(&ranges, 0).unwrap(), 6);
+        assert_eq!(table_register(&ranges, 1).unwrap(), 17);
+        assert_eq!(table_register(&ranges, 2).unwrap(), 18);
+        assert!(table_register(&ranges, 3).is_err());
+        let ranges = [range(4, 2, 2), range(9, 1, u32::MAX)];
+        assert!(table_register(&ranges, 1).is_err());
+        assert_eq!(table_register(&ranges, 4).unwrap(), 9);
+        assert!(table_register(&[range(0, 2, 0), range(8, 1, 1)], 1).is_err());
+        assert!(table_register(&[range(u32::MAX, 2, 0)], 1).is_err());
+    }
 }

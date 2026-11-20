@@ -1911,7 +1911,7 @@ impl<'a> Emitter<'a> {
             }
             // Packed FMAC accumulates in its destination. A subword FMA also
             // reads that register to preserve the half outside its write mask.
-            let old_dst = matches!(ins.mnemonic.as_str(), "v_pk_fmac_f16" | "v_fma_f16")
+            let old_dst = matches!(ins.mnemonic.as_str(), "v_pk_fmac_f16" | "v_fma_f16" | "v_rcp_f16")
                 .then(|| ins.dst.first()).flatten();
             for o in ins.src.iter().chain(old_dst) {
                 if let Opnd::Sgpr(n) | Opnd::Vgpr(n) = o {
@@ -3395,7 +3395,7 @@ uint tb_fmac_half(uint a, uint b, uint c) {
             };
             return self.wv(&d, &hres(e));
         }
-        if matches!(m.as_str(), "v_rcp_f16" | "v_sqrt_f16" | "v_rsq_f16" | "v_floor_f16" | "v_ceil_f16" | "v_trunc_f16" | "v_rndne_f16" | "v_fract_f16") {
+        if ins.aux.sdwa.is_none() && matches!(m.as_str(), "v_rcp_f16" | "v_sqrt_f16" | "v_rsq_f16" | "v_floor_f16" | "v_ceil_f16" | "v_trunc_f16" | "v_rndne_f16" | "v_fract_f16") {
             let a = h16(&s[0])?;
             let e = match m.as_str() {
                 "v_rcp_f16" => format!("1.0 / {a}"),
@@ -3414,6 +3414,11 @@ uint tb_fmac_half(uint a, uint b, uint c) {
                 self.tmp += 1;
                 self.line(&format!("uint t{t} = {};", hres(e)));
                 return self.wv(&d, &format!("(t{t} == 0x3c00u ? 0x3bffu : t{t})"));
+            }
+            // The compact reciprocal updates the low half. The FSPX shader first
+            // writes the high reciprocal via SDWA, then fills the low half here.
+            if m == "v_rcp_f16" && ins.enc == Enc::Vop1 && matches!(d, Opnd::Vgpr(_)) {
+                return self.wv(&d, &format!("(({} & 0xffff0000u) | {})", r(&d)?, hres(e)));
             }
             return self.wv(&d, &hres(e));
         }
@@ -3545,6 +3550,11 @@ uint tb_fmac_half(uint a, uint b, uint c) {
                     "v_pk_min_f16" => format!("min({}, {})", v[0], v[1]),
                     _ => format!("max({}, {})", v[0], v[1]),
                 });
+            }
+            if w0 & (1 << 15) != 0 {
+                for value in &mut halves {
+                    *value = format!("saturate({value})");
+                }
             }
             return self.wv(&d, &format!("(tb_f16_rne({}) | (tb_f16_rne({}) << 16))", halves[0], halves[1]));
         }
@@ -5277,7 +5287,7 @@ uint tb_fmac_half(uint a, uint b, uint c) {
             let [tx, ty_, tz] = compute_group(ex);
             let nparams = ex.root_sig.as_ref().map(|r| r.params.len()).unwrap_or(4);
             let g = match self.packed.as_ref().map(|p| &p.abi) {
-                Some(RootAbi::RegisterWave32) => 14, // after two tables and four root CBV pairs
+                Some(RootAbi::RegisterWave32) => 6 + 2 * (nparams - 2), // two tables followed by root CBV pairs
                 Some(RootAbi::ArgumentBlock) => 4,
                 None => 4 + nparams,
             };

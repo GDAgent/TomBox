@@ -74,12 +74,12 @@ across 61 modules with `LoadLibraryExA` and `GetProcAddress` under Proton
 Experimental `experimental-11.0-20261027b`. This checks symbol availability.
 Coin Run also exercised the local libraries and dispatched the embedded shaders separately. The progress map merges these imports with Fortnite’s by dependency DLL and exact symbol name or ordinal. [Reproduce the library checks](../tools/homebrew/README.md#local-scarlett-libraries) · [Audit snapshot](../tools/progress/scarlett-dll-imports.tsv) · [Progress map](img/progress.svg)
 
-**All 611 distinct static imports resolve.** Coin Run checks the BVH builder’s `xmem!XMemVirtualQuery` against reserved and committed process memory, including an invalid-handle case. The shim returns host memory state and protection, and reports zero for the console GPU-access fields. The upscaler’s `XMemGetWorkingSetStatistics` still returns `E_NOTIMPL`. Two host imports now have execution evidence from the staged libraries. Coin Run uses `GetModuleHandleExW` to recover the owning module from an export address and `GetModuleFileNameW` to check that module’s on-disk path.
+**All 611 distinct static imports resolve.** Coin Run checks the BVH builder’s `xmem!XMemVirtualQuery` against reserved and committed process memory, including an invalid-handle case. The shim returns host memory state and protection, and reports zero for the console GPU-access fields. The upscaler’s `XMemGetWorkingSetStatistics` still returns `E_NOTIMPL`. Coin Run uses `GetModuleHandleExW` to recover the owning module from an export address and `GetModuleFileNameW` to check that module’s on-disk path. The Scarlett atomic wait DLL calls the host’s `WaitOnAddress` and `WakeByAddressSingle` during the timeout, unequal-value and cross-thread notification checks.
 
 | Supplied DLL | Import entries | Exports | Translation evidence and open work |
 |---|---:|---:|---|
 | `amd_fidelityfx_loader_xbox.dll` | 22 | 5 | Four render-resolution queries returned the expected sizes through the loader. The separate frame-generation provider was absent. |
-| `amd_fidelityfx_upscaler_xbox.dll` | 86 | 5 | The same four queries passed directly on the provider. Fourteen of 29 embedded kernels pass GPU readback. Fifteen kernels and full-frame upscaling remain open. The model-specific DLL name is the provider’s own PE export name. |
+| `amd_fidelityfx_upscaler_xbox.dll` | 86 | 5 | The same four queries passed directly on the provider. Fifteen of 29 embedded kernels pass GPU readback, including the sharpening pass. Fourteen kernels and full-frame upscaling remain open. The model-specific DLL name is the provider’s own PE export name. |
 | `XboxBvhBuilder.dll` | 57 | 12 | Sixteen of 52 embedded kernels pass GPU readback. Four of them also complete a stable radix sort of 16,384 key/index pairs. The native DLL loads and its validator export resolves. A complete acceleration-structure build remains unverified. |
 | `Bink2Scarlett.dll` | 60 | 74 | Coin Run set and retrieved a Bink error string. The host resolves the XAudio2 ordinal. Synchronized audio and video playback remains unverified. |
 | `libHttpClient.GDK.dll` | 198 | 129 | Coin Run queried the library version. WinHTTP and Crypt32 imports resolve. The DLL names `xgameruntime.dll` and `QueryApiImpl`. GDK service, HTTP and WebSocket calls remain unverified. |
@@ -88,7 +88,7 @@ Coin Run also exercised the local libraries and dispatched the embedded shaders 
 | `msvcp140.dll` | 187 | 1493 | The native library reported zero uncaught exceptions outside an exception handler. The binary also names `appmodel.dll`. |
 | `msvcp140_1.dll` | 33 | 7 | The initial aligned default memory resource matched the aligned new/delete resource. |
 | `msvcp140_2.dll` | 96 | 44 | The native beta function returned 1/12 for inputs 2 and 3. |
-| `msvcp140_atomic_wait.dll` | 64 | 32 | Four allocated words were zero-initialized and released. Atomic wait/wake behavior remains unverified. The binary also names `icu.dll`. |
+| `msvcp140_atomic_wait.dll` | 64 | 32 | Zero-initialized allocation, immediate timeout, unequal-value return and waking one waiting thread passed. The binary also names `icu.dll`. |
 | `msvcp140_codecvt_ids.dll` | 24 | 4 | The two exported character-conversion facet IDs resolved to distinct addresses. |
 | `vccorlib140.dll` | 114 | 256 | The C++/CX initialization export resolved from the supplied DLL. WinRT activation remains unverified. The binary also names `gcombase.dll`. |
 | `vcomp140.dll` | 78 | 113 | The serial OpenMP team reported one thread with index zero. The binary also names `vcomp120ui.dll`. |

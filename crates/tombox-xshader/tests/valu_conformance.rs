@@ -915,6 +915,12 @@ fn cases() -> Vec<Case> {
             Want::H2(f16_from(lo, false), f16_from(hi, false))
         }));
     }
+    let mut clamped_mul = vop3p(0x10, 2, 0, 0b111, 0, 0);
+    clamped_mul[0] |= 1 << 15;
+    c.push(case("v_pk_mul_f16 clamp", clamped_mul, [H2, H2, I], |a, b, _, _| {
+        let lane = |x, y| f16_from((f16_to(x) * f16_to(y)).max(0.0).min(1.0), false);
+        Want::H2(lane(a & 0xffff, b & 0xffff), lane(a >> 16, b >> 16))
+    }));
     // v_fma_mix_f32 with all-f32 sources, then with src1 = high half (f16) of v1.
     c.push(case("v_fma_mix_f32 f32", vop3p(0x20, 3, 0, 0, 0, 0), [F, F, F], |a, b2, c2, _| mad_any(f(a), f(b2), f(c2))));
     c.push(case("v_fma_mix_f32 hi16", vop3p(0x20, 3, 0b010, 0b010, 0, 0), [F, H2, F], |a, b2, c2, _| mad_any(f(a), f16_to(b2 >> 16), f(c2))));
@@ -1218,6 +1224,10 @@ fn coin_vector_ops() -> Vec<Case> {
         case("v_swap_b32 read v0", vec![0x7e00_cb03, 0x7e06_0300, S_ENDPGM], [I; 3], |_, _, c, _| Want::U(c)),
         case("v_rcp_f16", vec![0x7e06_a900, S_ENDPGM], [H, I, I], |a, _, _, _| {
             Want::H(f16_from(1.0 / f16_to(a & 0xffff), false))
+        }),
+        case("v_rcp_f16 high then low", vec![0x7e06_a8f9, 0x0005_1500, 0x7e06_a900, S_ENDPGM],
+             [Dom::H2, I, I], |a, _, _, _| {
+            Want::H2(f16_from(1.0 / f16_to(a & 0xffff), false), f16_from(1.0 / f16_to(a >> 16), false))
         }),
         case("v_fmaak_f32", vec![0x5a06_0300, 0x3f40_0000, S_ENDPGM], [F, F, F], |a, b, _, _| {
             mad_any(f(a), f(b), 0.75)

@@ -1,8 +1,10 @@
 // Offline checks for the supplied x64 Scarlett runtimes. The launcher puts the
 // audited DLLs and Coin Run together in an isolated application directory.
 #pragma once
+#include <atomic>
 #include <cmath>
 #include <cwchar>
+#include <thread>
 
 namespace scarlett_libraries {
 
@@ -66,6 +68,27 @@ inline bool check_game_chat() {
     return ok;
 }
 
+inline bool check_atomic_wait(HMODULE lib) {
+    auto wait = symbol<int (WINAPI*)(const void*, void*, size_t, DWORD)>(lib, "__std_atomic_wait_direct");
+    auto wake = symbol<void (WINAPI*)(const void*)>(lib, "__std_atomic_notify_one_direct");
+    LONG word = 7, equal = word, different = 11;
+    if (!wait || !wake || wait(&word, &equal, sizeof(word), 0) || GetLastError() != ERROR_TIMEOUT ||
+        !wait(&word, &different, sizeof(word), 0)) return false;
+
+    // Keep the compared word equal. Retry the notification if the sender runs before the wait.
+    std::atomic<bool> done{false};
+    std::thread sender([&] {
+        do {
+            wake(&word);
+            Sleep(1);
+        } while (!done.load());
+    });
+    const bool woke = wait(&word, &equal, sizeof(word), 5000) != 0;
+    done.store(true);
+    sender.join();
+    return woke;
+}
+
 inline bool check(HMODULE lib, const char* name) {
     if (!std::strcmp(name, "XboxBvhBuilder.dll")) {
         return GetProcAddress(lib, "?ValidateRehydrateAccelerationStructureBuildDesc@XboxBvhBuilder@@QEAAJPEBUD3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC@@@Z")
@@ -119,7 +142,7 @@ inline bool check(HMODULE lib, const char* name) {
         auto words = static_cast<unsigned*>(allocate(4, sizeof(unsigned)));
         const bool pass = words && !(words[0] | words[1] | words[2] | words[3]);
         release(words);
-        return pass;
+        return pass && check_atomic_wait(lib);
     }
     if (!std::strcmp(name, "vcomp140.dll")) {
         auto num_threads = symbol<int (*)()>(lib, "omp_get_num_threads");
@@ -148,7 +171,7 @@ inline int run() {
     const Probe probes[] = {
         {"vcruntime140.dll","overlapping memmove"}, {"vcruntime140_1.dll","exception handler export"},
         {"msvcp140.dll","uncaught exception count"}, {"msvcp140_1.dll","default memory resource"},
-        {"msvcp140_2.dll","beta(2,3)"}, {"msvcp140_atomic_wait.dll","zeroed allocation and free"},
+        {"msvcp140_2.dll","beta(2,3)"}, {"msvcp140_atomic_wait.dll","zeroed allocation, wait timeout, unequal value and cross-thread wake"},
         {"msvcp140_codecvt_ids.dll","distinct exported facet IDs"}, {"concrt140.dll","available processor count"},
         {"vcomp140.dll","serial OpenMP team"}, {"vccorlib140.dll","initialization export"},
         {"XboxBvhBuilder.dll","native load and XMemVirtualQuery memory-region checks"},

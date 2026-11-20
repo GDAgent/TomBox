@@ -90,8 +90,14 @@ impl PackedRoot {
         let RootParamKind::Table(srvs) = &srvs.kind else {
             return Err("expected FSPX SRV table".into());
         };
-        let [s] = &srvs[..] else { return Err("unsupported FSPX SRV ranges".into()); };
-        if s.range_type != 0 || cbvs.len() != 4
+        let sharpen = ex.psv_threads == Some([64, 1, 1])
+            && ex.fspx_config == Some([0x4005cf00, 0x6c090102, 0, 0x10040, 1, 0x402c0349, 0x190]);
+        if srvs.is_empty() || (!sharpen && srvs.len() != 1) {
+            return Err("unsupported FSPX SRV ranges".into());
+        }
+        let expected_cbvs = if sharpen { 1 } else { 4 };
+        if srvs.iter().any(|s| s.range_type != 0 || s.space != 0)
+            || cbvs.len() != expected_cbvs
             || !cbvs.iter().enumerate().all(|(i, p)| {
                 matches!(p.kind,
                 RootParamKind::Descriptor { kind: 2, register, space: 0 } if register == i as u32)
@@ -102,10 +108,14 @@ impl PackedRoot {
         {
             return Err("unsupported FSPX root signature".into());
         }
-        if ex.psv_threads == Some([256, 1, 1]) && ex.fspx_config == Some([
-            0x4005cf00, 0x6c090102, 0, 0x10100, 0x100001, 0x402c0345, 0x1819c,
-        ]) {
-            return prepass::bindings(ex, insns, u, s);
+        if sharpen
+            || (ex.psv_threads == Some([256, 1, 1])
+                && ex.fspx_config
+                    == Some([
+                        0x4005cf00, 0x6c090102, 0, 0x10100, 0x100001, 0x402c0345, 0x1819c,
+                    ]))
+        {
+            return prepass::bindings(ex, insns, u, srvs, cbvs.len());
         }
         if ex.psv_threads != Some([32, 1, 1])
             || ex.fspx_config

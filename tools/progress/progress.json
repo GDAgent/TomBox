@@ -3,7 +3,7 @@
   "milestones": {"done": 14, "total": 19},
   "shaders": {"translated": 105506, "total": 105506},
   "audited_compute_shaders": {
-    "FidelityFX upscaler": {"readback": 14, "observed": 29},
+    "FidelityFX upscaler": {"readback": 15, "observed": 29},
     "Xbox BVH Builder": {"readback": 16, "observed": 52}
   },
   "import_notes": {
@@ -11,6 +11,8 @@
     "xmem.dll!XMemVirtualQuery": "Coin Run verified desktop region state and protection; GPU access flags unavailable",
     "gamechat2.dll!(delay-loaded)": "optional Windows GDK provider loaded under Proton; Fortnite delay-load symbols and voice sessions unverified",
     "api-ms-win-core-libraryloader-l1-2-0.dll!GetModuleHandleExW": "native module address resolved to its expected owner in the Scarlett library fixture",
+    "api-ms-win-core-synch-l1-2-0.dll!WaitOnAddress": "the Scarlett atomic wait DLL returned a timeout for an equal value and succeeded immediately for an unequal value",
+    "api-ms-win-core-synch-l1-2-0.dll!WakeByAddressSingle": "notification through the Scarlett atomic wait DLL released a waiter on an unchanged word",
     "kernel32.dll!GetModuleFileNameW": "returned the expected app-local paths in the Scarlett library fixture"
   },
   "import_overrides": {
@@ -18,6 +20,7 @@
     "AcpHal.dll": "partial", "MFPlat.DLL": "partial", "MFReadWrite.dll": "partial",
     "XAudio2_9.dll": "partial", "GameInput.dll": "partial", "GameChat2.dll": "partial",
     "api-ms-win-core-libraryloader-l1-2-0.dll!GetModuleHandleExW": "done", "kernel32.dll!GetModuleFileNameW": "done",
+    "api-ms-win-core-synch-l1-2-0.dll!WaitOnAddress": "done", "api-ms-win-core-synch-l1-2-0.dll!WakeByAddressSingle": "done",
     "GameInput.dll!#1": "done", "XAudio2_9.dll!#1": "done",
     "XMemGetWorkingSetStatistics": "partial", "XMemTransferMemory": "partial",
     "D3D12XboxSetProcessDebugFlags": "partial"

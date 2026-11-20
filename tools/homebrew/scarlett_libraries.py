@@ -40,6 +40,7 @@ def main(source):
                 failures.append(command)
     for mode, name in [("--bvh-sort-test", "xboxbvhbuilder.dll"),
                        ("--fsr-postpass-test", "amd_fidelityfx_upscaler_xbox.dll"),
+                       ("--fsr-sharpen-test", "amd_fidelityfx_upscaler_xbox.dll"),
                        ("--fsr-prepass-test", "amd_fidelityfx_upscaler_xbox.dll")]:
         if subprocess.run([HOMEBREW / "play-coins.sh", mode, libraries[name]]).returncode:
             failures.append(mode)

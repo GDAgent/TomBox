@@ -278,6 +278,16 @@ tools/homebrew/build-clear.sh
 tools/homebrew/play-coins.sh --fsr-prepass-test /path/to/amd_fidelityfx_upscaler_xbox.dll
 ```
 
+### Retail FidelityFX sharpening
+
+Coin Run extracts shader `627f8369a1fe920d` from the supplied DLL and dispatches it with the embedded root signature. The original shader reads the color texture at `t18` and exposure at `t17`, and writes the sharpened image to `u11`. The probe leaves the unused `t6` descriptor null.
+
+```sh
+tools/homebrew/play-coins.sh --fsr-sharpen-test /path/to/amd_fidelityfx_upscaler_xbox.dll
+```
+
+Two partial dispatches over a 32×32 pattern exercise horizontal and vertical workgroup placement at strengths zero and one with different exposure ratios. The CPU reference models the five-tap filter, half-precision intermediates and inverse log encoding. The probe compares every RGBA channel within an absolute tolerance of 0.00001 plus 0.2% of the reference and checks every texel outside the dispatch exactly. [AMD’s RCAS filter reference](https://github.com/GPUOpen-Effects/FidelityFX-FSR/blob/master/ffx-fsr/ffx_fsr1.h)
+
 ### Retail FidelityFX postpasses
 
 Pass the Scarlett upscaler DLL to the probe as a data file. It locates the 13
