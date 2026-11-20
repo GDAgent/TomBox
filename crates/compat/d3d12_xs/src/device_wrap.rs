@@ -427,6 +427,32 @@ unsafe extern "system" fn create_cbv(this: *mut DeviceWrapper, pdesc: *const u8,
     unsafe { f(real, desc.as_ptr(), dest) };
 }
 
+/// `VERTEX_AND_CONSTANT_BUFFER | INDEX_BUFFER`: read states PC D3D12 accepts only for
+/// buffers. Console titles also put them on textures (observed: render targets transitioned
+/// to 0x8c3, GENERIC_READ without INDIRECT_ARGUMENT). PC fails the command list's Close and
+/// removes the device when it is executed.
+pub(crate) const BUFFER_ONLY_STATES: u32 = 0x3;
+
+/// A texture cannot be read as vertex/index/constant data, so dropping those bits keeps the
+/// remaining read states (shader resource, copy source, ...) and their synchronisation.
+pub(crate) fn texture_state(state: u32) -> u32 {
+    state & !BUFFER_ONLY_STATES
+}
+
+/// `ID3D12Resource::GetDesc` (slot 10) reports D3D12_RESOURCE_DIMENSION_BUFFER.
+pub(crate) unsafe fn is_buffer(res: *mut c_void) -> bool {
+    let describe: unsafe extern "system" fn(*mut c_void, *mut u64) -> *mut u64 =
+        unsafe { core::mem::transmute(*real_vtbl(res).add(10)) };
+    let mut desc = [0u64; 8];
+    unsafe { describe(res, desc.as_mut_ptr()) };
+    desc[0] as u32 == 1
+}
+
+/// Initial state of a new resource of dimension `dim` (1 = buffer).
+fn initial_state(dim: u32, state: u32) -> u32 {
+    if dim == 1 { state } else { texture_state(state) }
+}
+
 /// PC IID_ID3D12Resource = {696442be-a72e-4059-bc79-5b5c98040fad}
 static IID_ID3D12RESOURCE: Guid = Guid {
     d1: 0x6964_42be, d2: 0xa72e, d3: 0x4059, d4: [0xbc, 0x79, 0x5b, 0x5c, 0x98, 0x04, 0x0f, 0xad],
@@ -470,7 +496,10 @@ unsafe extern "system" fn create_committed_resource(
         desc_copy[0x30..0x34].copy_from_slice(&(flags & PC_RESOURCE_FLAGS).to_le_bytes());
         desc_copy.as_ptr() as *const u32
     };
-    let hr = unsafe { f(real, pheap, heap_flags, desc_ptr, init_state, pclear, use_riid, ppv) };
+    let pc_state = if pdesc.is_null() { init_state } else {
+        initial_state(u32::from_le_bytes(desc_copy[..4].try_into().unwrap()), init_state)
+    };
+    let hr = unsafe { f(real, pheap, heap_flags, desc_ptr, pc_state, pclear, use_riid, ppv) };
     if hr >= 0 && !ppv.is_null() && !pdesc.is_null() {
         unsafe { crate::rtcap::register(*ppv, &desc_copy[..0x38], init_state) };
         if crate::rtcap::enabled() && desc_copy[0] == 1 && !pheap.is_null() {
@@ -1125,7 +1154,8 @@ unsafe extern "system" fn create_placed_resource(
     let mut d = unsafe { core::slice::from_raw_parts(pdesc, 0x38).to_vec() };
     let flags = u32::from_le_bytes(d[0x30..0x34].try_into().unwrap());
     d[0x30..0x34].copy_from_slice(&(flags & 0xFF).to_le_bytes());
-    let hr = unsafe { f(real, heap, offset, d.as_ptr(), init_state, pclear, &IID_ID3D12RESOURCE, ppv) };
+    let pc_state = initial_state(u32::from_le_bytes(d[..4].try_into().unwrap()), init_state);
+    let hr = unsafe { f(real, heap, offset, d.as_ptr(), pc_state, pclear, &IID_ID3D12RESOURCE, ppv) };
     if hr >= 0 && crate::rtcap::enabled() && d[0] == 1 && !ppv.is_null() {
         let width = u64::from_le_bytes(d[0x10..0x18].try_into().unwrap());
         unsafe { crate::bindtrace::note_buffer(*ppv, width, crate::bindtrace::heap_type_of(heap as usize)) };
@@ -1159,7 +1189,7 @@ unsafe extern "system" fn create_placed_resource_x(
     let heap: [u32; 5] = [1 /* DEFAULT */, 0, 0, 1, 1];
     let f: unsafe extern "system" fn(*mut c_void, *const u32, u32, *const u8, u32, *const c_void, *const Guid, *mut *mut c_void) -> i32 =
         unsafe { core::mem::transmute(*real_vtbl(real).add(27)) };
-    let hr = unsafe { f(real, heap.as_ptr(), 0, d.as_ptr(), init_state, pclear, &IID_ID3D12RESOURCE, ppv) };
+    let hr = unsafe { f(real, heap.as_ptr(), 0, d.as_ptr(), initial_state(dim, init_state), pclear, &IID_ID3D12RESOURCE, ppv) };
     static N: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
     if hr < 0 || n < 12 {
@@ -1303,4 +1333,19 @@ pub fn wrap_device(real: *mut c_void) -> *mut c_void {
     }
     let w = Box::new(DeviceWrapper { vtable: vtable(), real, refs: AtomicU32::new(1) });
     Box::into_raw(w) as *mut c_void
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+
+    #[test]
+    fn textures_lose_only_buffer_only_read_states() {
+        assert_eq!(texture_state(0x8c3), 0x8c0); // observed render-target read state
+        assert_eq!(texture_state(0xac3), 0xac0); // GENERIC_READ
+        assert_eq!(texture_state(0x4), 0x4);
+        assert_eq!(texture_state(0x3), 0x0);
+        assert_eq!(initial_state(1, 0xac3), 0xac3); // buffers keep every bit
+        assert_eq!(initial_state(3, 0xac3), 0xac0);
+    }
 }
