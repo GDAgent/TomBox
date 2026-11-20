@@ -373,7 +373,7 @@ fn format_bpp(fmt: u32) -> u64 {
 }
 
 /// D3D12 64 KiB standard-swizzle tile size, over-estimated (whole tiles per mip).
-fn alloc_size_for(dim: u32, width: u64, height: u64, arr: u64, mips: u64, fmt: u32, samples: u64) -> u64 {
+pub(crate) fn alloc_size_for(dim: u32, width: u64, height: u64, arr: u64, mips: u64, fmt: u32, samples: u64) -> u64 {
     const TILE: u64 = 0x10000;
     if dim <= 1 {
         // Buffer: 64 KiB-aligned length.
@@ -471,6 +471,9 @@ unsafe extern "system" fn create_committed_resource(
         desc_copy.as_ptr() as *const u32
     };
     let hr = unsafe { f(real, pheap, heap_flags, desc_ptr, init_state, pclear, use_riid, ppv) };
+    if hr >= 0 && !ppv.is_null() {
+        crate::resource_map::note_committed(unsafe { *ppv }, heap_flags);
+    }
     if hr >= 0 && !ppv.is_null() && !pdesc.is_null() {
         unsafe { crate::rtcap::register(*ppv, &desc_copy[..0x38], init_state) };
         if crate::rtcap::enabled() && desc_copy[0] == 1 && !pheap.is_null() {
@@ -1126,6 +1129,9 @@ unsafe extern "system" fn create_placed_resource(
     let flags = u32::from_le_bytes(d[0x30..0x34].try_into().unwrap());
     d[0x30..0x34].copy_from_slice(&(flags & 0xFF).to_le_bytes());
     let hr = unsafe { f(real, heap, offset, d.as_ptr(), init_state, pclear, &IID_ID3D12RESOURCE, ppv) };
+    if hr >= 0 && !ppv.is_null() {
+        crate::resource_map::note_other(unsafe { *ppv });
+    }
     if hr >= 0 && crate::rtcap::enabled() && d[0] == 1 && !ppv.is_null() {
         let width = u64::from_le_bytes(d[0x10..0x18].try_into().unwrap());
         unsafe { crate::bindtrace::note_buffer(*ppv, width, crate::bindtrace::heap_type_of(heap as usize)) };
@@ -1173,6 +1179,7 @@ unsafe extern "system" fn create_placed_resource_x(
         let addref: unsafe extern "system" fn(*mut c_void) -> u32 = unsafe { core::mem::transmute(*real_vtbl(res).add(1)) };
         unsafe { addref(res) };
         crate::placed::register(res, crate::placed::Placed { va, desc: orig, init_state });
+        crate::resource_map::note_other(res);
     }
     hr
 }
