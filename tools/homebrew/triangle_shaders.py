@@ -86,6 +86,25 @@ if __name__ == "__main__":
         end,
     ], signature(), signature(), compute_root))
 
+    # Inline u0 (two address words) followed by four b0 constants. The older
+    # executable preamble encodes 1,0,0 while PSVRuntimeInfo2 specifies 32 threads.
+    packed_root = words(1, 2, 24, 0, 0, 0x03000000, 4, 0, 48, 1, 0, 56, 0, 0, 0, 0, 4)
+    psv = words(48, 0, 0, 0, 0, 0, 0, 5, 0, 0, 32, 1, 1, 0)
+    emit("packed_root_cs", shader(5, [
+        0x8703FF01, 255,                # s3 = low 8 bits of the high address word
+        0xBE820300,                     # s2 = low word
+        0xD7460000, 0x04010A04,         # v0 = (group X << 5) + local X
+        0xF4080201, 0xFA000008,         # s[8:11] = inline constants
+        0xBF8CC07F, 0x7DA80008,         # enable lanes where s8 > v0
+        0xF4040001, 0xFA000000,         # s[0:1] = UAV address
+        0xBF8CC07F, 0xBE811D95,         # stride = 32 bytes
+        0xBE8203C1, 0xBE8303FF, 0x11014FAC,
+        0xE0302004, 0x80000300,         # v3 = row[v0].word1
+        0xBF8C3F70, 0x4A060609,         # v3 += s9
+        0xE0702010, 0x80000300,         # row[v0].word4 = v3
+        end,
+    ], signature(), signature(), packed_root, threads=(1, 0, 0), psv=psv))
+
     increment_prefix = [
         0xF4080302, 0xFA000000,         # s_load_dwordx4 s[12:15], s[4:5], 0
         0xBF8CC07F,                     # s_waitcnt lgkmcnt(0)

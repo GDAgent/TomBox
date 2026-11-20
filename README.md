@@ -9,7 +9,7 @@ TomBox is an experimental Xbox Series X|S compatibility runtime for x64 Windows 
 | Fortnite Chapter 2 Season 4 · 2.0.1461.7919 · Windows | Boots, logs in to a private server and reaches the lobby. The 2D interface renders and mouse input works. | The character material and bloom render incorrectly. The lobby is silent. Gameplay and retail controller input remain unverified. |
 | Coin Run · homebrew · Linux with Proton | Playable in 2D and 3D. GPU readback checks textures and depth. Virtual pads verify GameInput polling, callbacks, hotplug and rumble. Stereo loopback verifies XAudio2 pickup sounds, panning and mixing. | Controller tests use virtual devices. Physical controllers, reverb and spatial audio remain unverified. |
 
-[![System imports](docs/img/badge-imports.svg)](docs/COMPATIBILITY.md) [![Direct3D 12.x methods](docs/img/badge-d3d12x.svg)](docs/img/progress.svg) [![RDNA2 instructions](docs/img/badge-instructions.svg)](docs/img/progress.svg) [![Shaders translated](docs/img/badge-shaders.svg)](docs/DEVELOPMENT_LOG.md) [![Retail milestones](docs/img/badge-milestones.svg)](CLAUDE.md#12-milestones-and-definition-of-success)
+[![System imports](docs/img/badge-imports.svg)](docs/COMPATIBILITY.md) [![Direct3D 12.x methods](docs/img/badge-d3d12x.svg)](docs/img/progress.svg) [![RDNA2 instructions](docs/img/badge-instructions.svg)](docs/img/progress.svg) [![Fortnite shaders translated](docs/img/badge-shaders.svg)](docs/DEVELOPMENT_LOG.md) [![Retail milestones](docs/img/badge-milestones.svg)](CLAUDE.md#12-milestones-and-definition-of-success)
 
 [![Progress map of system imports, Direct3D methods and shader instructions](docs/img/progress.svg)](docs/img/progress.svg)
 
@@ -17,7 +17,7 @@ TomBox is an experimental Xbox Series X|S compatibility runtime for x64 Windows 
 
 - **System imports** count the tested Fortnite build’s imports, including native Windows functions. Coin Run independently verifies the ordinal-1 factories for GameInput and XAudio2.
 - **Direct3D 12.x** counts covered device and command-list slots once across GXDK editions. A discovery beyond the tracked range extends the denominator. [Slot evidence](docs/COMPATIBILITY.md#d3d12x-slot-tracking)
-- **RDNA2** tracks named opcode-table entries and instructions observed in the retail scan. Green means every retail shader using that instruction translated. Amber also credits instructions verified only by GPU reference checks. Open the map and hover over a square for its mnemonic and evidence.
+- **RDNA2** tracks named instructions across Fortnite and Xbox BVH Builder. Green means every scanned retail shader using the instruction translated. Partial retail translation and GPU-only checks earn amber. Hover over a square for counts by source.
 - **Retail milestones** track the path from inspecting a dump through playable games. One retail title has been tested. Its latest completed milestone is reaching the main menu. [Compatibility matrix](docs/COMPATIBILITY.md) · [Known limitations](docs/TECHNICAL_DEBT.md)
 
 ## Try Coin Run on Linux

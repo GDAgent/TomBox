@@ -38,6 +38,7 @@ fn shader(stage: Stage, words: &[u32], input_sig: Vec<SigElement>, output_sig: V
         isa_data: isa.clone(),
         isa,
         isa_offset_in_fssm: 0,
+        psv_threads: None,
         isa_preamble: [0; 4],
         has_input_sig: true,
         has_output_sig: true,
@@ -200,5 +201,43 @@ fn buffer_cache_controls_fence_compute_uavs() {
         let hlsl = translate(&ex).unwrap().hlsl;
         assert!(hlsl.contains("globallycoherent RWStructuredBuffer"));
         assert_eq!(hlsl.matches("DeviceMemoryBarrier();").count(), 1);
+    }
+}
+
+#[test]
+fn packed_root_addresses_and_vector_load_padding_cannot_escape_as_data() {
+    let make = |operand: u32| {
+        let root = RootSig {
+            version: 1, flags: 0x0300_0000, num_static_samplers: 0,
+            params: vec![
+                RootParam { visibility: 0, kind: RootParamKind::Descriptor { kind: 4, register: 0, space: 0 } },
+                RootParam { visibility: 0, kind: RootParamKind::Constants { register: 2, space: 0, num32: 1 } },
+            ],
+        };
+        let mut ex = shader(Stage::Compute, &[
+            0x8703_ff01, 255, 0xbe82_0300,   // s[2:3] = argument block
+            0xf408_0201, 0xfa00_0000,       // s[8:11] = address, constant, padding
+            0x7e00_0200 | operand, S_ENDPGM, // return a word as ordinary vector data
+        ], vec![], vec![], Some(root));
+        ex.psv_threads = Some([32, 1, 1]);
+        translate(&ex)
+    };
+    assert!(make(10).expect("inline constant").hlsl.contains("cb2[0].x"));
+    for operand in [8, 9, 11] {
+        assert!(make(operand).err().unwrap().contains("root address or padding"));
+    }
+}
+
+#[test]
+fn psv_thread_dimensions_respect_stage_record_size_and_group_limits() {
+    use tombox_xshader::meta::parse_compute_threads;
+    let psv = |size: u32, stage, x, y, z| {
+        [size, 0, 0, 0, 0, 0, 0, stage, 0, 0, x, y, z].into_iter()
+            .flat_map(u32::to_le_bytes).collect::<Vec<_>>()
+    };
+    assert_eq!(parse_compute_threads(&psv(48, 5, 16, 4, 2)), Some([16, 4, 2]));
+    for invalid in [psv(36, 5, 32, 1, 1), psv(56, 5, 32, 1, 1), psv(48, 2, 32, 1, 1),
+                    psv(48, 5, 0, 1, 1), psv(48, 5, u32::MAX, 2, 1), psv(48, 5, 1, 1, 65)] {
+        assert_eq!(parse_compute_threads(&invalid), None);
     }
 }

@@ -36,7 +36,7 @@ ds_write_b64 14 14
 exp 104323 104323
 flat_load_dword 1 1
 flat_load_dwordx2 3 3
-flat_load_dwordx4 14 14
+flat_load_dwordx3 14 14
 image_atomic_add 1 1
 image_atomic_umax 1 1
 image_gather4_lz 45 45

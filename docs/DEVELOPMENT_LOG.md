@@ -1186,3 +1186,35 @@ desktop display. All 43 distinct checked-in retail shader fixtures compiled with
 The retail tracker now uses the decoded names `v_fmac_f16`, `v_fmaak_f16` and
 `v_permlanex16_b32` for three existing entries. Their retail occurrence counts carry
 over from the earlier scan. [AMD RDNA 2 ISA reference](https://docs.amd.com/api/khub/documents/Et~wpu9g~Ffl7d9q0QZ~Og/content)
+
+## 2026-11-20 — Retail BVH compute shaders
+
+TomBox now translates 6 of the 52 unique compute shaders in the supplied `XboxBvhBuilder.dll`
+(SHA-256 `99f803ac22c01ef329dddb1d40be67238d2a812d01e8d040b3cb5135bc23707e`).
+The previous translator rejected all 52. To repeat the scan with the DLL and DXC available,
+run `xscan XboxBvhBuilder.dll --mnemonics 1 --compile 1` on Windows or under Proton.
+The six kernels load root SRVs, UAVs and inline
+constants through one argument block. Their compute group size comes from PSV metadata.
+[PSV runtime layout](https://github.com/microsoft/DirectXShaderCompiler/blob/main/include/dxc/DxilContainer/DxilPipelineStateValidation.h)
+
+All six compiled with DXC and ran through device slot 62 under Proton. Each dispatch launched
+three groups of 32 threads with 71 active inputs. CPU references derived from the retained
+DXIL checked 8,192 result and guard words per shader on NVIDIA and Radeon. Five kernels
+matched bit for bit. For the geometric kernel (`9c5779bf28531062`), the reference solved
+the plane intersections independently with relative tolerance `2e-4` and absolute tolerance
+`2e-5` on written floats. Untouched guard words matched exactly. The 43 distinct checked-in
+Fortnite fixtures also compiled with DXC.
+
+The BVH scan adds 42 named instructions to the retail observations and records 22 unresolved
+opcode tags for investigation. Only named instructions enter the map. The older Fortnite
+snapshot called GFX10 FLAT opcode `0x0f` `flat_load_dwordx4`; its 14 observations now have
+the corrected `flat_load_dwordx3` name. Across both sources, the new translations move
+`s_mul_hi_u32` and `v_mul_hi_u32` to green, raising the combined baseline from 105 to 107
+of 526. The earlier 272-green map covered Fortnite alone. Seven remaining BVH shaders
+stop at an integer-add wave reduction. [BVH scan counts](../tools/progress/bvh-mnemonics.txt)
+
+Coin Run reproduces the packed-root layout using an original shader. The suite also checks
+all 16 words of a scalar load, all three words of a flat load, 64-bit shifts and comparisons,
+scalar bit operations, and buffer AND/OR atomics with and without returning the old value.
+Direct GPU reference checks cover 306 of 314 retail-observed instructions. Three more have
+limited cache probes. [GPU results](../tools/progress/coin-rdna2-coverage.tsv)

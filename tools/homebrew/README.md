@@ -228,7 +228,7 @@ The launcher rebuilds Coin Run and the runtime. The game creates an Xbox compute
 pipeline for each generated shader, dispatches one workgroup per input and reads
 back the result, VCC, EXEC and a completion marker. The Rust reference evaluates the
 same inputs independently and checks the outputs relevant to each instruction.
-Multi-thread probes select one reader per workgroup and exchange values between lanes.
+A packed-root shader reads inline constants and a root UAV. It dispatches three 32-thread groups and checks every output word, including the 25 masked lanes. Multi-thread probes also select one reader per workgroup and exchange values between lanes.
 Set `TOMBOX_PROBE_WAVE64=1` on a device that runs 64-lane waves to check nonzero
 upper-half lane counts. The companion memory suite checks buffer and texture reads,
 writes and atomic results. A 16×16 graphics probe checks geometry emission, exports,

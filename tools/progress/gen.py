@@ -5,8 +5,9 @@ grey = not done), grouped the way the data is grouped:
   * functions the test title imports (analysis/fortnite_exe.json + progress.json overrides)
   * Direct3D 12.x interface methods (slot ranges in progress.json)
   * RDNA2 instructions: named opcode table entries plus retail scan observations. Green
-    requires every retail shader using the instruction to translate (mnemonics.txt, from
-    `xscan <pak> --mnemonics 1`). A passing GPU reference case also earns amber.
+    requires every scanned retail shader using the instruction to translate. Each source
+    snapshot contains the MNEM rows from `xscan <file> --mnemonics 1` without the prefix.
+    A passing GPU reference case also earns amber.
     Set TOMBOX_VALU_MNEMONICS to the output path when running the full valu_conformance
     test to refresh valu-mnemonics.txt. Coin Run writes coin-rdna2-coverage.tsv after
     --rdna2-test passes; copy that report here to refresh the homebrew evidence.
@@ -64,9 +65,17 @@ def d3d12x():
 def instructions():
     src = open(os.path.join(root, "crates", "tombox-xshader", "src", "rdna2", "mnem.rs"), encoding="utf-8").read()
     used = {}
-    for line in open(os.path.join(here, "mnemonics.txt"), encoding="utf-8"):
-        n, u, ok = line.split()
-        used[n] = (int(u), int(ok))
+    for source, filename in [("Fortnite", "mnemonics.txt"), ("Xbox BVH", "bvh-mnemonics.txt")]:
+        with open(os.path.join(here, filename), encoding="utf-8") as f:
+            for line in f:
+                name, seen, passed = line.split()
+                if "<" in name:  # Preserve unresolved opcode tags in the snapshot pending identification.
+                    continue
+                seen, passed = int(seen), int(passed)
+                counts = used.setdefault(name, {})
+                if source in counts or not 0 <= passed <= seen or not seen:
+                    raise ValueError(f"Invalid {source} scan row: {line}")
+                counts[source] = (seen, passed)
     with open(os.path.join(here, "valu-mnemonics.txt"), encoding="utf-8") as f:
         vector = set(f.read().splitlines())
     with open(os.path.join(here, "coin-rdna2-coverage.tsv"), encoding="utf-8") as f:
@@ -94,12 +103,11 @@ def instructions():
         raise ValueError(f"GPU results outside tracked instructions: {sorted(probed - families.keys())}")
     groups, labels = {}, {}
     for n, family in families.items():
-        u, ok = used.get(n, (0, 0))
-        state = "done" if u and ok == u else "partial" if u or n in probed else "none"
+        counts = used.get(n, {})
+        complete = counts and all(ok == seen for seen, ok in counts.values())
+        state = "done" if complete else "partial" if counts or n in probed else "none"
         groups.setdefault(family, []).append(state)
-        evidence = []
-        if u:
-            evidence.append(f"{ok}/{u} retail shaders translated")
+        evidence = [f"{ok}/{seen} {source} shaders translated" for source, (seen, ok) in counts.items()]
         if n in vector:
             evidence.append("vector ALU GPU probe passed")
         if n in game:
@@ -196,6 +204,6 @@ m, s = cfg["milestones"], cfg["shaders"]
 badge("imports", "system functions*", f"{100 * a_done / a_n:.2f}%", pct_colour(100 * a_done / a_n))
 badge("d3d12x", "Direct3D 12.x methods", f"{100 * b_done / b_n:.2f}%", pct_colour(100 * b_done / b_n))
 badge("instructions", "RDNA2 instructions", f"{100 * c_done / c_n:.2f}%", pct_colour(100 * c_done / c_n))
-badge("shaders", "shaders translated", f'{s["translated"]:,}/{s["total"]:,}', "#4c1")
+badge("shaders", "Fortnite shaders translated", f'{s["translated"]:,}/{s["total"]:,}', "#4c1")
 badge("milestones", "milestones", f'{m["done"]}/{m["total"]}', pct_colour(100 * m["done"] / m["total"]))
 print(f"imports {a_done}/{a_n}  d3d12x {b_done}/{b_n}  instructions {c_done}/{c_n}  height {y:.0f}")

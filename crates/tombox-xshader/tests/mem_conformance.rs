@@ -641,6 +641,8 @@ fn atomic_cases(cases: &mut Vec<Case>) {
     let ops: &[(&str, u32, Update)] = &[
         ("buffer_atomic_add", 0x32, u32::wrapping_add),
         ("buffer_atomic_swap", 0x30, |_, new| new),
+        ("buffer_atomic_and", 0x39, |a, b| a & b),
+        ("buffer_atomic_or", 0x3a, |a, b| a | b),
         ("buffer_atomic_umax", 0x38, u32::max),
         ("buffer_atomic_umin", 0x36, u32::min),
         ("image_atomic_add", 0x11, u32::wrapping_add),

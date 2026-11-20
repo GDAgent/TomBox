@@ -129,12 +129,15 @@ fn code_loads(cases: &mut Vec<Case>) {
         ("s_load_dwordx2", 1, false),
         ("s_load_dwordx4", 2, false),
         ("s_load_dwordx8", 3, false),
+        ("s_load_dwordx16", 4, false),
         ("flat_load_dword", 0, true),
         ("flat_load_dwordx2", 1, true),
         ("flat_load_dwordx4", 2, true),
+        ("flat_load_dwordx3", 3, true),
         ("s_getpc_b64", 0, false),
     ] {
-        for k in 0..1 << op {
+        let width = if flat && op == 3 { 3 } else { 1 << op };
+        for k in 0..width {
             let mut words = vec![
                 0xbe90_1f00,
                 0x8010_ff10,
@@ -163,7 +166,7 @@ fn code_loads(cases: &mut Vec<Case>) {
                 [Dom::I; 3],
                 move |a, _, _, _| Want::U(value((a & 7) + 1 + k)),
             );
-            probe.table = (0..16).map(value).collect();
+            probe.table = (0..8 + width).map(value).collect();
             cases.push(probe);
         }
     }

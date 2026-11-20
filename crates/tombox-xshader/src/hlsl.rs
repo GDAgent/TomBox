@@ -19,6 +19,9 @@ use crate::{ShaderExtract, Stage};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 
+mod packed_root;
+use packed_root::PackedRoot;
+
 pub struct Translated {
     pub hlsl: String,
     pub entry: &'static str,
@@ -232,6 +235,7 @@ fn semantic(e: &SigElement) -> String {
 }
 
 struct Emitter<'a> {
+    packed: Option<PackedRoot>,
     ex: &'a ShaderExtract,
     insns: Vec<Insn>,
     res: HashMap<usize, Vec<Res>>, // per-instruction resolved resources
@@ -548,6 +552,7 @@ fn lower_local_pc_transfers(insns: &mut [Insn]) -> Result<(), String> {
 }
 
 fn compute_group(ex: &ShaderExtract) -> [u32; 3] {
+    if let Some(threads) = ex.psv_threads { return threads; }
     let [_, x, y, z] = ex.isa_preamble;
     [x.max(1), y.max(1), z.max(1)]
 }
@@ -587,7 +592,7 @@ pub fn translate(ex: &ShaderExtract) -> Result<Translated, String> {
             }
         }
     }
-    em.resolve_resources()?;
+    if !em.resolve_packed()? { em.resolve_resources()?; }
     if is_ps {
         em.find_export_epilogs();
         em.classify_interpolation();
@@ -631,6 +636,7 @@ pub fn translate_valu_probe(words: &[u32], nvgprs: u32) -> Result<String, String
         isa_data: isa.clone(),
         isa,
         isa_offset_in_fssm: 0,
+        psv_threads: None,
         isa_preamble: [0, 64, 1, 1],
         has_input_sig: false,
         has_output_sig: false,
@@ -723,6 +729,7 @@ pub fn translate_mem_probe(words: &[u32], nvgprs: u32) -> Result<(String, MemPro
         isa_data: isa.clone(),
         isa,
         isa_offset_in_fssm: 0,
+        psv_threads: None,
         isa_preamble: [0, 64, 1, 1],
         has_input_sig: false,
         has_output_sig: false,
@@ -810,6 +817,7 @@ pub fn translate_mem_probe(words: &[u32], nvgprs: u32) -> Result<(String, MemPro
 impl<'a> Emitter<'a> {
     fn new(ex: &'a ShaderExtract, insns: Vec<Insn>) -> Self {
         Emitter {
+            packed: None,
             loop_depth: 0,
             ex,
             insns,
@@ -2633,6 +2641,7 @@ impl<'a> Emitter<'a> {
                 self.line(&format!("scc = {c} ? 1u : 0u;"));
                 Ok(())
             }
+            Enc::Smem if self.packed.is_some() => self.emit_packed_load(idx, ins),
             Enc::Smem => {
                 if ins.op <= 4 {
                     if let Some(Res::CodeTbl) = self.res.get(&idx).and_then(|v| v.first()) {
@@ -2716,6 +2725,7 @@ impl<'a> Emitter<'a> {
                 }
                 Ok(())
             }
+            Enc::Mubuf if self.packed.is_some() => self.emit_packed_buffer(idx, ins),
             Enc::Mubuf => self.emit_mubuf(idx, ins),
             Enc::Flat if m.starts_with("flat_load_dword") => {
                 // Per-lane load through a 64-bit address. Shaders use this for lookups in
@@ -4632,6 +4642,7 @@ impl<'a> Emitter<'a> {
     fn resource_decls(&self) -> Result<String, String> {
         let ex = self.ex;
         let mut h = String::new();
+        if let Some(ref packed) = self.packed { packed.declarations(&mut h); }
         for (slot, dwords) in &self.cb_size {
             let _ = writeln!(h, "cbuffer CB{slot} : register(b{slot}) {{ uint4 cb{slot}[{}]; }};", dwords.div_ceil(4).max(1));
         }
@@ -4736,12 +4747,11 @@ impl<'a> Emitter<'a> {
         h.push_str(CUBE_HELPERS);
         h.push_str(&self.resource_decls()?);
         if self.is_cs {
-            // Compute ABI (from ClearCS + FSSM metadata): local thread id in v0..v2, the
-            // thread-group id in the three SGPRs following the user-data (root-parameter)
-            // registers, thread-group size in the ISA preamble dwords 1..3.
+            // Local thread ID is in v0..v2. Packed argument blocks use s4 for group X;
+            // the descriptor-table ABI places group IDs after the root parameters.
             let [tx, ty_, tz] = compute_group(ex);
             let nparams = ex.root_sig.as_ref().map(|r| r.params.len()).unwrap_or(4);
-            let g = 4 + nparams;
+            let g = if self.packed.is_some() { 4 } else { 4 + nparams };
             let _ = writeln!(h, "[numthreads({tx}, {ty_}, {tz})]
 void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) {{");
             let _ = writeln!(h, "    uint exec_lo = 1u, exec_hi = 0u, vcc_lo = 0u, vcc_hi = 0u, scc = 0u, m0 = 0u, nul = 0u;");

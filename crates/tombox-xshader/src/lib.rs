@@ -116,7 +116,7 @@ pub struct ShaderExtract {
     pub stage: Stage,
     /// Shader model major.minor from the DXIL program header.
     pub shader_model: (u32, u32),
-    /// Whether the DXIL bitcode slot was the `NOBC` placeholder (always true for XSX).
+    /// Whether the DXIL bitcode slot was the `NOBC` placeholder (some middleware retains DXIL).
     pub bitcode_stripped: bool,
     /// Inflated FSSM container bytes.
     pub fssm: Vec<u8>,
@@ -126,8 +126,10 @@ pub struct ShaderExtract {
     pub isa: Vec<u8>,
     /// Offset of the ISA within the FSSM blob.
     pub isa_offset_in_fssm: usize,
-    /// The 16-byte ISA-section preamble (compute: dwords 1..3 = thread-group size X,Y,Z).
+    /// The 16-byte ISA-section preamble. Some compute ABIs store group dimensions in dwords 1..3.
     pub isa_preamble: [u32; 4],
+    /// Compute dimensions from PSVRuntimeInfo2 or later.
+    pub psv_threads: Option<[u32; 3]>,
     /// The program followed by any constant data embedded after it in the code section.
     pub isa_data: Vec<u8>,
     /// Presence of the standard signature/validation/root-sig chunks in the outer DXBC.
@@ -231,6 +233,7 @@ pub fn extract(dxbc: &[u8]) -> Result<ShaderExtract, String> {
         isa,
         isa_offset_in_fssm: isa_off,
         isa_preamble,
+        psv_threads: if stage == Stage::Compute { chunk_body(b"PSV0").and_then(meta::parse_compute_threads) } else { None },
         isa_data,
         fssm,
         has_input_sig: container.chunk(b"ISG1").is_some() || container.chunk(b"ISGN").is_some(),

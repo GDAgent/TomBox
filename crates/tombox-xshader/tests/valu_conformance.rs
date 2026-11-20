@@ -852,6 +852,17 @@ fn coin_scalar_compares() -> Vec<Case> {
             }));
         }
     }
+    for (name, op) in [("s_cmp_eq_u64", 0x12), ("s_cmp_lg_u64", 0x13)] {
+        for (half, lo, hi) in [("low", 1, 2), ("high", 0, 1)] {
+            // Compare (a,c) to (b,c) or (a,b). Only one half can differ.
+            let words = vec![0x7e20_0500, 0x7e22_0502, 0x7e24_0500 | lo, 0x7e26_0500 | hi,
+                             0xbf00_1210 | (op << 16), 0x7e06_02fd, S_ENDPGM];
+            cases.push(case(&format!("{name} {half}"), words, [Dom::I; 3], move |a, b, c, _| {
+                let equal = if half == "low" { a == b } else { c == b };
+                Want::U((equal == (op == 0x12)) as u32)
+            }));
+        }
+    }
     cases
 }
 
@@ -863,6 +874,7 @@ fn coin_scalar_arithmetic() -> Vec<Case> {
     let sopk = |op: u32, imm: i16| 0xb010_0000 | (op << 23) | u32::from(imm as u16);
     let probes: &[(&str, u32, Model)] = &[
         ("s_and_b32", sop2(14), |a, b, _| (a & b, a & b != 0)),
+        ("s_andn2_b32", sop2(0x14), |a, b, _| (a & !b, a & !b != 0)),
         ("s_or_b32", sop2(16), |a, b, _| (a | b, a | b != 0)),
         ("s_xor_b32", sop2(18), |a, b, _| (a ^ b, a != b)),
         ("s_lshl_b32", sop2(30), |a, b, _| { let v = a.wrapping_shl(b); (v, v != 0) }),
@@ -870,6 +882,11 @@ fn coin_scalar_arithmetic() -> Vec<Case> {
         ("s_ashr_i32", sop2(34), |a, b, _| { let v = (a as i32).wrapping_shr(b); (v as u32, v != 0) }),
         ("s_bfe_u32", sop2(39), |a, b, _| scalar_field(a, b, false)),
         ("s_bfe_i32", sop2(40), |a, b, _| scalar_field(a, b, true)),
+        ("s_bitset1_b32", 0xbe90_1d11, |a, b, flag| (a | 1u32.wrapping_shl(b), flag)),
+        ("s_bcnt1_i32_b32", 0xbe90_0f11, |_, b, _| (b.count_ones(), b != 0)),
+        ("s_not_b32", 0xbe90_0711, |_, b, _| (!b, !b != 0)),
+        ("s_ff1_i32_b32", 0xbe90_1311, |_, b, flag| (if b == 0 { u32::MAX } else { b.trailing_zeros() }, flag)),
+        ("s_bfm_b32", sop2(0x24), |width, offset, flag| (((1u32 << (width & 31)) - 1).wrapping_shl(offset), flag)),
         ("s_bitset0_b32", 0xbe90_1b11, |a, b, flag| (a & !1u32.wrapping_shl(b), flag)),
         ("s_brev_b32", 0xbe90_0b11, |_, b, flag| (b.reverse_bits(), flag)),
         ("s_mov_b32", 0xbe90_0311, |_, b, flag| (b, flag)),
@@ -1057,15 +1074,18 @@ fn coin_vector_ops() -> Vec<Case> {
             mad_any(f(a), f(b), 0.75)
         }),
     ];
-    for (half, shift) in [("low", 0), ("high", 32)] {
-        // v[2:3] = v[0:1] << v2. Copy the requested half to v3.
-        let mut words = vec![0xd6ff_0002, 0x0202_0102];
-        if shift == 0 { words.push(0x7e06_0302); }
-        words.push(S_ENDPGM);
-        cases.push(case(&format!("v_lshlrev_b64 {half}"), words, [I; 3], move |a, b, c, _| {
-            let value = u64::from(a) | (u64::from(b) << 32);
-            Want::U((value.wrapping_shl(c) >> shift) as u32)
-        }));
+    for (name, opcode) in [("v_lshlrev_b64", 0xd6ff_0002), ("v_lshrrev_b64", 0xd700_0002)] {
+        for (half, shift) in [("low", 0), ("high", 32)] {
+            // Shift v[0:1] by v2, overwriting v[2:3]. Return each half independently.
+            let mut words = vec![opcode, 0x0202_0102];
+            if shift == 0 { words.push(0x7e06_0302); }
+            words.push(S_ENDPGM);
+            cases.push(case(&format!("{name} {half}"), words, [I; 3], move |a, b, c, _| {
+                let value = u64::from(a) | (u64::from(b) << 32);
+                let result = if name == "v_lshrrev_b64" { value.wrapping_shr(c) } else { value.wrapping_shl(c) };
+                Want::U((result >> shift) as u32)
+            }));
+        }
     }
     type HalfOp = fn(f32, f32, f32) -> f32;
     let half_ops: &[(&str, u32, HalfOp)] = &[
@@ -1194,7 +1214,8 @@ fn coin_run_valu_conformance() {
         }
     }
     let retail: BTreeSet<_> = include_str!("../../../tools/progress/mnemonics.txt")
-        .lines().map(|line| line.split_whitespace().next().unwrap()).collect();
+        .lines().chain(include_str!("../../../tools/progress/bvh-mnemonics.txt").lines())
+        .filter_map(|line| line.split_whitespace().next()).filter(|name| !name.contains('<')).collect();
     let names: BTreeSet<_> = exercised.iter().map(String::as_str).chain(memory.iter().copied()).chain(graphics.iter().copied()).chain(cache_checks.keys().map(String::as_str)).chain(retail.iter().copied()).collect();
     let mut coverage = BufWriter::new(File::create(dir.join("coverage.tsv")).unwrap());
     writeln!(coverage, "mnemonic\tretail_observed\tcoin_run_alu\tmemory_probe\tgraphics_probe\tcache_probe").unwrap();

@@ -67,7 +67,7 @@ enumerated by (a) tracing `QueryApiImpl` call sites in the EXE using the symbol 
 ## Additional x64 middleware observed in PE imports
 
 These findings come from the import and export tables of six user-supplied
-DLLs and the FidelityFX command-list call sites described below. Runtime behavior of the six supplied binaries is untested. A separate test runs the publicly released Scarlett FidelityFX binaries under Proton. The synthetic
+DLLs and the FidelityFX command-list call sites described below. The six supplied DLLs have been inspected without loading them. Six compute shaders extracted from the BVH builder have also passed GPU readback. A separate test runs the publicly released Scarlett FidelityFX binaries under Proton. The synthetic
 graphics example exercises the platform functions independently.
 
 | DLL | Evidence from this build | TomBox coverage or open question |
@@ -76,7 +76,7 @@ graphics example exercises the platform functions independently.
 | `amd_fidelityfx_upscaler_xbox.dll` | Imports `D3D12CreateRootSignatureDeserializer`, `XMemAlloc`, `XMemFree` and `XMemGetWorkingSetStatistics`. | Homebrew verifies root-signature deserialization, both unordered-access view (UAV) clears and resource discard. The statistics function returns `E_NOTIMPL`. Upscaling needs its own output test. |
 | `Bink2Scarlett.dll` | Exports video frame operations. Imports `XMemAlloc`, `XMemFree` and ordinal 1 from `XAudio2_9.dll`. | The coin game exercises allocation and release. Audio and frame decoding remain unverified. |
 | `libHttpClient.GDK.dll` | Exports HTTP and WebSocket operations and imports WinHTTP and Crypt32. | A local request with a known response would test the host HTTP path. |
-| `XboxBvhBuilder.dll` | Imports `D3D12SerializeVersionedRootSignature` and `XMemVirtualQuery`. Exports ray-tracing acceleration structure operations. | TomBox forwards the serializer. `XMemVirtualQuery` is missing. The caller examines additional memory information beyond the desktop memory-query fields, so the Xbox output layout needs verification. |
+| `XboxBvhBuilder.dll` | Imports `D3D12SerializeVersionedRootSignature` and `XMemVirtualQuery`. Exports ray-tracing acceleration structure operations. | Six of 52 embedded compute shaders translate and execute in isolation. TomBox forwards the serializer. `XMemVirtualQuery` is missing. The caller examines additional memory information beyond the desktop memory-query fields, so the Xbox output layout needs verification. |
 | `XCurl.dll` | Exports curl easy/multi functions and imports WinHTTP, Crypt32 and Windows API sets. | HTTP behavior and availability of the imported API sets need checking on the target host. |
 
 ### Scarlett command-list UAV clears
@@ -139,7 +139,7 @@ The homebrew test records two dependent compute dispatches, checks the host barr
 
 At RVAs `0x14972` and `0x15215`, the BVH builder writes a five-word inline dispatch packet. When the packet buffer is full, it passes the same X, Y, Z and control word to command-list slot 80. The observed values `0x20` and `0x8020` match the RDNA2 thread-dimension and wave32 control bits. TomBox interprets these calls as thread counts and divides each axis by the bound shader’s group dimension before issuing desktop `Dispatch`. [AMD register definitions](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/amd/include/asic_reg/gc/gc_10_3_0_sh_mask.h) · [Desktop dispatch dimensions](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12graphicscommandlist-dispatch)
 
-The translation covers whole groups for a subset of straight-line shaders using ordinary register operands, buffer loads and stores, and lane-local arithmetic. Wave-sensitive instructions, unrecognized shaders and control words, partial groups and counts above the desktop limit are skipped with a diagnostic. The homebrew test verifies both observed control words, pipeline switching and the bounds of GPU writes. Execution of the BVH builder’s own shaders remains unverified. [Run the fixture](../tools/homebrew/README.md#graphical-coin-run)
+The translation covers whole groups for a subset of straight-line shaders using ordinary register operands, buffer loads and stores, and lane-local arithmetic. Wave-sensitive instructions, unrecognized shaders and control words, partial groups and counts above the desktop limit are skipped with a diagnostic. The homebrew test verifies both observed control words, pipeline switching and the bounds of GPU writes. Six BVH builder shaders have passed readback through ordinary group dispatch. The library’s own slot 80 dispatch sequence remains unverified. [Run the fixture](../tools/homebrew/README.md#graphical-coin-run)
 
 ### Open GPU synchronization calls
 

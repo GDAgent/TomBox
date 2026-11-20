@@ -5,17 +5,24 @@
 #include <string>
 #include <vector>
 
-enum class ComputeProbe { OfflineFallback, UavBarrier, ThreadDispatch, VectorAlu };
+enum class ComputeProbe { OfflineFallback, UavBarrier, ThreadDispatch, VectorAlu, PackedRoot };
 using VectorRow = std::array<UINT, 8>; // v0, v1, v2, initial VCC; result, VCC, EXEC, marker
 
 static int run_compute(Frame& frame, ComputeProbe probe, D3D12_SHADER_BYTECODE shader, UINT groups,
                        VectorRow* rows = nullptr) {
     const bool test_dispatch = probe == ComputeProbe::ThreadDispatch;
+    const bool packed = probe == ComputeProbe::PackedRoot;
     auto* dev = frame.dev.Get();
     D3D12_DESCRIPTOR_RANGE range{D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 0};
-    D3D12_ROOT_PARAMETER param{};
-    param.DescriptorTable = {1, &range};
-    D3D12_ROOT_SIGNATURE_DESC layout{1, &param, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
+    D3D12_ROOT_PARAMETER params[2]{};
+    if (packed) {
+        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[1].Constants = {0, 0, 4};
+    } else {
+        params[0].DescriptorTable = {1, &range};
+    }
+    D3D12_ROOT_SIGNATURE_DESC layout{packed ? 2u : 1u, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
     ComPtr<ID3DBlob> blob;
     CHECK(D3D12SerializeRootSignature(&layout, D3D_ROOT_SIGNATURE_VERSION_1, &blob, nullptr));
     ComPtr<ID3D12RootSignature> root;
@@ -45,23 +52,27 @@ static int run_compute(Frame& frame, ComputeProbe probe, D3D12_SHADER_BYTECODE s
     heap.Type = D3D12_HEAP_TYPE_DEFAULT;
     heap.CreationNodeMask = heap.VisibleNodeMask = 1;
     auto buffer = frame.readback->GetDesc();
-    buffer.Width = UINT64(groups) * stride;
+    const UINT elements = packed ? groups * 32 : groups;
+    buffer.Width = UINT64(elements) * stride;
     buffer.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     ComPtr<ID3D12Resource> output;
     CHECK(dev->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer,
           rows ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&output)));
-    D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1,
-                                  D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE};
     ComPtr<ID3D12DescriptorHeap> views;
-    CHECK(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&views)));
-    using Handle = UINT64 (WINAPI*)(ID3D12DescriptorHeap*);
-    D3D12_CPU_DESCRIPTOR_HANDLE cpu{xbox_method<Handle>(views.Get(), 9)(views.Get())};
-    D3D12_GPU_DESCRIPTOR_HANDLE gpu{xbox_method<Handle>(views.Get(), 10)(views.Get())};
-    D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
-    uav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-    uav.Buffer.NumElements = groups;
-    uav.Buffer.StructureByteStride = stride;
-    dev->CreateUnorderedAccessView(output.Get(), nullptr, &uav, cpu);
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu{};
+    if (!packed) {
+        D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1,
+                                      D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE};
+        CHECK(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&views)));
+        using Handle = UINT64 (WINAPI*)(ID3D12DescriptorHeap*);
+        D3D12_CPU_DESCRIPTOR_HANDLE cpu{xbox_method<Handle>(views.Get(), 9)(views.Get())};
+        gpu = {xbox_method<Handle>(views.Get(), 10)(views.Get())};
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+        uav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uav.Buffer.NumElements = groups;
+        uav.Buffer.StructureByteStride = stride;
+        dev->CreateUnorderedAccessView(output.Get(), nullptr, &uav, cpu);
+    }
 
     auto* list = frame.list.Get();
     using Heaps = void (WINAPI*)(ID3D12GraphicsCommandList*, UINT, ID3D12DescriptorHeap* const*);
@@ -85,9 +96,17 @@ static int run_compute(Frame& frame, ComputeProbe probe, D3D12_SHADER_BYTECODE s
         list->ResourceBarrier(1, &ready);
     }
     auto bind_inputs = [&] {
-        xbox_method<Heaps>(list, 32)(list, 1, views.GetAddressOf());
         xbox_method<Root>(list, 33)(list, root.Get());
-        xbox_method<Table>(list, 35)(list, 0, gpu);
+        if (packed) {
+            using Address = void (WINAPI*)(ID3D12GraphicsCommandList*, UINT, D3D12_GPU_VIRTUAL_ADDRESS);
+            using Constants = void (WINAPI*)(ID3D12GraphicsCommandList*, UINT, UINT, const void*, UINT);
+            const UINT values[] = {71, 0xf8000047u, 0, 0};
+            xbox_method<Address>(list, 45)(list, 0, output->GetGPUVirtualAddress());
+            xbox_method<Constants>(list, 39)(list, 1, 4, values, 0);
+        } else {
+            xbox_method<Heaps>(list, 32)(list, 1, views.GetAddressOf());
+            xbox_method<Table>(list, 35)(list, 0, gpu);
+        }
     };
     auto submit = [&]() -> int {
         CHECK(list->Close());
@@ -178,6 +197,25 @@ static int check_compute(ComputeProbe probe) {
     Frame frame;
     if (frame.init(8, 4)) return 1;
     return run_compute(frame, probe, {fallback_cs, sizeof(fallback_cs)}, 32);
+}
+
+// Check every word, including the last group's inactive lanes and the input column.
+static int check_packed_root() {
+    std::array<VectorRow, 96> rows;
+    for (UINT i = 0; i < rows.size(); ++i) {
+        rows[i].fill(0x5a5a5a5a);
+        rows[i][1] = i * 0x142135u;
+    }
+    auto expected = rows;
+    for (UINT i = 0; i < 71; ++i) expected[i][4] = expected[i][1] + 0xf8000047u;
+    Frame frame;
+    if (frame.init(8, 4, false, sizeof(rows)) ||
+        run_compute(frame, ComputeProbe::PackedRoot, {packed_root_cs, sizeof(packed_root_cs)}, 3, rows.data())) return 1;
+    if (rows != expected) {
+        std::fputs("Packed root buffer readback mismatch\n", stderr);
+        return 1;
+    }
+    return 0;
 }
 
 // The launcher generates a suite of stripped Xbox compute shaders and source registers.

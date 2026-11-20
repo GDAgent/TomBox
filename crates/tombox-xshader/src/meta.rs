@@ -88,6 +88,17 @@ pub fn parse_psv0_gs(body: &[u8]) -> Option<GsInfo> {
     })
 }
 
+/// Compute group dimensions follow the 36-byte PSVRuntimeInfo1 prefix.
+pub fn parse_compute_threads(body: &[u8]) -> Option<[u32; 3]> {
+    let size = u32_at(body, 0).ok()? as usize;
+    let info = body.get(4..4usize.checked_add(size)?)?;
+    if info.get(24) != Some(&5) {
+        return None;
+    }
+    let [x, y, z] = [u32_at(info, 36).ok()?, u32_at(info, 40).ok()?, u32_at(info, 44).ok()?];
+    (x > 0 && y > 0 && (1..=64).contains(&z) && x.checked_mul(y)?.checked_mul(z)? <= 1024).then_some([x, y, z])
+}
+
 pub fn parse_psv0(body: &[u8]) -> Result<Vec<PsvResource>, String> {
     let info_size = u32_at(body, 0)? as usize;
     let mut p = 4 + info_size;
