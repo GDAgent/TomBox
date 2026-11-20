@@ -24,6 +24,8 @@ pub struct Translated {
     pub entry: &'static str,
     /// FXC/D3DCompile target profile.
     pub profile: &'static str,
+    /// Workgroup dimensions for the subset verified to tolerate either Scarlett wave width.
+    pub portable_compute_group: Option<[u32; 3]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -469,6 +471,11 @@ fn lower_lane_spills(insns: &mut [Insn]) -> Result<(), String> {
     Ok(())
 }
 
+fn compute_group(ex: &ShaderExtract) -> [u32; 3] {
+    let [_, x, y, z] = ex.isa_preamble;
+    [x.max(1), y.max(1), z.max(1)]
+}
+
 pub fn translate(ex: &ShaderExtract) -> Result<Translated, String> {
     let (profile, is_ps) = match ex.stage {
         Stage::Vertex => ("vs_5_0", false),
@@ -478,6 +485,17 @@ pub fn translate(ex: &ShaderExtract) -> Result<Translated, String> {
         other => return Err(format!("stage {other:?} not supported yet")),
     };
     let mut insns = disassemble(&ex.isa);
+    // Slot 80 explicitly selects a wave width. Only opt in straight-line
+    // loads, stores and lane-local arithmetic with ordinary operands.
+    let portable_compute_group = (ex.stage == Stage::Compute && insns.iter().all(|ins| {
+        if ins.mnemonic == "v_nop" { return true; } // driver hash marker
+        matches!(ins.mnemonic.as_str(), "s_endpgm" | "s_waitcnt" | "s_load_dwordx4"
+            | "buffer_load_dword" | "buffer_store_dword" | "v_mov_b32" | "v_add_nc_u32"
+            | "v_lshlrev_b32" | "v_sub_nc_u32" | "v_mul_f32" | "v_add_f32" | "v_and_b32"
+            | "v_or_b32" | "v_xor_b32")
+            && ins.src.iter().chain(&ins.dst).all(|op| matches!(op, Opnd::Sgpr(_) | Opnd::Vgpr(_)
+                | Opnd::ConstInt(_) | Opnd::ConstF32(_) | Opnd::Literal(_)))
+    })).then(|| compute_group(ex));
     lower_wave_reductions(&mut insns)?;
     lower_lane_spills(&mut insns)?;
     let mut em = Emitter::new(ex, insns);
@@ -506,7 +524,7 @@ pub fn translate(ex: &ShaderExtract) -> Result<Translated, String> {
     // ps_5_0 forces UAV slots to start after the render-target outputs (FXC X4509);
     // SM5.1 has no such rule, and D3D12 accepts SM5.1 bytecode.
     let profile = if is_ps && !em.uav.is_empty() { "ps_5_1" } else { profile };
-    Ok(Translated { hlsl, entry: "main", profile })
+    Ok(Translated { hlsl, entry: "main", profile, portable_compute_group })
 }
 
 /// Dwords per thread in the I/O buffer of [`translate_valu_probe`]: `v0..v{n-1}`, `vcc_lo`,
@@ -4366,8 +4384,7 @@ impl<'a> Emitter<'a> {
             // Compute ABI (from ClearCS + FSSM metadata): local thread id in v0..v2, the
             // thread-group id in the three SGPRs following the user-data (root-parameter)
             // registers, thread-group size in the ISA preamble dwords 1..3.
-            let p = ex.isa_preamble;
-            let (tx, ty_, tz) = (p[1].max(1), p[2].max(1), p[3].max(1));
+            let [tx, ty_, tz] = compute_group(ex);
             let nparams = ex.root_sig.as_ref().map(|r| r.params.len()).unwrap_or(4);
             let g = 4 + nparams;
             let _ = writeln!(h, "[numthreads({tx}, {ty_}, {tz})]

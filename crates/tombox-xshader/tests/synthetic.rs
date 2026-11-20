@@ -173,3 +173,14 @@ fn texel_type_follows_the_use_of_the_loaded_value() {
     assert!(t.hlsl.contains("Texture2D<float4> tex0 : register(t0);"), "{}", t.hlsl);
     assert!(t.hlsl.contains("float4 t0 = tex0.Load("), "{}", t.hlsl);
 }
+
+#[test]
+fn thread_dispatch_metadata_rejects_access_to_the_wave_mask() {
+    let make = |source| {
+        let mut ex = shader(Stage::Compute, &[source, S_ENDPGM], vec![], vec![], None);
+        ex.isa_preamble = [16, 8, 4, 1];
+        translate(&ex).unwrap().portable_compute_group
+    };
+    assert_eq!(make(0x7e00_0281), Some([8, 4, 1])); // v_mov_b32 v0, 1
+    assert_eq!(make(0x7e00_027e), None); // v_mov_b32 v0, exec_lo
+}

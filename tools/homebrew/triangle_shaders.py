@@ -27,8 +27,10 @@ def signature(*elements):
     return words(len(elements), 8) + entries + names
 
 
-def shader(stage, instructions, inputs, outputs, root=None):
-    code = words(16, 0, 0, 0, *instructions)
+def shader(stage, instructions, inputs, outputs, root=None, threads=(0, 0, 0)):
+    # The compute preamble with explicit dimensions is followed by a driver v_nop marker.
+    marker = (0xD5800000, 0x03FE0000, 0) if any(threads) else ()
+    code = words(16, *threads, *marker, *instructions)
     fssm = bytearray(0xD0)
     fssm[:4] = b"FSSM"
     struct.pack_into("<QQ", fssm, 0xC0, len(fssm), len(code))
@@ -80,16 +82,25 @@ if __name__ == "__main__":
         end,
     ], signature(), signature(), compute_root))
 
-    emit("increment_cs", shader(5, [
+    increment_prefix = [
         0xF4080302, 0xFA000000,         # s_load_dwordx4 s[12:15], s[4:5], 0
         0xBF8CC07F,                     # s_waitcnt lgkmcnt(0)
         0x7E020205,                     # v_mov_b32 v1, s5 (group ID)
+    ]
+    increment_body = [
         0xE0302000, 0x80030201,         # buffer_load_dword v2, v1, s[12:15], 0 idxen
         0xBF8C3F70,                     # s_waitcnt vmcnt(0)
         0x4A040481,                     # v_add_nc_u32 v2, 1, v2
         0xE0702000, 0x80030201,         # buffer_store_dword v2, v1, s[12:15], 0 idxen
         end,
-    ], signature(), signature(), compute_root))
+    ]
+    emit("increment_cs", shader(5, increment_prefix + increment_body, signature(), signature(), compute_root))
+    thread_index = [
+        0x34020282,  # v_lshlrev_b32 v1, 2, v1
+        0x4a020300,  # v_add_nc_u32 v1, v0, v1 (4 * group ID + local thread ID)
+    ]
+    emit("increment4_cs", shader(5, increment_prefix + thread_index + increment_body,
+                                 signature(), signature(), compute_root, threads=(4, 1, 1)))
 
     # Pass the second vertex attribute (v8..v11) to the pixel stage as TEXCOORD0.
     emit("board_vs", shader(1, [

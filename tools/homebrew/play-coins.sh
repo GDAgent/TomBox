@@ -7,7 +7,7 @@ required=(coin_window.exe)
 if [[ ${1:-} == --fidelityfx-test || ${1:-} == --fidelityfx-context ]]; then
     required+=(fidelityfx_probe.exe d3d12_xs.dll xmem.dll)
 fi
-if [[ ${1:-} == --compute-barrier-test ]]; then
+if [[ ${1:-} == --compute-barrier-test || ${1:-} == --thread-dispatch-test ]]; then
     required+=(bvh_commands.dll)
 fi
 if [[ ${1:-} == --indirect-test ]]; then
@@ -36,7 +36,7 @@ case "${1:-}" in
         TOMBOX_LOG=fidelityfx-context.log python3 "$repo/tools/homebrew/fidelityfx_fixture.py" "$1"
         exit $?
         ;;
-    --test|--compute-barrier-test|--pso-fallback-test|--indirect-test|--scarlett-copy-test|--uav-test|--discard-test|--placed-test|--present-test|--tiled-test|--tiled-reference|--mip-reference|--bc1-reference|--rect-test|--array-test|--cube-test|--state-test|--stream-test|--3d-test|--controller-test|--gameinput-test|--audio-test)
+    --test|--thread-dispatch-test|--compute-barrier-test|--pso-fallback-test|--indirect-test|--scarlett-copy-test|--uav-test|--discard-test|--placed-test|--present-test|--tiled-test|--tiled-reference|--mip-reference|--bc1-reference|--rect-test|--array-test|--cube-test|--state-test|--stream-test|--3d-test|--controller-test|--gameinput-test|--audio-test)
         if [[ $# == 1 ]]; then
             scratch=$(mktemp -d coin-check.XXXXXXXX)
             trap 'rm -f -- "$scratch/result.txt" "$scratch/barriers.log" "$scratch/"*.bin; rmdir -- "$scratch"' EXIT

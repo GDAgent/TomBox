@@ -12,7 +12,12 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-type Cached = Result<Arc<Vec<u8>>, Arc<String>>;
+#[derive(Clone)]
+pub struct CompiledShader {
+    pub code: Arc<Vec<u8>>,
+    pub portable_compute_group: Option<[u32; 3]>,
+}
+type Cached = Result<CompiledShader, Arc<String>>;
 static CACHE: OnceLock<Mutex<HashMap<u64, Cached>>> = OnceLock::new();
 static OK: AtomicUsize = AtomicUsize::new(0);
 static FAIL: AtomicUsize = AtomicUsize::new(0);
@@ -125,7 +130,7 @@ fn disk_cache_dir() -> Option<&'static std::path::PathBuf> {
     .as_ref()
 }
 
-fn translate_uncached(blob: &[u8], hash: u64) -> Result<Vec<u8>, String> {
+fn translate_uncached(blob: &[u8], hash: u64) -> Result<CompiledShader, String> {
     let ex = tombox_xshader::extract(blob).map_err(|e| {
         dump_failure(hash, blob, None, &e);
         format!("extract: {e}")
@@ -139,6 +144,7 @@ fn translate_uncached(blob: &[u8], hash: u64) -> Result<Vec<u8>, String> {
     if let Ok(h) = std::fs::read_to_string(std::env::temp_dir().join("tombox_shader_override").join(format!("{hash:016x}.hlsl"))) {
         record("d3d12_xs", "shader_xlat", &format!("OVERRIDE: hash={hash:016x} uses hand-edited HLSL ({} bytes)", h.len()));
         t.hlsl = h;
+        t.portable_compute_group = None;
     }
     // Compiler: DXC (SM6 DXIL) when dxcompiler.dll + dxil.dll are available, otherwise FXC
     // (SM5 DXBC). FXC needs minutes for some of the generated compute shaders; DXC about a
@@ -151,11 +157,12 @@ fn translate_uncached(blob: &[u8], hash: u64) -> Result<Vec<u8>, String> {
     });
     let profile = if use_dxc { tombox_xshader::dxc::profile_for(t.profile) } else { t.profile.to_string() };
     let _ = disk_cache_dir(); // creates the cache directory
+    let compiled = |code| CompiledShader { code: Arc::new(code), portable_compute_group: t.portable_compute_group };
     let cached = Some(tombox_xshader::dxc::cache_path(&t.hlsl, &profile));
     if let Some(p) = &cached {
         if let Ok(v) = std::fs::read(p) {
             if !v.is_empty() {
-                return Ok(v);
+                return Ok(compiled(v));
             }
         }
     }
@@ -180,7 +187,7 @@ fn translate_uncached(blob: &[u8], hash: u64) -> Result<Vec<u8>, String> {
             if let Some(p) = &cached {
                 let _ = std::fs::write(p, &v);
             }
-            Ok(v)
+            Ok(compiled(v))
         }
         Err(e) => {
             dump_failure(hash, blob, Some(&t.hlsl), &e);
@@ -208,11 +215,10 @@ pub unsafe fn translate(ptr: *const u8, len: usize) -> Cached {
         Ok(v) => {
             let n = OK.fetch_add(1, Ordering::Relaxed) + 1;
             if n <= 8 || n % 50 == 0 {
-                record("d3d12_xs", "shader_xlat", &format!("ok #{n} hash={hash:016x} {len}B -> {}B DXBC", v.len()));
+                record("d3d12_xs", "shader_xlat", &format!("ok #{n} hash={hash:016x} {len}B -> {}B DXBC", v.code.len()));
             }
-            let v = Arc::new(v);
             if crate::rtcap::enabled() {
-                ORIGIN.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap().insert(v.as_ptr() as usize, (hash, Arc::new(blob.to_vec())));
+                ORIGIN.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap().insert(v.code.as_ptr() as usize, (hash, Arc::new(blob.to_vec())));
             }
             Ok(v)
         }

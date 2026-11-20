@@ -92,11 +92,11 @@ struct Frame {
         return 0;
     }
 
-    int create_list(ID3D12GraphicsCommandList** out) {
+    int create_list(ID3D12GraphicsCommandList** out, ID3D12PipelineState* initial = nullptr) {
         const UINT params[4] = {D3D12_COMMAND_LIST_TYPE_DIRECT, 0, 1, 0};
         using ListX = HRESULT (WINAPI*)(ID3D12Device*, const UINT*, ID3D12CommandAllocator*,
                                         ID3D12PipelineState*, REFIID, void**);
-        CHECK(xbox_method<ListX>(dev.Get(), 73)(dev.Get(), params, alloc.Get(), nullptr, IID_PPV_ARGS(out)));
+        CHECK(xbox_method<ListX>(dev.Get(), 73)(dev.Get(), params, alloc.Get(), initial, IID_PPV_ARGS(out)));
         return 0;
     }
 

@@ -1,9 +1,9 @@
 #pragma once
 
-enum class ComputeProbe { OfflineFallback, UavBarrier };
+enum class ComputeProbe { OfflineFallback, UavBarrier, ThreadDispatch };
 
 static int check_compute(ComputeProbe probe) {
-    const bool test_barrier = probe == ComputeProbe::UavBarrier;
+    const bool test_dispatch = probe == ComputeProbe::ThreadDispatch;
     Frame frame;
     if (frame.init(8, 4)) return 1;
     auto* dev = frame.dev.Get();
@@ -62,44 +62,87 @@ static int check_compute(ComputeProbe probe) {
     using Heaps = void (WINAPI*)(ID3D12GraphicsCommandList*, UINT, ID3D12DescriptorHeap* const*);
     using Root = void (WINAPI*)(ID3D12GraphicsCommandList*, ID3D12RootSignature*);
     using Table = void (WINAPI*)(ID3D12GraphicsCommandList*, UINT, D3D12_GPU_DESCRIPTOR_HANDLE);
-    xbox_method<Heaps>(list, 32)(list, 1, views.GetAddressOf());
-    xbox_method<Root>(list, 33)(list, root.Get());
-    xbox_method<Table>(list, 35)(list, 0, gpu);
+    auto bind_inputs = [&] {
+        xbox_method<Heaps>(list, 32)(list, 1, views.GetAddressOf());
+        xbox_method<Root>(list, 33)(list, root.Get());
+        xbox_method<Table>(list, 35)(list, 0, gpu);
+    };
+    auto submit = [&]() -> int {
+        CHECK(list->Close());
+        ID3D12CommandList* lists[] = {list};
+        frame.queue->ExecuteCommandLists(1, lists);
+        return frame.wait_for_gpu();
+    };
+    bind_inputs();
     list->SetPipelineState(pso.Get());
     list->Dispatch(groups, 1, 1);
     ComPtr<ID3D12PipelineState> increment;
+    ComPtr<ID3D12GraphicsCommandList> second;
     // Keep both passes in UAV state. The second shader consumes the first one's writes.
-    if (test_barrier) {
+    if (probe != ComputeProbe::OfflineFallback) {
+        desc.CS = test_dispatch ? D3D12_SHADER_BYTECODE{increment4_cs, sizeof(increment4_cs)}
+                                : D3D12_SHADER_BYTECODE{increment_cs, sizeof(increment_cs)};
+        CHECK(xbox_method<Create>(dev, 62)(dev, &desc, 0, nullptr, IID_PPV_ARGS(&increment)));
+        list->SetPipelineState(increment.Get());
         HMODULE module = LoadLibraryW(L"bvh_commands.dll");
         using Order = void (*)(ID3D12GraphicsCommandList*);
+        using Threads = void (*)(ID3D12GraphicsCommandList*, UINT, UINT);
         auto order = module ? reinterpret_cast<Order>(GetProcAddress(module, "order_compute_writes")) : nullptr;
-        if (!order) {
-            std::fputs("Could not load the 250405 barrier fixture\n", stderr);
+        auto dispatch = module ? reinterpret_cast<Threads>(GetProcAddress(module, "dispatch_threads")) : nullptr;
+        if (!order || (test_dispatch && !dispatch)) {
+            std::fputs("Could not load the 250405 compute fixture\n", stderr);
             if (module) FreeLibrary(module);
             return 1;
         }
         order(list);
+        if (test_dispatch) {
+            dispatch(list, 16, 0x20);
+            order(list);
+            // ClearState switches to the one-thread writer. It overwrites just two elements.
+            list->ClearState(pso.Get());
+            bind_inputs();
+            dispatch(list, 2, 0x20);
+            order(list);
+            if (submit()) { FreeLibrary(module); return 1; }
+            // Reset back to four-thread groups, using the initial PSO argument alone.
+            HRESULT hr = list->Reset(frame.alloc.Get(), increment.Get());
+            if (FAILED(hr)) { FreeLibrary(module); return 1; }
+            bind_inputs();
+            dispatch(list, 8, 0x8020);
+            order(list);
+            dispatch(list, 7, 0x20);    // Partial last group.
+            dispatch(list, 16, 0x21);   // Unverified initiator bits.
+            if (submit() || frame.create_list(second.GetAddressOf(), increment.Get())) {
+                FreeLibrary(module);
+                return 1;
+            }
+            list = second.Get();
+            bind_inputs();
+            dispatch(list, 4, 0x20);
+        } else {
+            list->Dispatch(groups, 1, 1);
+        }
         FreeLibrary(module);
-        desc.CS = {increment_cs, sizeof(increment_cs)};
-        CHECK(xbox_method<Create>(dev, 62)(dev, &desc, 0, nullptr, IID_PPV_ARGS(&increment)));
-        list->SetPipelineState(increment.Get());
-        list->Dispatch(groups, 1, 1);
     }
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Transition = {output.Get(), 0, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE};
     list->ResourceBarrier(1, &barrier);
     list->CopyBufferRegion(frame.readback.Get(), 0, output.Get(), 0, buffer.Width);
-    CHECK(list->Close());
-    ID3D12CommandList* lists[] = {list};
-    frame.queue->ExecuteCommandLists(1, lists);
-    if (frame.wait_for_gpu()) return 1;
+    if (submit()) return 1;
 
     UINT* data = nullptr;
     D3D12_RANGE read{0, size_t(buffer.Width)}, no_writes{};
     CHECK(frame.readback->Map(0, &read, reinterpret_cast<void**>(&data)));
     UINT matched = 0;
-    for (UINT i = 0; i < groups; ++i) matched += data[i] == (test_barrier ? 0x57ac71aau : 0x57ac71a9u);
+    for (UINT i = 0; i < groups; ++i) {
+        UINT expected = 0x57ac71a9u;
+        if (test_dispatch) expected += (i >= 2 && i < 16) + (i < 8) + (i < 4);
+        if (probe == ComputeProbe::UavBarrier) ++expected;
+        matched += data[i] == expected;
+    }
     frame.readback->Unmap(0, &no_writes);
-    std::printf("%s: %u/%u group writes match\n", test_barrier ? "Compute UAV barrier" : "Compute PSO fallback", matched, groups);
+    const char* label = test_dispatch ? "Thread dispatch" :
+        (probe == ComputeProbe::UavBarrier ? "Compute UAV barrier" : "Compute PSO fallback");
+    std::printf("%s: %u/%u values match\n", label, matched, groups);
     return matched != groups;
 }

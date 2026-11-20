@@ -254,7 +254,7 @@ unsafe extern "system" fn create_command_list_x(
     if hr == S_OK && !ppv.is_null() {
         // Hand the title a shim object (Xbox vtable layout + inert inline-buffer fields)
         // instead of the real PC command list; see cmdlist_wrap.
-        unsafe { *ppv = crate::cmdlist_wrap::wrap(*ppv) };
+        unsafe { *ppv = crate::cmdlist_wrap::wrap(*ppv, init_state) };
     }
     record("d3d12_xs", "CreateCommandList", &format!("nodeMask={node_mask} type={list_type} -> hr={hr:#010x}"));
     hr
@@ -626,7 +626,8 @@ unsafe extern "system" fn create_gfx_pso_x(
             continue;
         }
         match unsafe { crate::shader_xlat::translate(p, n) } {
-            Ok(code) => {
+            Ok(shader) => {
+                let code = shader.code;
                 desc[off..off + 8].copy_from_slice(&(code.as_ptr() as u64).to_le_bytes());
                 desc[off + 8..off + 16].copy_from_slice(&(code.len() as u64).to_le_bytes());
                 keep.push(code);
@@ -992,7 +993,7 @@ unsafe extern "system" fn create_compute_pso_x(
     let mut desc = unsafe { core::slice::from_raw_parts(pdesc, 0x38).to_vec() };
     let p = u64::from_le_bytes(desc[8..16].try_into().unwrap()) as *const u8;
     let n = u64::from_le_bytes(desc[16..24].try_into().unwrap()) as usize;
-    let code = match unsafe { crate::shader_xlat::translate(p, n) } {
+    let shader = match unsafe { crate::shader_xlat::translate(p, n) } {
         Ok(c) => c,
         Err(e) => {
             if FAIL.fetch_add(1, Ordering::Relaxed) < 6 {
@@ -1002,13 +1003,20 @@ unsafe extern "system" fn create_compute_pso_x(
             return E_FAIL;
         }
     };
+    let code = shader.code;
     desc[8..16].copy_from_slice(&(code.as_ptr() as u64).to_le_bytes());
     desc[16..24].copy_from_slice(&(code.len() as u64).to_le_bytes());
     let f: unsafe extern "system" fn(*mut c_void, *const u8, *const Guid, *mut *mut c_void) -> i32 =
         unsafe { core::mem::transmute(*real_vtbl(real).add(11)) }; // PC CreateComputePipelineState
     let hr = unsafe { f(real, desc.as_ptr(), riid, ppv) };
-    if hr == 0 && !ppv.is_null() && crate::rtcap::enabled() {
-        crate::rtcap::note_compute_pso(unsafe { *ppv } as usize, code.as_ptr() as usize);
+    if hr == S_OK && !ppv.is_null() && !(*ppv).is_null() {
+        let pso = *ppv;
+        if let Some(group) = shader.portable_compute_group {
+            crate::cmdlist_wrap::tag_compute_pso(pso, group);
+        }
+        if crate::rtcap::enabled() {
+            crate::rtcap::note_compute_pso(pso as usize, code.as_ptr() as usize);
+        }
     }
     if hr == 0 {
         let k = OK.fetch_add(1, Ordering::Relaxed) + 1;

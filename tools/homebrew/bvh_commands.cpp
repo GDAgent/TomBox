@@ -13,3 +13,8 @@ extern "C" __declspec(dllexport) void order_compute_writes(ID3D12GraphicsCommand
     using Barrier = void (WINAPI*)(ID3D12GraphicsCommandList*, UINT, const D3D12_BARRIER_GROUP*);
     xbox_method<Barrier>(list, 146)(list, 1, &group);
 }
+
+extern "C" __declspec(dllexport) void dispatch_threads(ID3D12GraphicsCommandList* list, UINT x, UINT flags) {
+    using Dispatch = void (WINAPI*)(ID3D12GraphicsCommandList*, UINT, UINT, UINT, UINT);
+    xbox_method<Dispatch>(list, 80)(list, x, 1, 1, flags);
+}

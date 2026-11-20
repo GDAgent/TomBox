@@ -103,10 +103,8 @@ macro_rules! make_probes {
             xbox[60].store(route60 as usize, Ordering::Relaxed);
             xbox[61].store(route61 as usize, Ordering::Relaxed);
             xbox[2].store(release_list as usize, Ordering::Relaxed);
-            xbox[10].store(reset_list as usize, Ordering::Relaxed);
             xbox[26].store(resource_barrier_traced as usize, Ordering::Relaxed);
             if crate::rtcap::enabled() {
-                xbox[25].store(set_pso_traced as usize, Ordering::Relaxed);
                 xbox[50].store(om_set_targets_traced as usize, Ordering::Relaxed);
                 xbox[12].store(draw_traced as usize, Ordering::Relaxed);
                 xbox[13].store(draw_indexed_traced as usize, Ordering::Relaxed);
@@ -129,14 +127,6 @@ make_probes!(
     (p116,116),(p117,117),(p118,118),(p119,119),(p120,120),(p121,121),(p122,122),(p123,123),(p124,124),
     (p125,125),(p126,126),(p127,127),(p146,146),
 );
-
-unsafe extern "system" fn reset_list(this: *mut c_void, alloc: *mut c_void, pso: *mut c_void) -> i32 {
-    let f: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void) -> i32 =
-        core::mem::transmute(*REAL_VT_PTR.add(10));
-    let hr = f(this, alloc, pso);
-    if hr >= 0 { crate::texture_state::TRACKER.lock().unwrap().reset(this as usize); }
-    hr
-}
 
 unsafe extern "system" fn release_list(this: *mut c_void) -> u32 {
     let f: unsafe extern "system" fn(*mut c_void) -> u32 = core::mem::transmute(*REAL_VT_PTR.add(2));
@@ -166,11 +156,6 @@ unsafe extern "system" fn resource_barrier_traced(this: *mut c_void, n: u32, bar
 }
 
 // Draw-trace hooks (installed only with the diagnostic capture): note, then forward.
-unsafe extern "system" fn set_pso_traced(this: *mut c_void, pso: *mut c_void) {
-    crate::rtcap::on_set_pso(this as usize, pso as usize);
-    let f: unsafe extern "system" fn(*mut c_void, *mut c_void) = core::mem::transmute(*REAL_VT_PTR.add(25));
-    f(this, pso)
-}
 unsafe extern "system" fn om_set_targets_traced(this: *mut c_void, n: u32, handles: *const usize, single: i32, dsv: *const usize) {
     crate::rtcap::on_set_targets(this as usize, n, handles, single != 0, dsv);
     let f: unsafe extern "system" fn(*mut c_void, u32, *const usize, i32, *const usize) = core::mem::transmute(*REAL_VT_PTR.add(46));
@@ -248,6 +233,7 @@ macro_rules! route_by_caller {
 route_by_caller!(route59, 59);
 route_by_caller!(route60, 60);
 route_by_caller!(route61, 61);
+route_by_caller!(route80, 80);
 route_by_caller!(route146, 146);
 
 unsafe extern "system" fn select_command(caller: usize, slot: u32) -> usize {
@@ -260,6 +246,8 @@ unsafe extern "system" fn select_command(caller: usize, slot: u32) -> usize {
         }
         (_, 59) => p59 as usize,
         (_, 60) => p60 as usize,
+        (Gxdk250405, 80) => dispatch_threads as usize,
+        (_, 80) => p80 as usize,
         (Gxdk250405, 146) => compute_uav_barrier as usize,
         (_, 146) => p146 as usize,
         _ => p61 as usize,
@@ -465,6 +453,115 @@ pub fn apply(real_list: *mut c_void) {
 const SHIM_REAL_OFF: usize = 0x38;
 /// Shim size: generous and zero-filled, for any other inline field the title reads.
 const SHIM_SIZE: usize = 0x4000;
+// TomBox state lives beyond the guest-visible inline packet fields. Recording
+// a D3D12 command list is single-threaded. No borrowed PSO survives a bind.
+#[repr(C, align(16))]
+struct ListShim {
+    vtable: *const AtomicUsize,
+    packet_fields: [u8; SHIM_REAL_OFF - size_of::<usize>()],
+    real: *mut c_void,
+    guest_tail: [u8; SHIM_SIZE - SHIM_REAL_OFF - size_of::<usize>()],
+    group: [u32; 3],
+}
+
+const _: () = assert!(core::mem::offset_of!(ListShim, real) == SHIM_REAL_OFF);
+const _: () = assert!(core::mem::offset_of!(ListShim, group) == SHIM_SIZE);
+
+// Private data on the host PSO follows its COM lifetime (including address reuse).
+static HAS_GROUP_METADATA: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+const GROUP_GUID: crate::device_wrap::Guid = crate::device_wrap::Guid {
+    d1: 0x968a5ef2, d2: 0x0e91, d3: 0x411d, d4: [0x83, 0x16, 0x7d, 0x54, 0x09, 0xc7, 0x12, 0x18],
+};
+pub(super) unsafe fn tag_compute_pso(created: *mut c_void, group: [u32; 3]) {
+    // Creation returns the interface requested by the caller, possibly IUnknown.
+    const OBJECT: crate::device_wrap::Guid = crate::device_wrap::Guid {
+        d1: 0xc4fec28f, d2: 0x7966, d3: 0x4e95, d4: [0x9f, 0x94, 0xf4, 0x31, 0xcb, 0x56, 0xc3, 0xb8],
+    };
+    let vt = *created.cast::<*const usize>();
+    let query: unsafe extern "system" fn(*mut c_void, &crate::device_wrap::Guid, &mut *mut c_void) -> i32 =
+        core::mem::transmute(*vt);
+    let mut pso = core::ptr::null_mut();
+    if query(created, &OBJECT, &mut pso) < 0 || pso.is_null() { return; }
+    let vt = *pso.cast::<*const usize>();
+    let set: unsafe extern "system" fn(*mut c_void, &crate::device_wrap::Guid, u32, &[u32; 3]) -> i32 =
+        core::mem::transmute(*vt.add(4));
+    if set(pso, &GROUP_GUID, 12, &group) == 0 {
+        HAS_GROUP_METADATA.store(true, Ordering::Release);
+    } else {
+        record("d3d12_xs", "DispatchThreads", "could not attach group dimensions to pipeline");
+    }
+    let release: unsafe extern "system" fn(*mut c_void) -> u32 = core::mem::transmute(*vt.add(2));
+    release(pso);
+}
+
+unsafe fn pipeline_group(pso: *mut c_void) -> [u32; 3] {
+    if pso.is_null() || !HAS_GROUP_METADATA.load(Ordering::Acquire) { return [0; 3]; }
+    let vt = *pso.cast::<*const usize>();
+    let get: unsafe extern "system" fn(*mut c_void, &crate::device_wrap::Guid, &mut u32, &mut [u32; 3]) -> i32 =
+        core::mem::transmute(*vt.add(3));
+    let mut size = 12;
+    let mut group = [0; 3];
+    if get(pso, &GROUP_GUID, &mut size, &mut group) == 0 && size == 12 { group } else { [0; 3] }
+}
+
+impl ListShim {
+    unsafe fn remember_pipeline(&mut self, pso: *mut c_void) {
+        self.group = pipeline_group(pso);
+        if crate::rtcap::enabled() {
+            crate::rtcap::on_set_pso(self.real as usize, pso as usize);
+        }
+    }
+}
+
+unsafe extern "system" fn shim_reset(shim: &mut ListShim, allocator: *mut c_void, pso: *mut c_void) -> i32 {
+    let reset: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void) -> i32 =
+        core::mem::transmute(*REAL_VT_PTR.add(10));
+    let hr = reset(shim.real, allocator, pso);
+    if hr >= 0 {
+        crate::texture_state::TRACKER.lock().unwrap().reset(shim.real as usize);
+        shim.remember_pipeline(pso);
+    }
+    hr
+}
+
+unsafe extern "system" fn shim_clear(shim: &mut ListShim, pso: *mut c_void) {
+    let clear: unsafe extern "system" fn(*mut c_void, *mut c_void) = core::mem::transmute(*REAL_VT_PTR.add(11));
+    clear(shim.real, pso);
+    shim.remember_pipeline(pso);
+}
+
+unsafe extern "system" fn shim_set_pso(shim: &mut ListShim, pso: *mut c_void) {
+    let set: unsafe extern "system" fn(*mut c_void, *mut c_void) = core::mem::transmute(*REAL_VT_PTR.add(25));
+    set(shim.real, pso);
+    shim.remember_pipeline(pso);
+}
+
+fn dispatch_groups(threads: [u32; 3], group: [u32; 3], flags: u32) -> Option<[u32; 3]> {
+    if !matches!(flags, 0x20 | 0x8020) { return None; }
+    let mut counts = [0; 3];
+    for i in 0..3 {
+        counts[i] = threads[i].checked_div(group[i])?;
+        if threads[i] % group[i] != 0 || counts[i] > 65535 { return None; }
+    }
+    Some(counts)
+}
+
+unsafe extern "system" fn dispatch_threads(shim: &ListShim, x: u32, y: u32, z: u32, flags: u32) {
+    let group = shim.group;
+    let Some([gx, gy, gz]) = dispatch_groups([x, y, z], group, flags) else {
+        static UNSUPPORTED: AtomicUsize = AtomicUsize::new(0);
+        if UNSUPPORTED.fetch_add(1, Ordering::Relaxed) < 8 {
+            record("d3d12_xs", "DispatchThreads",
+                &format!("unsupported threads=({x},{y},{z}) group={group:?} flags={flags:#x}"));
+        }
+        return;
+    };
+    // Use slot 14's selected host path so capture sees the converted dispatch.
+    let dispatch: unsafe extern "system" fn(*mut c_void, u32, u32, u32) =
+        core::mem::transmute(XBOX_VT[14].load(Ordering::Relaxed));
+    dispatch(shim.real, gx, gy, gz);
+}
+
 static SHIM_VT: [AtomicUsize; N] = [const { AtomicUsize::new(0) }; N];
 static SHIM_BUILT: std::sync::Once = std::sync::Once::new();
 
@@ -486,12 +583,19 @@ unsafe fn build_shim_thunks() {
         b[14] = 0xFF;
         b[15] = 0x20;
         core::ptr::copy_nonoverlapping(b.as_ptr(), p, 16);
-        SHIM_VT[i].store(p as usize, Ordering::Relaxed);
+        let entry = match i {
+            10 => shim_reset as usize,
+            11 => shim_clear as usize,
+            25 => shim_set_pso as usize,
+            80 => route80 as usize,
+            _ => p as usize,
+        };
+        SHIM_VT[i].store(entry, Ordering::Relaxed);
     }
 }
 
 /// Wrap a freshly created real command list in a shim object for the title.
-pub fn wrap(real_list: *mut c_void) -> *mut c_void {
+pub fn wrap(real_list: *mut c_void, initial_pso: *mut c_void) -> *mut c_void {
     if real_list.is_null() {
         return real_list;
     }
@@ -499,11 +603,12 @@ pub fn wrap(real_list: *mut c_void) -> *mut c_void {
     apply(real_list); // builds the Xbox-layout table on first use
     unsafe {
         SHIM_BUILT.call_once(|| build_shim_thunks());
-        let layout = std::alloc::Layout::from_size_align(SHIM_SIZE, 16).unwrap();
-        let p = std::alloc::alloc_zeroed(layout);
+        let layout = std::alloc::Layout::new::<ListShim>();
+        let p = std::alloc::alloc_zeroed(layout).cast::<ListShim>();
         assert!(!p.is_null(), "d3d12_xs: cannot allocate command-list shim");
-        *(p as *mut usize) = SHIM_VT.as_ptr() as usize;
-        *(p.add(SHIM_REAL_OFF) as *mut usize) = real_list as usize;
+        (*p).vtable = SHIM_VT.as_ptr();
+        (*p).real = real_list;
+        (*p).remember_pipeline(initial_pso);
         static N_WRAPPED: AtomicUsize = AtomicUsize::new(0);
         if N_WRAPPED.fetch_add(1, Ordering::Relaxed) < 3 {
             record("d3d12_xs", "cmdlist.shim", &format!("real {real_list:p} wrapped as shim {p:p}"));
@@ -519,7 +624,7 @@ pub fn unwrap(p: *mut c_void) -> *mut c_void {
     }
     unsafe {
         if *(p as *const usize) == SHIM_VT.as_ptr() as usize {
-            *((p as *const u8).add(SHIM_REAL_OFF) as *const usize) as *mut c_void
+            (*p.cast::<ListShim>()).real
         } else {
             p
         }
@@ -570,6 +675,19 @@ mod tests {
             (1, 6345127, packet.to_vec()), (2, 6345127, packet.to_vec()), (0, 0, vec![]),
             (1, 1, b"Xbox PIX timing event\0".to_vec()), (0, 0, vec![]),
         ]);
+    }
+
+    #[test]
+    fn thread_dimensions_require_whole_groups_in_every_axis() {
+        let threads = [32, 12, 10];
+        for flags in [0x20, 0x8020] {
+            assert_eq!(dispatch_groups(threads, [8, 4, 2], flags), Some([4, 3, 5]));
+            assert_eq!(dispatch_groups(threads, [8, 5, 2], flags), None);
+        }
+        assert_eq!(dispatch_groups(threads, [0, 0, 0], 0x20), None);
+        assert_eq!(dispatch_groups(threads, [1; 3], 0x21), None);
+        assert_eq!(dispatch_groups([65535, 1, 1], [1; 3], 0x20), Some([65535, 1, 1]));
+        assert_eq!(dispatch_groups([65536, 1, 1], [1; 3], 0x20), None);
     }
 
     #[test]

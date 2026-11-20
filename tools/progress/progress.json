@@ -13,6 +13,6 @@
   "d3d12x": {
     "comment": "Track each interface from slot zero through its baseline or highest recorded slot, whichever is larger. Each slot counts once across GXDK editions. Done = forwarded or implemented. Partial = incomplete behavior or an existing device diagnostic binding. Observed unmapped = evidenced call site without a translation, shown in grey. See docs/COMPATIBILITY.md for middleware call sites.",
     "Device": {"baseline_slots": 160, "done": "0-43,44,48,55,60-62,73,76,78-81", "partial": "45-47,49-54,56-59,63-72,74-75,77,82-90", "observed_unmapped": ""},
-    "CommandList": {"baseline_slots": 128, "done": "0-26,32-55,59,61,67,68,83,85", "partial": "60,146", "observed_unmapped": "71,73,80,90,141,148"}
+    "CommandList": {"baseline_slots": 128, "done": "0-26,32-55,59,61,67,68,83,85", "partial": "60,80,146", "observed_unmapped": "71,73,90,141,148"}
   }
 }

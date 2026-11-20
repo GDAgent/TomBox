@@ -135,6 +135,12 @@ The supplied BVH builder calls command-list slot 146 at RVAs `0xd7b4` and `0xd80
 
 The homebrew test records two dependent compute dispatches, checks the host barrier trace and reads back 32 incremented values. The tracker marks slot 146 partial because the translation handles this single global compute UAV barrier form. [Run the fixture](../tools/homebrew/README.md#graphical-coin-run)
 
+### GXDK 250405 thread-count dispatch
+
+At RVAs `0x14972` and `0x15215`, the BVH builder writes a five-word inline dispatch packet. When the packet buffer is full, it passes the same X, Y, Z and control word to command-list slot 80. The observed values `0x20` and `0x8020` match the RDNA2 thread-dimension and wave32 control bits. TomBox interprets these calls as thread counts and divides each axis by the bound shader’s group dimension before issuing desktop `Dispatch`. [AMD register definitions](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/amd/include/asic_reg/gc/gc_10_3_0_sh_mask.h) · [Desktop dispatch dimensions](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12graphicscommandlist-dispatch)
+
+The translation covers whole groups for a subset of straight-line shaders using ordinary register operands, buffer loads and stores, and lane-local arithmetic. Wave-sensitive instructions, unrecognized shaders and control words, partial groups and counts above the desktop limit are skipped with a diagnostic. The homebrew test verifies both observed control words, pipeline switching and the bounds of GPU writes. Execution of the BVH builder’s own shaders remains unverified. [Run the fixture](../tools/homebrew/README.md#graphical-coin-run)
+
 ### Open GPU synchronization calls
 
 The supplied `XboxBvhBuilder.dll` (GXDK 250405, SHA-256 `99f803ac22c01ef329dddb1d40be67238d2a812d01e8d040b3cb5135bc23707e`) uses a table of four-byte counters. At RVAs `0xd679` and `0xd6de`, command-list slots 73 and 71 receive the same counter address. Slot 73 receives a comparison value and a 32-bit mask. Slot 71 receives an incremented value and either zero or `0x1000`. Slot 90 receives a counter address and zero at RVA `0xe836`. Microsoft's pipelined postprocessing sample demonstrates GPU-side waits and bottom-of-pipe writes with *64-bit* counters. The 32-bit flags and ordering between queues remain open. [Microsoft synchronization sample](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Samples/Graphics/PipelinedPostprocess/PipelinedPostprocess.cpp#L278-L300)
@@ -148,7 +154,7 @@ The map covers device slots 0–159 and command-list slots 0–148. Each interfa
 | Command-list slot | Caller and call RVA | Evidence | Status |
 |---|---|---|---|
 | 71, 73, 90 | BVH builder 250405 · `0xd6de`, `0xd679`, `0xe836` respectively | The three calls address counters in the build scratch buffer. | Unmapped |
-| 80 | BVH builder 250405 · `0x149ba`, `0x1525d` | Dispatch slow paths pass three dimensions and a control word of `0x8020` or `0x20`. | Unmapped |
-| 141 | FidelityFX 260402 · `0x68a5`, 261000 · `0x65f8` | Both callers pass a buffer GPU address and size before setting pipeline state. | Unmapped |
+| 80 | BVH builder 250405 · `0x149ba`, `0x1525d` | Thread-count dispatch translates whole groups for the verified shader subset. | Partial |
+| 141 | FidelityFX 260402 · `0x68a5`, 261000 · `0x65f8` | Both callers pass the GPU address and size of the buffer they name `FFX_XBox_ComputeScratch`. The name is at RVA `0x67478` in April and `0x482b0` in October. | Unmapped |
 | 146 | BVH builder 250405 · `0xd7b4`, `0xd80a` | The single global compute UAV barrier form passes GPU readback under Proton. | Partial |
 | 148 | BVH builder 250405 · `0x114af`, `0x14afb` | Callers pass a byte size and 8 or 16. The second caller writes records through the returned pointer. | Unmapped |
