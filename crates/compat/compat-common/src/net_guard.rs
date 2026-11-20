@@ -7,7 +7,10 @@
 //! Two modes:
 //!
 //!   * **deny (default)** — every name resolution, outbound connect/sendto and WinHTTP
-//!     connection fails locally.
+//!     connection fails locally. Resolutions that cannot leave the machine are passed
+//!     through: a null/empty node (the wildcard or loopback address a socket binds to, e.g.
+//!     `getaddrinfo(NULL, port, AI_PASSIVE)`), `localhost`, and IP literals. Denying those
+//!     leaves a title unable to open even a local socket.
 //!   * **redirect** — `TOMBOX_NET_REDIRECT=<host>` (the project owner's own server). Every
 //!     host name the title asks for is replaced by `<host>`:
 //!       - `getaddrinfo` / `GetAddrInfoW` / `GetAddrInfoExW/A` / `gethostbyname` /
@@ -246,6 +249,56 @@ fn local_names() -> &'static Vec<String> {
 }
 
 /// Should this requested name be left alone (not a remote host)?
+/// Deny mode: a name whose resolution never queries a name server.
+fn local_only(name: &str) -> bool {
+    let n = name.trim();
+    n.is_empty() || n.eq_ignore_ascii_case("localhost") || n.parse::<std::net::IpAddr>().is_ok()
+}
+
+fn deny_resolution(api: &str, name: &str) -> i32 {
+    note(&format!("name resolution ({api} '{name}')"));
+    unsafe { SetLastError(WSAHOST_NOT_FOUND as u32) };
+    WSAHOST_NOT_FOUND
+}
+
+unsafe extern "system" fn d_getaddrinfo(node: *const u8, service: *const u8, hints: *const c_void, res: *mut *mut u8) -> i32 {
+    let f = orig!(H_GETADDRINFO, fn(*const u8, *const u8, *const c_void, *mut *mut u8) -> i32);
+    if node.is_null() || local_only(&cstr(node)) {
+        return f(node, service, hints, res);
+    }
+    deny_resolution("getaddrinfo", &cstr(node))
+}
+
+unsafe extern "system" fn d_getaddrinfow(node: *const u16, service: *const u16, hints: *const c_void, res: *mut *mut u8) -> i32 {
+    let f = orig!(H_GETADDRINFOW, fn(*const u16, *const u16, *const c_void, *mut *mut u8) -> i32);
+    if node.is_null() || local_only(&wstr(node)) {
+        return f(node, service, hints, res);
+    }
+    deny_resolution("GetAddrInfoW", &wstr(node))
+}
+
+unsafe extern "system" fn d_getaddrinfoexw(
+    name: *const u16, service: *const u16, ns: u32, nsp: *const c_void, hints: *const c_void, res: *mut *mut u8,
+    timeout: *const c_void, ov: *mut c_void, routine: *const c_void, handle: *mut *mut c_void,
+) -> i32 {
+    let f: Ex<u16> = core::mem::transmute(ORIG[H_GETADDRINFOEXW].load(Ordering::Relaxed));
+    if name.is_null() || local_only(&wstr(name)) {
+        return f(name, service, ns, nsp, hints, res, timeout, ov, routine, handle);
+    }
+    deny_resolution("GetAddrInfoExW", &wstr(name))
+}
+
+unsafe extern "system" fn d_getaddrinfoexa(
+    name: *const u8, service: *const u8, ns: u32, nsp: *const c_void, hints: *const c_void, res: *mut *mut u8,
+    timeout: *const c_void, ov: *mut c_void, routine: *const c_void, handle: *mut *mut c_void,
+) -> i32 {
+    let f: Ex<u8> = core::mem::transmute(ORIG[H_GETADDRINFOEXA].load(Ordering::Relaxed));
+    if name.is_null() || local_only(&cstr(name)) {
+        return f(name, service, ns, nsp, hints, res, timeout, ov, routine, handle);
+    }
+    deny_resolution("GetAddrInfoExA", &cstr(name))
+}
+
 fn passthrough(name: &str) -> bool {
     let n = name.trim().to_ascii_lowercase();
     n.is_empty() || n == "localhost" || n == "127.0.0.1" || n == "::1" || n == "0.0.0.0" || n == "::"
@@ -493,11 +546,36 @@ unsafe extern "system" fn h_winhttpconnect(session: *mut c_void, server: *const 
 fn install_deny() {
     let ws = b"ws2_32.dll\0";
     let wh = b"winhttp.dll\0";
-    let table: [(&[u8], &[u8], usize); 14] = [
-        (ws, b"getaddrinfo\0", deny_resolve as usize),
-        (ws, b"GetAddrInfoW\0", deny_resolve as usize),
-        (ws, b"GetAddrInfoExW\0", deny_resolve as usize),
-        (ws, b"GetAddrInfoExA\0", deny_resolve as usize),
+    // Resolvers keep local-only lookups working (see the module docs). They need the
+    // original, so they go through a trampoline; without one they fail closed.
+    let resolvers: [(&[u8], usize, usize); 4] = [
+        (b"getaddrinfo\0", H_GETADDRINFO, d_getaddrinfo as usize),
+        (b"GetAddrInfoW\0", H_GETADDRINFOW, d_getaddrinfow as usize),
+        (b"GetAddrInfoExW\0", H_GETADDRINFOEXW, d_getaddrinfoexw as usize),
+        (b"GetAddrInfoExA\0", H_GETADDRINFOEXA, d_getaddrinfoexa as usize),
+    ];
+    let mut ok = 0;
+    let mut local = 0;
+    let mut missing = Vec::new();
+    for (f, idx, hook) in resolvers {
+        let name = String::from_utf8_lossy(&f[..f.len() - 1]).into_owned();
+        let p = unsafe { resolve_export(ws, f) };
+        if p.is_null() {
+            missing.push(name);
+            continue;
+        }
+        let patched = match unsafe { make_trampoline(p) } {
+            Some(t) => {
+                ORIG[idx].store(t, Ordering::SeqCst);
+                let done = unsafe { write_jump(p, hook) };
+                local += usize::from(done);
+                done
+            }
+            None => unsafe { write_jump(p, deny_resolve as usize) },
+        };
+        if patched { ok += 1 } else { missing.push(name) }
+    }
+    let table: [(&[u8], &[u8], usize); 10] = [
         (ws, b"gethostbyname\0", deny_null as usize),
         (ws, b"connect\0", deny_sock as usize),
         (ws, b"WSAConnect\0", deny_sock as usize),
@@ -509,8 +587,6 @@ fn install_deny() {
         (wh, b"WinHttpOpenRequest\0", deny_null as usize),
         (wh, b"WinHttpSendRequest\0", deny_false as usize),
     ];
-    let mut ok = 0;
-    let mut missing = Vec::new();
     for (m, f, stub) in table {
         let p = unsafe { resolve_export(m, f) };
         if !p.is_null() && unsafe { write_jump(p, stub) } {
@@ -520,7 +596,7 @@ fn install_deny() {
         }
     }
     crate::record_raw("net_guard", "installed", &format!(
-        "{ok}/14 network entry points blocked in-process{}",
+        "{ok}/14 network entry points blocked in-process ({local}/4 resolvers pass local-only names){}",
         if missing.is_empty() { String::new() } else { format!(" (not patched: {})", missing.join(", ")) }));
 }
 
@@ -617,4 +693,19 @@ pub fn ensure() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::local_only;
+
+    #[test]
+    fn only_names_that_cannot_reach_a_name_server_are_local() {
+        for n in ["", "  ", "localhost", "LocalHost", "0.0.0.0", "127.0.0.1", "::", "::1", "192.0.2.20", "fe80::1"] {
+            assert!(local_only(n), "{n:?} needs no name server");
+        }
+        for n in ["title-1234.services.example.net", "localhost.example.com", "127.0.0.1.nip.io", "myhost"] {
+            assert!(!local_only(n), "{n:?} would be a DNS query");
+        }
+    }
 }
