@@ -21,7 +21,7 @@ pub fn vop2(op: u32) -> Option<&'static str> {
         0x2f => "v_cvt_pkrtz_f16_f32",
         0x32 => "v_add_f16", 0x33 => "v_sub_f16", 0x34 => "v_subrev_f16", 0x35 => "v_mul_f16",
         // GFX10 names these FMA forms (both the RDNA1 and RDNA2 references): fused multiply-add.
-        0x36 => "v_fmac_f16", 0x37 => "v_fmamk_f16", 0x38 => "v_fmaak_f16", 0x39 => "v_max_f16", 0x3a => "v_min_f16",
+        0x36 => "v_fmac_f16", 0x37 => "v_fmamk_f16", 0x38 => "v_fmaak_f16", 0x39 => "v_max_f16", 0x3a => "v_min_f16", 0x3c => "v_pk_fmac_f16",
         _ => return None,
     })
 }
@@ -127,6 +127,7 @@ pub fn vop3(op: u32) -> Option<&'static str> {
         return vop1(op - 0x180);
     }
     Some(match op {
+        0x15e => "v_cvt_pk_u8_f32",
         0x140 => "v_mad_legacy_f32", 0x141 => "v_mad_f32", 0x142 => "v_mad_i32_i24",
         0x143 => "v_mad_u32_u24", 0x144 => "v_cubeid_f32", 0x145 => "v_cubesc_f32",
         0x146 => "v_cubetc_f32", 0x147 => "v_cubema_f32", 0x148 => "v_bfe_u32", 0x149 => "v_bfe_i32",
@@ -301,7 +302,8 @@ pub fn lookup(enc: Enc, op: u32) -> Option<&'static str> {
             0x2a => Some("ds_or_rtn_b32"), 0x2b => Some("ds_xor_rtn_b32"),
             0x0d => Some("ds_write_b32"),
             0x0e => Some("ds_write2_b32"),
-            0x36 => Some("ds_read_b32"),
+            0x36 => Some("ds_read_b32"), 0x76 => Some("ds_read_b64"),
+            0xdf => Some("ds_write_b128"),
             0x37 => Some("ds_read2_b32"),
             0x38 => Some("ds_read2st64_b32"),
             0x0f => Some("ds_write2st64_b32"),

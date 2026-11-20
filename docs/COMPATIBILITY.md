@@ -64,20 +64,46 @@ enumerated by (a) tracing `QueryApiImpl` call sites in the EXE using the symbol 
 - GDK (`QueryApiImpl`) service list not yet enumerated.
 - Divergence of Xbox `api-ms-win-*` from desktop not yet validated per symbol.
 
-## Additional x64 middleware observed in PE imports
+## Scarlett DLL audit
 
-These findings come from the import and export tables of six user-supplied
-DLLs and the FidelityFX command-list call sites described below. The six supplied DLLs have been inspected without loading them. Six compute shaders extracted from the BVH builder have also passed GPU readback. A separate test runs the publicly released Scarlett FidelityFX binaries under Proton. The synthetic
-graphics example exercises the platform functions independently.
+All 16 supplied DLLs are x64 PE images. Their ordinary import tables contain
+1,337 entries (611 distinct DLL/symbol pairs). The files have no delay-import
+entries. The supplied sibling DLLs and the built TomBox shims were checked by
+export name or ordinal. A Windows probe resolved all 492 distinct host imports
+across 61 modules with `LoadLibraryExA` and `GetProcAddress` under Proton
+Experimental `experimental-11.0-20261027b`. This checks symbol availability.
+The GPU results below come from dispatching the embedded shaders separately.
 
-| DLL | Evidence from this build | TomBox coverage or open question |
-|---|---|---|
-| `amd_fidelityfx_loader_xbox.dll` | Exports five FidelityFX entry points including `ffxCreateContext` and `ffxDispatch`. Imports Windows library-loader APIs. | Static imports do not identify which provider will be loaded at runtime. |
-| `amd_fidelityfx_upscaler_xbox.dll` | Imports `D3D12CreateRootSignatureDeserializer`, `XMemAlloc`, `XMemFree` and `XMemGetWorkingSetStatistics`. | Homebrew verifies root-signature deserialization, both unordered-access view (UAV) clears and resource discard. The statistics function returns `E_NOTIMPL`. Upscaling needs its own output test. |
-| `Bink2Scarlett.dll` | Exports video frame operations. Imports `XMemAlloc`, `XMemFree` and ordinal 1 from `XAudio2_9.dll`. | The coin game exercises allocation and release. Audio and frame decoding remain unverified. |
-| `libHttpClient.GDK.dll` | Exports HTTP and WebSocket operations and imports WinHTTP and Crypt32. | A local request with a known response would test the host HTTP path. |
-| `XboxBvhBuilder.dll` | Imports `D3D12SerializeVersionedRootSignature` and `XMemVirtualQuery`. Exports ray-tracing acceleration structure operations. | Six of 52 embedded compute shaders translate and execute in isolation. TomBox forwards the serializer. `XMemVirtualQuery` is missing. The caller examines additional memory information beyond the desktop memory-query fields, so the Xbox output layout needs verification. |
-| `XCurl.dll` | Exports curl easy/multi functions and imports WinHTTP, Crypt32 and Windows API sets. | HTTP behavior and availability of the imported API sets need checking on the target host. |
+**One static import is missing.** The BVH builder asks for `xmem!XMemVirtualQuery`.
+Its caller reads Xbox-specific memory information beyond the desktop query
+fields. The upscaler also imports `XMemGetWorkingSetStatistics`. TomBox exports
+it and returns `E_NOTIMPL`.
+
+| Supplied DLL | Import entries | Exports | Translation evidence and open work |
+|---|---:|---:|---|
+| `amd_fidelityfx_loader_xbox.dll` | 22 | 5 | Names the supplied upscaler and a separate frame-generation provider. The latter DLL was absent from the supplied set. Provider selection happens at runtime. |
+| `amd_fidelityfx_upscaler_xbox.dll` | 86 | 5 | 14/29 compute shaders compile and pass GPU readback, including the input prepass. Fifteen kernels and full-frame upscaling remain open. The long model-specific DLL name in this file is its own PE export name. |
+| `XboxBvhBuilder.dll` | 57 | 12 | 16/52 compute shaders compile and pass GPU readback. The other 36 kernels, the virtual-memory query and the command-list gaps below remain open. |
+| `Bink2Scarlett.dll` | 60 | 74 | The host resolves `XAudio2_9!#1` to `XAudio2Create`. Bink playback, including synchronized audio and video, needs a functional test. |
+| `libHttpClient.GDK.dll` | 198 | 129 | WinHTTP and Crypt32 imports resolve. The binary also names `xgameruntime.dll` and `QueryApiImpl`. GDK service calls, HTTP and WebSocket behavior remain unverified. |
+| `XCurl.dll` | 140 | 61 | WinHTTP and Crypt32 imports resolve. Strings identify `xgameruntime.dll`, `gameplatformservices.dll`, `QueryApiImpl` and a URL-security query. These dynamic paths need runtime testing. |
+| `concrt140.dll` | 103 | 291 | Concurrency runtime. All static imports resolve. |
+| `msvcp140.dll` | 187 | 1493 | C++ standard library. All static imports resolve. The binary also names `appmodel.dll`. |
+| `msvcp140_1.dll` | 33 | 7 | C++ runtime extension. All static imports resolve. |
+| `msvcp140_2.dll` | 96 | 44 | C++ runtime extension. All static imports resolve. |
+| `msvcp140_atomic_wait.dll` | 64 | 32 | All static imports resolve. The binary also names `icu.dll`. |
+| `msvcp140_codecvt_ids.dll` | 24 | 4 | Character-conversion facet IDs. All static imports resolve. |
+| `vccorlib140.dll` | 114 | 256 | C++/CX runtime. Static WinRT imports resolve. The binary also names `gcombase.dll`. Activation behavior remains unverified. |
+| `vcomp140.dll` | 78 | 113 | OpenMP runtime. All static imports resolve. The binary also names `vcomp120ui.dll`. |
+| `vcruntime140.dll` | 41 | 71 | Compiler runtime. All static imports resolve. |
+| `vcruntime140_1.dll` | 34 | 3 | Exception-handling runtime. All static imports resolve. |
+
+Only the upscaler and BVH builder contain identifiable DXBC shader containers.
+The ten Microsoft runtime DLLs report version 14.29.30157.0. Their static imports
+are satisfied by the supplied runtimes and host APIs. DLL and function names in
+strings identify candidates for dynamic lookup. Whether an application takes
+those paths, uses a fallback or requires a particular GDK service depends on
+the workload. [GPU readback procedures](../tools/homebrew/README.md#retail-fidelityfx-prepass)
 
 ### Scarlett command-list UAV clears
 
@@ -139,7 +165,7 @@ The homebrew test records two dependent compute dispatches, checks the host barr
 
 At RVAs `0x14972` and `0x15215`, the BVH builder writes a five-word inline dispatch packet. When the packet buffer is full, it passes the same X, Y, Z and control word to command-list slot 80. The observed values `0x20` and `0x8020` match the RDNA2 thread-dimension and wave32 control bits. TomBox interprets these calls as thread counts and divides each axis by the bound shader’s group dimension before issuing desktop `Dispatch`. [AMD register definitions](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/amd/include/asic_reg/gc/gc_10_3_0_sh_mask.h) · [Desktop dispatch dimensions](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12graphicscommandlist-dispatch)
 
-The translation covers whole groups for a subset of straight-line shaders using ordinary register operands, buffer loads and stores, and lane-local arithmetic. Wave-sensitive instructions, unrecognized shaders and control words, partial groups and counts above the desktop limit are skipped with a diagnostic. The homebrew test verifies both observed control words, pipeline switching and the bounds of GPU writes. Six BVH builder shaders have passed readback through ordinary group dispatch. The library’s own slot 80 dispatch sequence remains unverified. [Run the fixture](../tools/homebrew/README.md#graphical-coin-run)
+The translation covers whole groups for a subset of straight-line shaders using ordinary register operands, buffer loads and stores, and lane-local arithmetic. Wave-sensitive instructions, unrecognized shaders and control words, partial groups and counts above the desktop limit are skipped with a diagnostic. The homebrew test verifies both observed control words, pipeline switching and the bounds of GPU writes. Sixteen BVH builder shaders have passed readback through ordinary group dispatch. The library’s own slot 80 dispatch sequence remains unverified. [Run the fixture](../tools/homebrew/README.md#graphical-coin-run)
 
 ### Open GPU synchronization calls
 

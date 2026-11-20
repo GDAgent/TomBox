@@ -17,7 +17,7 @@ TomBox is an experimental Xbox Series X|S compatibility runtime for x64 Windows 
 
 - **System imports** count the tested Fortnite build’s imports, including native Windows functions. Coin Run independently verifies the ordinal-1 factories for GameInput and XAudio2.
 - **Direct3D 12.x** counts covered device and command-list slots once across GXDK editions. A discovery beyond the tracked range extends the denominator. [Slot evidence](docs/COMPATIBILITY.md#d3d12x-slot-tracking)
-- **RDNA2** tracks named instructions across Fortnite and Xbox BVH Builder. Green means every scanned retail shader using the instruction translated. Partial retail translation and GPU-only checks earn amber. Hover over a square for counts by source.
+- **RDNA2** tracks named instructions across Fortnite, Xbox BVH Builder and the Scarlett FidelityFX upscaler. Green means every scanned retail shader using the instruction translated. Partial retail translation and GPU-only checks earn amber. Hover over a square for counts by source.
 - **Retail milestones** track the path from inspecting a dump through playable games. One retail title has been tested. Its latest completed milestone is reaching the main menu. [Compatibility matrix](docs/COMPATIBILITY.md) · [Known limitations](docs/TECHNICAL_DEBT.md)
 
 ## Try Coin Run on Linux

@@ -20,6 +20,9 @@ build_pe() {
         /link /libpath:"$sdk/crt/lib/x86_64" \
         /libpath:"$sdk/sdk/lib/um/x86_64" /libpath:"$sdk/sdk/lib/ucrt/x86_64" kernel32.lib "$@"
 }
+build_pe "$build/bvh_sort_probe.exe" tools/homebrew/bvh_sort_probe.cpp "$build/d3d12_xs.dll.lib" d3d12.lib
+build_pe "$build/fsr_prepass_probe.exe" tools/homebrew/fsr_prepass_probe.cpp "$build/d3d12_xs.dll.lib" d3d12.lib
+build_pe "$build/fsr_postpass_probe.exe" tools/homebrew/fsr_postpass_probe.cpp "$build/d3d12_xs.dll.lib" d3d12.lib
 build_pe "$build/fidelityfx_probe.exe" tools/homebrew/fidelityfx_probe.cpp "$build/d3d12_xs.dll.lib"
 build_pe "$build/clear_pixel.exe" tools/homebrew/clear_pixel.cpp "$build/d3d12_xs.dll.lib"
 build_pe "$build/coin_window.exe" tools/homebrew/coin_window.cpp "$build/d3d12_xs.dll.lib" "$build/examples/coin_rules.lib" "$build/xmem.dll.lib" \

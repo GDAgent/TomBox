@@ -57,21 +57,24 @@ fn main() -> ExitCode {
     };
 
     println!("== {path} ==");
-    println!(
-        "stage={stage}  SM={}.{}  bitcode_stripped={}  entry={:?}",
-        ex.shader_model.0, ex.shader_model.1, ex.bitcode_stripped, ex.entry
-    );
+    if ex.fspx_config.is_some() {
+        println!("stage={stage}  native compute container=ACCC/FSPX");
+    } else {
+        println!(
+            "stage={stage}  SM={}.{}  bitcode_stripped={}  entry={:?}",
+            ex.shader_model.0, ex.shader_model.1, ex.bitcode_stripped, ex.entry
+        );
+    }
     println!(
         "DXBC chunks: inputSig={} outputSig={} PSV0={} rootSig={}",
         ex.has_input_sig, ex.has_output_sig, ex.has_psv0, ex.has_root_sig
     );
-    println!(
-        "FSSM: {} bytes   ISA: {} bytes ({} dwords) @ FSSM+{:#x}",
-        ex.fssm.len(),
-        ex.isa.len(),
-        ex.isa.len() / 4,
-        ex.isa_offset_in_fssm
-    );
+    if ex.fspx_config.is_some() {
+        println!("FSPX section 6: {} program bytes ({} dwords)", ex.isa.len(), ex.isa.len() / 4);
+    } else {
+        println!("FSSM: {} bytes   ISA: {} bytes ({} dwords) @ FSSM+{:#x}",
+                 ex.fssm.len(), ex.isa.len(), ex.isa.len() / 4, ex.isa_offset_in_fssm);
+    }
 
     // Structured RDNA2 decode (length-accurate), self-validated by landing on s_endpgm.
     for (tag, sig) in [("in ", &ex.input_sig), ("out", &ex.output_sig)] {
@@ -145,6 +148,10 @@ fn main() -> ExitCode {
         }
     }
     if let Some(f) = fssm_out {
+        if ex.fspx_config.is_some() {
+            eprintln!("--fssm-out requires an FSSM container");
+            return ExitCode::FAILURE;
+        }
         if let Err(e) = std::fs::write(&f, &ex.fssm) {
             eprintln!("cannot write {f}: {e}");
         } else {

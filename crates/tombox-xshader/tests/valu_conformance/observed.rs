@@ -91,6 +91,26 @@ fn lds_cases(cases: &mut Vec<Case>) {
             ));
         }
     }
+    // Address and read destination alias: word zero clobbers v8 before word one.
+    for k in 0..2 {
+        let mut words = vec![base];
+        words.extend(ds(0x0d, 24, 8, 0, 0, 0));
+        words.extend(ds(0x0d, 28, 8, 1, 0, 0));
+        words.push(WAIT);
+        words.extend(ds(0x76, 24, 8, 0, 0, 8));
+        words.extend([WAIT, vmov(3, 264 + k), S_ENDPGM]);
+        cases.push(case(&format!("ds_read_b64 word {k}"), words, [Dom::I; 3],
+            move |a, b, _, _| Want::U([a, b][k as usize])));
+    }
+    for k in 0..4 {
+        let mut words = vec![base, vmov(3, 0x9d)]; // fourth source word is 29
+        words.extend(ds(0xdf, 16, 8, 0, 0, 0));
+        words.push(WAIT);
+        words.extend(ds(0x36, 16 + 4 * k, 8, 0, 0, 3));
+        words.extend([WAIT, S_ENDPGM]);
+        cases.push(case(&format!("ds_write_b128 word {k}"), words, [Dom::I; 3],
+            move |a, b, c, _| Want::U([a, b, c, 29][k as usize])));
+    }
     for (name, read_half) in [("ds_read_u16", true), ("ds_write_b16", false)] {
         for offset in [0, 2] {
             let mut words = vec![base];
@@ -339,6 +359,29 @@ fn control_cases(cases: &mut Vec<Case>) {
         p.vcc_in = true;
         cases.push(p);
     }
+    for (name, op, wide) in [("s_or_saveexec_b32", 0x3d, false), ("s_or_saveexec_b64", 0x25, true)] {
+        for (label, reg) in [("saved low", 16), ("saved high", 17), ("new low", 22), ("new high", 23), ("SCC", 24)] {
+            // Alias the source and destination. Both original words must be read before either write.
+            let words = vec![
+                0x7e20_0500, 0x7e22_0501, 0x7e24_0502, // s[16:17] = (a,b), s18 = c
+                0xbefe_036a, 0xbeff_0312,              // EXEC = (initial VCC,c)
+                0xbe90_0010 | op << 8,
+                0xbe96_037e, 0xbe97_037f, 0xbe98_03fd, // capture updated EXEC and SCC
+                0xbefe_0381, 0xbeff_0380, vmov(3, reg), S_ENDPGM,
+            ];
+            let mut p = case(&format!("{name} {label}"), words, [Dom::I; 3], move |a, b, c, old| {
+                let low = a | old;
+                let high = if wide { b | c } else { c };
+                Want::U(match reg {
+                    16 => old, 17 => if wide { c } else { b }, 22 => low, 23 => high,
+                    24 => u32::from(low != 0 || (wide && high != 0)),
+                    _ => unreachable!(),
+                })
+            });
+            p.vcc_in = true;
+            cases.push(p);
+        }
+    }
     // Jump over the write of b. SWAPPC also supplies the address of the skipped
     // instruction; subtract the original GETPC value to verify its byte offset.
     for (name, jump) in [("s_setpc_b64", 0xbe80_2010), ("s_swappc_b64", 0xbe92_2110)] {
@@ -394,6 +437,56 @@ fn control_cases(cases: &mut Vec<Case>) {
     ));
 }
 
+/// All 128 lanes have distinct input. Read a different lane per input vector,
+/// including masked lanes, and independently sum the live values in its guest wave.
+fn integer_wave_sums(cases: &mut Vec<Case>, width: u32) {
+    let wide = width == 64;
+    let mut sum = vec![
+        0x3a16_2900,                   // v11 = a xor local ID
+        0x3610_04ff, 127,              // v8 = c & 127
+        0x7da8_2908,                   // EXEC = local ID < v8
+        if wide { 0xbe90_25c1 } else { 0xbe90_3dc1 }, // save EXEC, enable the whole wave
+        0xd501_0009, 0x0042_1680,      // v9 = saved EXEC ? v11 : 0
+        0x4a12_12e9, 0xde54_c109,      // pairs
+        0x4a12_12e9, 0x9360_1209,      // quads
+        0x4a12_12e9, 0x0009_2409,      // octets
+        0x4a12_12fa, 0xff09_4009,      // 16-lane row
+        0xd778_000a, 0x0201_0109,      // v10 = opposite row
+        0x4a12_130a,                   // v9 += v10
+    ];
+    if wide {
+        sum.extend([0xd760_0012, 0x0001_4109, 0x4a12_1212]); // s18 = lane 32; v9 += s18
+    }
+    sum.extend([0xd760_0013, 0x0001_0109]); // s19 = lane 0
+    sum.push(if wide { 0xbefe_0410 } else { 0xbefe_0310 }); // restore EXEC
+    sum.extend([0xbe96_037e, 0xbefe_043c]); // capture restored mask, re-enable all launch lanes
+
+    for (label, reg) in [("total", 19), ("opposite row", 266), ("accumulator", 265), ("restored EXEC", 22),
+                         ("upper half", 18)] {
+        if reg == 18 && !wide { continue; }
+        let mut words = sum.clone();
+        words.extend([vmov(3, reg), S_ENDPGM]);
+        let mut p = case(&format!("v_add_nc_u32 wave{width} {label}"), words, [Dom::I; 3], move |a, _, c, _| {
+            let lane = a & 127;
+            let wave = lane & !(width - 1);
+            let active = c & 127;
+            let subtotal = |start, count| (start..start + count).filter(|&i| i < active)
+                .fold(0u32, |acc, i| acc.wrapping_add(a ^ i));
+            Want::U(match reg {
+                19 => subtotal(wave, width),
+                266 => subtotal((lane & !15) ^ 16, 16),
+                265 if wide => subtotal(lane & !31, 32).wrapping_add(subtotal(wave + 32, 32)),
+                265 => subtotal(wave, 32),
+                22 => u32::from(lane < active),
+                18 => subtotal(wave + 32, 32),
+                _ => unreachable!(),
+            })
+        });
+        p.group_size = 128;
+        cases.push(p);
+    }
+}
+
 fn group_cases(cases: &mut Vec<Case>) {
     type Model = fn(u32, u32, u32) -> u32;
     let probes: &[(&str, u32, &[u32], Model)] = &[
@@ -443,6 +536,8 @@ fn group_cases(cases: &mut Vec<Case>) {
     // A wave32 has no lanes above bit 31. On a wave64 adapter, the optional
     // full-width run checks the nonzero upper prefix against the CPU as well.
     let wave64 = std::env::var_os("TOMBOX_PROBE_WAVE64").is_some();
+    integer_wave_sums(cases, 32);
+    if wave64 { integer_wave_sums(cases, 64); }
     let mut hi = case(
         "v_mbcnt_hi_u32_b32",
         vec![0xd766_0003, 0x0202_0300, S_ENDPGM],

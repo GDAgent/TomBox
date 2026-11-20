@@ -65,7 +65,7 @@ def d3d12x():
 def instructions():
     src = open(os.path.join(root, "crates", "tombox-xshader", "src", "rdna2", "mnem.rs"), encoding="utf-8").read()
     used = {}
-    for source, filename in [("Fortnite", "mnemonics.txt"), ("Xbox BVH", "bvh-mnemonics.txt")]:
+    for source, filename in [("Fortnite", "mnemonics.txt"), ("Xbox BVH", "bvh-mnemonics.txt"), ("FidelityFX", "fsr-mnemonics.txt")]:
         with open(os.path.join(here, filename), encoding="utf-8") as f:
             for line in f:
                 name, seen, passed = line.split()

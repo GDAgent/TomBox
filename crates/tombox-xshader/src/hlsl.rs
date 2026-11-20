@@ -2,8 +2,8 @@
 //!
 //! Model: one HLSL invocation == one RDNA2 *lane*. Every VGPR/SGPR is a `uint` holding the
 //! raw 32-bit pattern (floats via asfloat/asuint), so no type inference is needed. Lane
-//! masks (exec, vcc, compare results in SGPRs) are represented by their bit for *this*
-//! lane (0/1). Descriptor-table pointers in user SGPRs are tracked symbolically: an
+//! masks used for control flow are represented by their bit for *this* lane (0/1).
+//! Recognized wave64 ballots consumed as integer data retain both mask words. Descriptor-table pointers in user SGPRs are tracked symbolically: an
 //! `s_load_dwordxN` from a never-written SGPR is a descriptor fetch from a root table, and
 //! the way the descriptor is consumed (s_buffer_load → CBV, MIMG resource → SRV, MIMG
 //! sampler → sampler) classifies the table. Slots map 1:1 to HLSL registers because the
@@ -20,7 +20,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 mod packed_root;
-use packed_root::PackedRoot;
+mod wave_sum;
+mod wave_scan;
+use packed_root::{PackedRoot, RootAbi};
 
 pub struct Translated {
     pub hlsl: String,
@@ -29,6 +31,8 @@ pub struct Translated {
     pub profile: &'static str,
     /// Per-vertex parameter reads require a shader-model 6.1 pixel shader.
     pub needs_barycentrics: bool,
+    /// Required wave size for compute shaders with width-specific lane reads.
+    pub required_wave_size: Option<u32>,
     /// Workgroup dimensions for the subset verified to tolerate either Scarlett wave width.
     pub portable_compute_group: Option<[u32; 3]>,
 }
@@ -36,6 +40,7 @@ pub struct Translated {
 #[cfg(windows)]
 impl Translated {
     pub fn dxc_profile(&self) -> String {
+        if self.required_wave_size.is_some() { return "cs_6_6".into(); }
         if self.needs_barycentrics { "ps_6_1".into() } else { crate::dxc::profile_for(self.profile) }
     }
 }
@@ -278,7 +283,7 @@ struct Emitter<'a> {
     /// UAV texture slots used with image atomics (declared `<uint>`).
     uav_uint: BTreeSet<u32>,
     /// The shader uses wave intrinsics (needs shader model 6: DXC only).
-    uses_wave: bool,
+    required_wave_size: Option<u32>,
     msel: HashMap<usize, MSel>,
     /// Buffer ops (MUBUF, s_buffer_load) whose descriptor register holds one of several
     /// descriptors: (register key, candidates as (descriptor id, resource)).
@@ -302,20 +307,13 @@ struct Emitter<'a> {
     out_params: Vec<u32>,
 }
 
-/// SGPR spills through vector lanes.
-///
-/// When a shader runs out of scalar registers the console compiler parks scalars (observed:
-/// texture/sampler descriptor dwords) in individual lanes of an otherwise unused VGPR with
-/// `v_writelane_b32 vN, sX, <lane>` and brings them back with `v_readlane_b32 sY, vN, <lane>`
-/// (VOP3 0x361 / 0x360; fixture `fortnite_lobby_desc.dxbc`). The translator models one lane
-/// per VGPR, so each (VGPR, constant lane) slot is lowered to a function-scope translator
-/// temporary and the two instructions become plain `s_mov_b32`. The descriptor dataflow
-/// tracks those temporaries like registers (keys 1000+), so descriptors survive a spill.
-///
-/// Refused (explicit error): a non-constant lane index, a read of a slot that was never
-/// written, or a spill VGPR that is also used as an ordinary vector.
 /// Synthetic opcode of the wave-reduction instruction produced by `lower_wave_reductions`.
 const OP_WAVE_REDUCE: u32 = 0x7ff0;
+const OP_QUAD_ADD_F32: u32 = 0x7ff5;
+
+fn is_quad_add(i: &Insn) -> bool {
+    i.enc == Enc::Vop2 && i.op == OP_QUAD_ADD_F32
+}
 
 /// Whole-wave reductions (HLSL `WaveActiveMin` / `WaveActiveMax`; observed in
 /// CocFlattenMainCS, 4f9670de0be37288). The compiled form is:
@@ -339,13 +337,34 @@ const OP_WAVE_REDUCE: u32 = 0x7ff0;
 /// SOP1 0x29 as nand-saveexec are taken from the public GFX10 encoding and are consistent
 /// with this shader's instruction stream.
 /// Anything in the region that does not fit this shape is refused.
-fn lower_wave_reductions(insns: &mut [Insn]) -> Result<(), String> {
+fn lower_wave_reductions(insns: &mut [Insn]) -> Result<Option<u32>, String> {
+    let mut width = None;
     let is_dpp = |i: &Insn| i.enc == Enc::Vop2 && matches!(i.src.first(), Some(Opnd::Raw(233 | 234 | 250)));
     let mut at = 0;
     while let Some(first) = (at..insns.len()).find(|&i| is_dpp(&insns[i])) {
         let off = insns[first].offset;
         let bad = |what: &str| format!("wave reduction at {off:#x}: {what}");
         let red = insns[first].mnemonic.clone();
+        if red == "v_add_f32" && insns[first].src.first() == Some(&Opnd::Raw(250)) {
+            let ctrl = *insns[first].raw.get(1).ok_or_else(|| bad("missing DPP16 control word"))?;
+            // DPP16 quad_perm, all rows and banks, BC=1, FI=1, no modifiers.
+            if ctrl & 0xffff0000 != 0xff0c0000 {
+                return Err(bad("unsupported DPP16 FP32 add controls"));
+            }
+            insns[first].op = OP_QUAD_ADD_F32;
+            insns[first].src[0] = Opnd::Vgpr(ctrl as u8);
+            insns[first].aux.imm = ((ctrl >> 8) & 255) as i64;
+            at = first + 1;
+            continue;
+        }
+        if red == "v_add_nc_u32" {
+            let (required, next) = wave_sum::lower(insns, first).map_err(bad)?;
+            if width.replace(required).is_some_and(|w| w != required) {
+                return Err(bad("conflicting integer sum wave widths"));
+            }
+            at = next;
+            continue;
+        }
         if !matches!(red.as_str(), "v_min_f32" | "v_max_f32") {
             return Err(bad(&format!("unsupported reduction op {red}")));
         }
@@ -421,12 +440,24 @@ fn lower_wave_reductions(insns: &mut [Insn]) -> Result<(), String> {
         x.aux.imm = ident as i64;
         at = end + 1;
     }
-    Ok(())
+    Ok(width)
 }
 
 /// Translator temporaries from this index up are lane-spill slots (declared up front).
 const LANE_TEMP_BASE: u16 = 10_000;
 
+/// SGPR spills through vector lanes.
+///
+/// When a shader runs out of scalar registers the console compiler parks scalars (observed:
+/// texture/sampler descriptor dwords) in individual lanes of an otherwise unused VGPR with
+/// `v_writelane_b32 vN, sX, <lane>` and brings them back with `v_readlane_b32 sY, vN, <lane>`
+/// (VOP3 0x361 / 0x360; fixture `fortnite_lobby_desc.dxbc`). The translator models one lane
+/// per VGPR, so each (VGPR, constant lane) slot is lowered to a function-scope translator
+/// temporary and the two instructions become plain `s_mov_b32`. The descriptor dataflow
+/// tracks those temporaries like registers (keys 1000+), so descriptors survive a spill.
+///
+/// Refused (explicit error): a non-constant lane index, a read of a slot that was never
+/// written, or a spill VGPR that is also used as an ordinary vector.
 fn lower_lane_spills(insns: &mut [Insn]) -> Result<(), String> {
     const READLANE: u32 = 0x360;
     const WRITELANE: u32 = 0x361;
@@ -578,7 +609,13 @@ pub fn translate(ex: &ShaderExtract) -> Result<Translated, String> {
                 | Opnd::ConstInt(_) | Opnd::ConstF32(_) | Opnd::Literal(_)))
     })).then(|| compute_group(ex));
     lower_local_pc_transfers(&mut insns)?;
-    lower_wave_reductions(&mut insns)?;
+    let required_wave_size = lower_wave_reductions(&mut insns)?;
+    let uses_quad_add = insns.iter().any(is_quad_add);
+    if uses_quad_add && insns.iter().any(|i| i.enc == Enc::Sopp && Emitter::branch_cond(i.op).is_some() && i.aux.imm < 0) {
+        return Err("DPP quad add inside a shader with backward control flow".into());
+    }
+    let scan = wave_scan::prepare(ex, &mut insns)?;
+    let scan_width = scan.as_ref().map(|s| s.width);
     lower_lane_spills(&mut insns)?;
     let mut em = Emitter::new(ex, insns);
     em.vreg_array = em.insns.iter().any(|i| i.mnemonic.starts_with("v_movrel"));
@@ -592,7 +629,24 @@ pub fn translate(ex: &ShaderExtract) -> Result<Translated, String> {
             }
         }
     }
-    if !em.resolve_packed()? { em.resolve_resources()?; }
+    if !em.resolve_packed(scan.as_ref())? {
+        if scan_width.is_some() { return Err("wave scan needs a verified packed root layout".into()); }
+        em.resolve_resources()?;
+    }
+    let requires_ballot = em.packed.as_ref().is_some_and(|p| !p.ballots.is_empty());
+    if (requires_ballot && scan_width.or(required_wave_size) == Some(32))
+        || matches!((scan_width, required_wave_size), (Some(a), Some(b)) if a != b) {
+        return Err("conflicting wave widths for ballot and reduction".into());
+    }
+    let required_wave_size = required_wave_size.or(scan_width).or(requires_ballot.then_some(64)).or(uses_quad_add.then_some(32));
+    em.required_wave_size = required_wave_size;
+    if let Some(width) = required_wave_size {
+        wave_sum::check_control_flow(&em.insns, width)?;
+        let [x, y, z] = compute_group(ex);
+        if ex.stage != Stage::Compute || !x.checked_mul(y).and_then(|n| n.checked_mul(z)).is_some_and(|n| n % width == 0) {
+            return Err(format!("wave operation requires complete {width}-lane compute waves"));
+        }
+    }
     if is_ps {
         em.find_export_epilogs();
         em.classify_interpolation();
@@ -607,7 +661,7 @@ pub fn translate(ex: &ShaderExtract) -> Result<Translated, String> {
     // ps_5_0 forces UAV slots to start after the render-target outputs (FXC X4509);
     // SM5.1 has no such rule, and D3D12 accepts SM5.1 bytecode.
     let profile = if is_ps && !em.uav.is_empty() { "ps_5_1" } else { profile };
-    Ok(Translated { hlsl, entry: "main", profile, needs_barycentrics: !em.pulled_attrs.is_empty(), portable_compute_group })
+    Ok(Translated { hlsl, entry: "main", profile, needs_barycentrics: !em.pulled_attrs.is_empty(), required_wave_size, portable_compute_group })
 }
 
 /// Dwords per thread in the I/O buffer of [`translate_valu_probe`]: `v0..v{n-1}`, `vcc_lo`,
@@ -631,6 +685,7 @@ pub fn translate_valu_probe(words: &[u32], nvgprs: u32) -> Result<String, String
         stage: Stage::Compute,
         shader_model: (6, 0),
         bitcode_stripped: true,
+        fspx_config: None,
         fssm: Vec::new(),
         entry: Some("main".into()),
         isa_data: isa.clone(),
@@ -669,7 +724,7 @@ pub fn translate_valu_probe(words: &[u32], nvgprs: u32) -> Result<String, String
     }
     let stride = valu_probe_stride(nvgprs) * 4;
     let mut h = String::new();
-    h.push_str(CUBE_HELPERS);
+    em.push_helpers(&mut h);
     h.push_str("RWByteAddressBuffer tb_io : register(u0);\n");
     h.push_str("[RootSignature(\"UAV(u0)\")]\n[numthreads(64, 1, 1)]\nvoid main(uint3 tid : SV_DispatchThreadID) {\n");
     h.push_str("    uint exec_lo = 1u, exec_hi = 0u, vcc_lo = 0u, vcc_hi = 0u, scc = 0u, m0 = 0u, nul = 0u;\n");
@@ -724,6 +779,7 @@ pub fn translate_mem_probe(words: &[u32], nvgprs: u32) -> Result<(String, MemPro
         stage: Stage::Compute,
         shader_model: (6, 0),
         bitcode_stripped: true,
+        fspx_config: None,
         fssm: Vec::new(),
         entry: Some("main".into()),
         isa_data: isa.clone(),
@@ -740,7 +796,7 @@ pub fn translate_mem_probe(words: &[u32], nvgprs: u32) -> Result<(String, MemPro
         resources: Vec::new(),
         gs_info: None,
         // Root parameters 0, 1, 2 arrive in s4, s5, s6 (compute user-data base 4).
-        root_sig: Some(RootSig { version: 1, flags: 0, params: vec![table(0), table(3), table(1)], num_static_samplers: 0 }),
+        root_sig: Some(RootSig { version: 1, flags: 0, params: vec![table(0), table(3), table(1)], num_static_samplers: 0, static_samplers: vec![] }),
     };
     let insns = disassemble(&ex.isa);
     let mut em = Emitter::new(&ex, insns.clone());
@@ -787,7 +843,7 @@ pub fn translate_mem_probe(words: &[u32], nvgprs: u32) -> Result<(String, MemPro
     }
     let stride = valu_probe_stride(nvgprs) * 4;
     let mut h = String::new();
-    h.push_str(CUBE_HELPERS);
+    em.push_helpers(&mut h);
     h.push_str(&em.resource_decls()?);
     h.push_str("RWByteAddressBuffer tb_io : register(u0, space1);\n");
     let _ = writeln!(
@@ -843,7 +899,7 @@ impl<'a> Emitter<'a> {
             vreg_array: false,
             multi_sets: Vec::new(),
             uav_uint: BTreeSet::new(),
-            uses_wave: false,
+            required_wave_size: None,
             msel: HashMap::new(),
             bsel: HashMap::new(),
             dsel_loads: HashMap::new(),
@@ -1791,7 +1847,11 @@ impl<'a> Emitter<'a> {
             if ins.mnemonic == "v_nop" {
                 continue;
             }
-            for o in &ins.src {
+            // Packed FMAC accumulates in its destination. A subword FMA also
+            // reads that register to preserve the half outside its write mask.
+            let old_dst = matches!(ins.mnemonic.as_str(), "v_pk_fmac_f16" | "v_fma_f16")
+                .then(|| ins.dst.first()).flatten();
+            for o in ins.src.iter().chain(old_dst) {
                 if let Opnd::Sgpr(n) | Opnd::Vgpr(n) = o {
                     let nm = name(o).unwrap_or_default();
                     if !written.contains(&nm) {
@@ -1834,6 +1894,29 @@ impl<'a> Emitter<'a> {
         self.body.push_str("    ");
         self.body.push_str(s);
         self.body.push('\n');
+    }
+
+    fn push_helpers(&self, h: &mut String) {
+        h.push_str(CUBE_HELPERS);
+        if self.insns.iter().any(|i| matches!(i.mnemonic.as_str(), "v_fma_f16" | "v_pk_fmac_f16")) {
+            h.push_str(r#"
+// A binary16 product is exact in binary32. Recover the residual of the addition
+// before rounding to half: a rounded float sum alone can land on the wrong tie.
+float tb_fma_half(float a, float b, float addend) {
+    precise float p = a * b;
+    precise float sum = p + addend;
+    uint bits = asuint(sum);
+    if ((bits & 0x7fffffffu) < 0x7f800000u && (bits & 1u) == 0u) {
+        precise float residual = abs(p) >= abs(addend) ? addend - (sum - p) : p - (sum - addend);
+        if (residual != 0.0) bits += ((residual > 0.0) == (sum > 0.0)) ? 1u : 0xffffffffu;
+    }
+    return asfloat(bits);
+}
+uint tb_fmac_half(uint a, uint b, uint c) {
+    return tb_f16_rne(tb_fma_half(f16tof32(a & 65535u), f16tof32(b & 65535u), f16tof32(c & 65535u)));
+}
+"#);
+        }
     }
 
     fn touch(&mut self, o: &Opnd) {
@@ -1975,8 +2058,31 @@ impl<'a> Emitter<'a> {
                 self.loop_depth += 1;
                 self.line(&format!("tb_c{b} = false;"));
             }
-            let active: Vec<usize> =
+            let mut active: Vec<usize> =
                 labels.iter().copied().filter(|&t| t > i && target.iter().any(|(&b, &bt)| bt == t && b < i)).collect();
+            // Exited guest waves no longer count towards S_BARRIER. Their host
+            // threads still belong to the group and must participate in the HLSL
+            // barrier. Only lift the barrier if every enclosing skip exits the
+            // program and no loop could change how many times a wave reaches it.
+            if self.is_cs && ins.mnemonic == "s_barrier" && loops.is_empty()
+                && active.iter().all(|&t| t == insns.len() || (t + 1 == insns.len() && insns[t].mnemonic == "s_endpgm"))
+            {
+                active.clear();
+            }
+            if is_quad_add(ins) {
+                // FI=1 fetches the saved VGPR even from an EXEC-disabled lane. All
+                // host lanes must reach the exchange, including those skipping this
+                // block. Reapply the branch and EXEC guards to the destination write.
+                if open {
+                    self.line("}");
+                    open = false;
+                    cur.clear();
+                }
+                let perm = ins.aux.imm;
+                let source = r(&ins.src[0])?;
+                self.line(&format!("uint q{i}lane = WaveGetLaneIndex();"));
+                self.line(&format!("uint q{i} = WaveReadLaneAt({source}, (q{i}lane & ~3u) | (({perm}u >> (2u * (q{i}lane & 3u))) & 3u));"));
+            }
             if active != cur || (open && heads.contains_key(&i)) {
                 if open {
                     self.line("}");
@@ -2104,16 +2210,18 @@ impl<'a> Emitter<'a> {
 
     /// Float source with VOP3 abs/neg modifiers applied.
     fn fm(&self, ins: &Insn, i: usize) -> Result<String, String> {
-        let mut e = f(&ins.src[i])?;
-        if ins.enc == Enc::Vop3 {
-            if (ins.aux.mask >> i) & 1 != 0 {
-                e = format!("abs({e})");
-            }
-            if (ins.aux.mask >> (3 + i)) & 1 != 0 {
-                e = format!("(-{e})");
-            }
+        let mask = if ins.enc == Enc::Vop3 { ins.aux.mask } else { 0 };
+        Ok(Self::float_source(f(&ins.src[i])?, mask, i))
+    }
+
+    fn float_source(mut expr: String, mask: u8, i: usize) -> String {
+        if mask & (1 << i) != 0 {
+            expr = format!("abs({expr})");
         }
-        Ok(e)
+        if mask & (8 << i) != 0 {
+            expr = format!("(-{expr})");
+        }
+        expr
     }
 
     /// Wrap a float result with VOP3 omod/clamp and convert to uint bits.
@@ -2133,12 +2241,12 @@ impl<'a> Emitter<'a> {
         format!("asuint({e})")
     }
 
-    fn cmp_expr(m: &str, a: &Opnd, b: &Opnd) -> Result<String, String> {
+    fn cmp_expr(m: &str, a: &Opnd, b: &Opnd, mask: u8) -> Result<String, String> {
         // m like "v_cmp_lt_f32" / "s_cmp_eq_i32"
         let parts: Vec<&str> = m.split('_').collect();
         let (cc, ty) = (parts[2], parts[3]);
         let (x, y) = match ty {
-            "f32" => (f(a)?, f(b)?),
+            "f32" => (Self::float_source(f(a)?, mask, 0), Self::float_source(f(b)?, mask, 1)),
             "f16" => {
                 let h = |o: &Opnd| -> Result<String, String> {
                     Ok(match o {
@@ -2146,7 +2254,7 @@ impl<'a> Emitter<'a> {
                         _ => format!("f16tof32(({}) & 0xffffu)", r(o)?),
                     })
                 };
-                (h(a)?, h(b)?)
+                (Self::float_source(h(a)?, mask, 0), Self::float_source(h(b)?, mask, 1))
             }
             "i16" | "u16" => {
                 let half = |o: &Opnd| -> Result<String, String> {
@@ -2523,23 +2631,31 @@ impl<'a> Emitter<'a> {
                         self.line("// (fetch-shader call: vertex attributes come from the input layout)");
                         Ok(())
                     }
-                    "s_and_saveexec_b64" | "s_nand_saveexec_b64" => {
+                    "s_and_saveexec_b64" | "s_nand_saveexec_b64" | "s_or_saveexec_b64" => {
                         self.touch(&hi(&s[0]));
                         let upper = r(&hi(&s[0]))?;
                         let invert = if m == "s_nand_saveexec_b64" { "~" } else { "" };
                         let t = self.tmp;
                         self.tmp += 1;
-                        self.line(&format!("uint t{t}l = {invert}({a} & exec_lo), t{t}h = {invert}({upper} & exec_hi);"));
+                        let op = if m == "s_or_saveexec_b64" { "|" } else { "&" };
+                        self.line(&format!("uint t{t}l = {invert}({a} {op} exec_lo), t{t}h = {invert}({upper} {op} exec_hi);"));
                         self.ws(&d, "exec_lo")?;
                         self.ws(&hi(&d), "exec_hi")?;
                         self.line(&format!("exec_lo = t{t}l; exec_hi = t{t}h; scc = ((exec_lo | exec_hi) != 0u);"));
+                        Ok(())
+                    }
+                    "s_or_saveexec_b32" => {
+                        let t = self.tmp;
+                        self.tmp += 1;
+                        self.line(&format!("uint t{t} = {a} | exec_lo;"));
+                        self.ws(&d, "exec_lo")?;
+                        self.line(&format!("exec_lo = t{t}; scc = (t{t} != 0u);"));
                         Ok(())
                     }
                     _ if m.contains("saveexec") => {
                         let op = m.trim_start_matches("s_").split("_saveexec").next().unwrap_or("");
                         let e = match op {
                             "and" => format!("({a} & exec_lo)"),
-                            "or" => format!("({a} | exec_lo)"),
                             "xor" => format!("({a} ^ exec_lo)"),
                             "andn2" => format!("({a} & ~exec_lo)"),
                             "orn2" => format!("({a} | ~exec_lo)"),
@@ -2611,7 +2727,7 @@ impl<'a> Emitter<'a> {
                     "s_mulk_i32" => self.ws(&d, &format!("({} * {imm})", name(&d)?)),
                     _ if m.starts_with("s_cmpk_") => {
                         let fake = m.replace("s_cmpk_", "s_cmp_");
-                        let c = Self::cmp_expr(&fake, &d, &Opnd::ConstInt(ins.aux.imm))?;
+                        let c = Self::cmp_expr(&fake, &d, &Opnd::ConstInt(ins.aux.imm), 0)?;
                         self.line(&format!("scc = {c} ? 1u : 0u;"));
                         Ok(())
                     }
@@ -2636,7 +2752,7 @@ impl<'a> Emitter<'a> {
                         r(&hi(&s[0]))?,
                         r(&hi(&s[1]))?
                     ),
-                    _ => Self::cmp_expr(m, &s[0], &s[1])?,
+                    _ => Self::cmp_expr(m, &s[0], &s[1], 0)?,
                 };
                 self.line(&format!("scc = {c} ? 1u : 0u;"));
                 Ok(())
@@ -2821,20 +2937,32 @@ impl<'a> Emitter<'a> {
             Enc::Ds if self.is_gs && matches!(m, "ds_read_b32" | "ds_read2_b32" | "ds_write_b32" | "ds_write2_b32") => {
                 self.emit_gs_lds(ins)
             }
-            Enc::Ds if self.is_cs && matches!(m, "ds_write_b64" | "ds_write2_b64") => {
+            Enc::Ds if self.is_cs && matches!(m, "ds_read_b64" | "ds_write_b128" | "ds_write_b64" | "ds_write2_b64") => {
                 if ins.raw[0] & (1 << 17) != 0 { return Err("GDS is unsupported".into()); }
                 self.uses_lds = true;
+                let t = self.tmp;
+                self.tmp += 1;
+                // Snapshot the address before any destination word can overwrite its VGPR.
+                self.line(&format!("uint t{t}addr = {};", r(&s[0])?));
                 let offset = ins.aux.imm as u32;
-                let addr = r(&s[0])?;
-                let pairs = if m == "ds_write_b64" { 1 } else { 2 };
-                for k in 0..pairs {
-                    let byte = if pairs == 1 { offset } else { ((offset >> (8 * k)) & 255) * 8 };
-                    let Opnd::Vgpr(v) = s[1 + k] else { return Err("expected VGPR pair".into()) };
-                    let high = Opnd::Vgpr(v.checked_add(1).ok_or("invalid LDS register pair")?);
-                    self.touch(&high);
-                    let data = r(&s[1 + k])?;
-                    let upper = r(&high)?;
-                    self.line(&format!("if (exec_lo & 1u) {{ tb_lds[((({addr} + {byte}u) >> 2)) & 8191u] = {data}; tb_lds[((({addr} + {byte}u) >> 2) + 1u) & 8191u] = {upper}; }}"));
+                let read = m == "ds_read_b64";
+                let count = if matches!(m, "ds_read_b64" | "ds_write_b64") { 2 } else { 4 };
+                for word in 0..count {
+                    let (base, k, byte) = if m == "ds_write2_b64" {
+                        (s[1 + (word / 2) as usize], word % 2, ((offset >> (8 * (word / 2))) & 255) * 8)
+                    } else {
+                        (if read { ins.dst[0] } else { s[1] }, word, offset)
+                    };
+                    let Opnd::Vgpr(v) = base else { return Err("expected consecutive LDS VGPRs".into()) };
+                    let reg = Opnd::Vgpr(v.checked_add(k).ok_or("LDS register span exceeds v255")?);
+                    let byte = byte + u32::from(k) * 4;
+                    let location = format!("tb_lds[((t{t}addr + {byte}u) >> 2) & 8191u]");
+                    if read {
+                        self.wv(&reg, &location)?;
+                    } else {
+                        self.touch(&reg);
+                        self.line(&format!("if (exec_lo & 1u) {location} = {};", r(&reg)?));
+                    }
                 }
                 Ok(())
             }
@@ -2941,6 +3069,18 @@ impl<'a> Emitter<'a> {
                 Ok(())
             }
             Enc::Ds if m == "ds_swizzle_b32" => {
+                if self.is_cs && self.packed.as_ref().is_some_and(|p| p.scan_width.is_some()) {
+                    let off = ins.aux.imm as u32;
+                    if ins.raw[0] & (1 << 17) != 0 || off & 0x8000 != 0 { return Err("unsupported compute swizzle mode".into()); }
+                    let t = self.tmp;
+                    self.tmp += 1;
+                    // Bitmask mode rearranges lanes within each independent group of 32.
+                    self.line(&format!("uint t{t}lane = WaveGetLaneIndex();"));
+                    self.line(&format!("uint t{t}src = (t{t}lane & ~31u) | (((t{t}lane & {}u) | {}u) ^ {}u);",
+                        off & 31, (off >> 5) & 31, (off >> 10) & 31));
+                    self.line(&format!("uint t{t}value = WaveReadLaneAt({}, t{t}src);", r(&s[0])?));
+                    return self.wv(&d.ok_or("no swizzle destination")?, &format!("t{t}value"));
+                }
                 if !is_ps { return Err("ds_swizzle outside a pixel shader".into()); }
                 let off = ins.aux.imm as u32;
                 if off & 0x8000 == 0 { return Err("ds_swizzle without QDMode unsupported".into()); }
@@ -3023,13 +3163,41 @@ impl<'a> Emitter<'a> {
         let mut m = ins.mnemonic.clone();
         let s = &ins.src;
         let d = ins.dst.first().cloned().ok_or("no dst")?;
+        if self.required_wave_size == Some(64) && self.packed.as_ref().is_some_and(|p| p.lane_masks.contains(&self.cur_idx)) {
+            self.touch(&hi(&s[2]));
+        }
         if m == "v_nop" {
             return Ok(());
+        }
+        if ins.enc == Enc::Vop2 && ins.op == wave_sum::DPP_ADD {
+            // Read the partner before the EXEC-guarded write, including when VDST aliases VSRC.
+            let lane = match ins.aux.imm {
+                0 => "WaveGetLaneIndex() ^ 1u",
+                1 => "(WaveGetLaneIndex() & ~3u) | ((WaveGetLaneIndex() ^ 2u) & 2u)",
+                2 => "(WaveGetLaneIndex() & ~7u) | ((WaveGetLaneIndex() ^ 4u) & 4u)",
+                3 => "WaveGetLaneIndex() ^ 15u",
+                _ => return Err("invalid integer sum step".into()),
+            };
+            let t = self.tmp;
+            self.tmp += 1;
+            let acc = r(&s[0])?;
+            self.line(&format!("uint t{t} = WaveReadLaneAt({acc}, {lane}) + {acc};"));
+            return self.wv(&d, &format!("t{t}"));
+        }
+        if ins.enc == Enc::Vop3 && ins.op == wave_sum::READ_LANE {
+            let lane = r(&s[1])?;
+            let lane = if matches!(s[1], Opnd::Sgpr(_)) {
+                let width = self.required_wave_size.ok_or("missing width for scan lane read")?;
+                format!("({lane} & {}u)", width - 1)
+            } else { lane };
+            return self.ws(&d, &format!("WaveReadLaneAt({}, {lane})", r(&s[0])?));
+        }
+        if is_quad_add(ins) {
+            return self.wv(&d, &format!("asuint(asfloat(q{}) + {})", self.cur_idx, f(&s[1])?));
         }
         if ins.op == OP_WAVE_REDUCE && ins.enc == Enc::Vop3 {
             // See `lower_wave_reductions`. Every invocation computes the same value; lanes
             // that were inactive contribute the identity.
-            self.uses_wave = true;
             let f = if m == "tb_wave_min_f32" { "WaveActiveMin" } else { "WaveActiveMax" };
             let e = format!(
                 "asuint({f}((({} & 1u) != 0u) ? asfloat({}) : asfloat({:#x}u)))",
@@ -3139,8 +3307,43 @@ impl<'a> Emitter<'a> {
             return self.wv(&d, &hres(e));
         }
         if m == "v_fma_f16" {
-            let e = format!("{} * {} + {}", h16(&s[0])?, h16(&s[1])?, h16(&s[2])?);
-            return self.wv(&d, &hres(e));
+            let sel = (ins.raw[0] >> 11) & 15;
+            let src = |i: usize| -> Result<String, String> {
+                if sel & (1 << i) == 0 { return h16(&s[i]); }
+                // Inline FP constants have a binary16 payload and a zero upper half.
+                let value = if matches!(s[i], Opnd::ConstF32(_)) {
+                    "0.0".to_string()
+                } else {
+                    format!("f16tof32(({}) >> 16)", r(&s[i])?)
+                };
+                Ok(Self::float_source(value, ins.aux.mask, i))
+            };
+            let result = hres(format!("tb_fma_half({}, {}, {})", src(0)?, src(1)?, src(2)?));
+            self.touch(&d);
+            let dest = r(&d)?;
+            return self.wv(&d, &if sel & 8 == 0 {
+                format!("(({dest} & 0xffff0000u) | {result})")
+            } else {
+                format!("(({dest} & 0xffffu) | ({result} << 16))")
+            });
+        }
+        if m == "v_pk_fmac_f16" {
+            if ins.enc != Enc::Vop2 || ins.aux.sdwa.is_some() || matches!(s[0], Opnd::ConstF32(_)) {
+                return Err("unsupported packed FMAC encoding or inline float".into());
+            }
+            let (a, b, acc) = (r(&s[0])?, r(&s[1])?, r(&d)?);
+            return self.wv(&d, &format!("tb_fmac_half({a}, {b}, {acc}) | (tb_fmac_half({a} >> 16, {b} >> 16, {acc} >> 16) << 16)"));
+        }
+        if m == "v_cvt_pk_u8_f32" {
+            if ins.aux.mask & !9 != 0 || ins.raw[0] & 0xf800 != 0 || ins.aux.imm2 != 0 {
+                return Err("unsupported byte-pack modifiers".into());
+            }
+            let x = self.fm(ins, 0)?;
+            let t = self.tmp;
+            self.tmp += 1;
+            self.line(&format!("uint t{t}shift = ({} & 3u) * 8u;", r(&s[1])?));
+            self.line(&format!("uint t{t}byte = tb_isnan({x}) ? 0u : (uint)round(clamp({x}, 0.0, 255.0));"));
+            return self.wv(&d, &format!("({} & ~(255u << t{t}shift)) | (t{t}byte << t{t}shift)", r(&s[2])?));
         }
         if matches!(m.as_str(), "v_pk_fma_f16" | "v_pk_add_f16" | "v_pk_mul_f16" | "v_pk_min_f16" | "v_pk_max_f16") {
             // Packed half-float ops (VOP3P): two f16 lanes per register. For the low result,
@@ -3299,6 +3502,7 @@ impl<'a> Emitter<'a> {
             self.wv(&d, &format!("t{t}"))?;
             self.touch(&cout);
             self.ws(&cout, &format!("((exec_lo & 1u) != 0u) ? t{t}o : 0u"))?;
+            if self.packed.as_ref().is_some_and(|p| p.abi == RootAbi::RegisterWave32) { return Ok(()); } // Wave32 has a single carry mask word.
             let ch = hi(&cout);
             self.touch(&ch);
             self.ws(&ch, "0u")?;
@@ -3370,25 +3574,30 @@ impl<'a> Emitter<'a> {
         // V_CMPX_*: the comparison result replaces EXEC (inactive lanes give 0). On GFX10 the
         // CMPX forms write only EXEC, not VCC/SDST (LLVM's GFX10 encodings have no SDST for
         // them; the ISA reference says "write exec"). Lane model: this lane's EXEC bit.
-        if let Some(rest) = m.strip_prefix("v_cmpx_") {
-            let cm = format!("v_cmp_{rest}");
-            let c = if cm == "v_cmp_class_f32" {
-                format!("tb_cmp_class({}, {})", r(&s[0])?, r(&s[1])?)
+        if m.starts_with("v_cmp_") || m.starts_with("v_cmpx_") {
+            let mask = if ins.enc == Enc::Vop3 { ins.aux.mask } else { 0 };
+            let c = if m.ends_with("_class_f32") {
+                // Change the sign bit directly to preserve the signaling/quiet NaN distinction.
+                let mut bits = r(&s[0])?;
+                if mask & 1 != 0 { bits = format!("({bits} & 0x7fffffffu)"); }
+                if mask & 8 != 0 { bits = format!("({bits} ^ 0x80000000u)"); }
+                format!("tb_cmp_class({bits}, {})", r(&s[1])?)
             } else {
-                Self::cmp_expr(&cm, &s[0], &s[1])?
+                Self::cmp_expr(&m, &s[0], &s[1], mask)?
             };
-            self.line(&format!("exec_lo = (((exec_lo & 1u) != 0u) && {c}) ? 1u : 0u; exec_hi = 0u;"));
-            return Ok(());
-        }
-        // Compares (VOPC, and VOP3 with a scalar mask destination).
-        if m.starts_with("v_cmp_") {
-            let c = if m == "v_cmp_class_f32" {
-                // Floating-point class test against a 10-bit class mask (see tb_cmp_class).
-                format!("tb_cmp_class({}, {})", r(&s[0])?, r(&s[1])?)
-            } else {
-                Self::cmp_expr(&m, &s[0], &s[1])?
-            };
+            if m.starts_with("v_cmpx_") {
+                self.line(&format!("exec_lo = (((exec_lo & 1u) != 0u) && {c}) ? 1u : 0u; exec_hi = 0u;"));
+                return Ok(());
+            }
+            if self.packed.as_ref().is_some_and(|p| p.ballots.contains(&self.cur_idx)) {
+                let t = self.tmp;
+                self.tmp += 1;
+                self.line(&format!("uint4 t{t}ballot = WaveActiveBallot(((exec_lo & 1u) != 0u) && {c});"));
+                self.ws(&d, &format!("t{t}ballot.x"))?;
+                return self.ws(&hi(&d), &format!("t{t}ballot.y"));
+            }
             self.ws(&d, &format!("(((exec_lo & 1u) != 0u) && {c}) ? 1u : 0u"))?;
+            if self.packed.as_ref().is_some_and(|p| p.abi == RootAbi::RegisterWave32) { return Ok(()); } // The next SGPR can hold an independent mask.
             let dh = hi(&d);
             if !matches!(dh, Opnd::Null | Opnd::ConstInt(_)) {
                 self.touch(&dh);
@@ -3532,7 +3741,12 @@ impl<'a> Emitter<'a> {
             let e = self.fres(ins, e);
             return self.wv(&d, &e);
         }
-        let mask = if vop3 { c.clone() } else { "vcc_lo".to_string() };
+        let mask = if self.packed.as_ref().is_some_and(|p| p.lane_masks.contains(&self.cur_idx)) {
+            let upper = if self.required_wave_size == Some(64) {
+                r(&hi(&s[2]))?
+            } else { "0u".into() };
+            format!("(((WaveGetLaneIndex() < 32u) ? {c} : {upper}) >> (WaveGetLaneIndex() & 31u))")
+        } else if vop3 { c.clone() } else { "vcc_lo".to_string() };
         let e = match m.as_str() {
             "v_mov_b32" => a,
             "v_cndmask_b32" => format!("(({mask} & 1u) != 0u) ? {b} : {a}"),
@@ -3564,6 +3778,10 @@ impl<'a> Emitter<'a> {
                 let t = self.tmp;
                 self.tmp += 1;
                 self.line("#if __SHADER_TARGET_MAJOR >= 6");
+                let a = if self.packed.as_ref().is_some_and(|p| p.scan_width == Some(64))
+                    && matches!(s[0], Opnd::VccLo | Opnd::VccHi) {
+                    format!("WaveActiveBallot((vcc_lo & 1u) != 0u).{}", if s[0] == Opnd::VccLo { "x" } else { "y" })
+                } else { a };
                 self.line(&format!("uint t{t} = countbits({a} & {});", low_mask(lane)));
                 self.line("#else");
                 self.line(&format!("uint t{t} = 0u;"));
@@ -4744,14 +4962,19 @@ impl<'a> Emitter<'a> {
         let ex = self.ex;
         let mut h = String::new();
         let _ = writeln!(h, "// Generated by tombox-xshader from RDNA2 microcode ({:?}, {} instrs).", ex.stage, self.insns.len());
-        h.push_str(CUBE_HELPERS);
+        self.push_helpers(&mut h);
         h.push_str(&self.resource_decls()?);
         if self.is_cs {
             // Local thread ID is in v0..v2. Packed argument blocks use s4 for group X;
             // the descriptor-table ABI places group IDs after the root parameters.
             let [tx, ty_, tz] = compute_group(ex);
             let nparams = ex.root_sig.as_ref().map(|r| r.params.len()).unwrap_or(4);
-            let g = if self.packed.is_some() { 4 } else { 4 + nparams };
+            let g = match self.packed.as_ref().map(|p| &p.abi) {
+                Some(RootAbi::RegisterWave32) => 14, // after two tables and four root CBV pairs
+                Some(RootAbi::ArgumentBlock) => 4,
+                None => 4 + nparams,
+            };
+            if let Some(width) = self.required_wave_size { writeln!(h, "[WaveSize({width})]").unwrap(); }
             let _ = writeln!(h, "[numthreads({tx}, {ty_}, {tz})]
 void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) {{");
             let _ = writeln!(h, "    uint exec_lo = 1u, exec_hi = 0u, vcc_lo = 0u, vcc_hi = 0u, scc = 0u, m0 = 0u, nul = 0u;");

@@ -808,7 +808,7 @@ static HWND game_window() {
 }
 
 int main(int argc, char** argv) {
-    if (argc == 3 && !std::strcmp(argv[1], "--rdna2-test")) return check_packed_root() || check_rdna2(argv[2]) || check_shader_pixels(argv[2]);
+    if (argc == 3 && !std::strcmp(argv[1], "--rdna2-test")) return check_packed_compute() || check_rdna2(argv[2]) || check_shader_pixels(argv[2]);
     if (argc == 2 && !std::strcmp(argv[1], "--thread-dispatch-test")) return check_compute(ComputeProbe::ThreadDispatch);
     if (argc == 2 && !std::strcmp(argv[1], "--compute-barrier-test")) return check_compute(ComputeProbe::UavBarrier);
     if (argc == 2 && !std::strcmp(argv[1], "--pso-fallback-test")) return check_compute(ComputeProbe::OfflineFallback);

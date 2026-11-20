@@ -7,12 +7,14 @@
 //!
 //! Chain:  `DXBC → DXIL chunk → XDAT → zlib → FSSM → RDNA2 ISA`
 //!
-//! This module parses that chain and returns the raw ISA plus the surrounding metadata.
+//! Scarlett FidelityFX also ships native compute programs in an ACCC/FSPX section directory.
+//! This module parses both formats and returns the raw ISA plus the surrounding metadata.
 //! All parsing is bounds-checked and never panics on malformed input (returns `Err`).
 //! Reverse-engineered from dumped Fortnite shaders and the GDK UMD `xgs12_10.dll`; see
 //! `docs/FORTNITE_ANALYSIS.md`. Field offsets inferred empirically are validated against
 //! RDNA2 markers before use, so a wrong guess fails loudly rather than yielding garbage.
 
+mod fspx;
 pub mod hlsl;
 #[cfg(windows)]
 pub mod dxc;
@@ -114,11 +116,13 @@ impl Stage {
 #[derive(Debug, Clone)]
 pub struct ShaderExtract {
     pub stage: Stage,
-    /// Shader model major.minor from the DXIL program header.
+    /// Shader model major.minor from the DXIL program header, or (0, 0) when absent.
     pub shader_model: (u32, u32),
     /// Whether the DXIL bitcode slot was the `NOBC` placeholder (some middleware retains DXIL).
     pub bitcode_stripped: bool,
-    /// Inflated FSSM container bytes.
+    /// Compute configuration from section 0 of an ACCC/FSPX executable, when present.
+    pub fspx_config: Option<[u32; 7]>,
+    /// Inflated FSSM container bytes (empty for FSPX).
     pub fssm: Vec<u8>,
     /// Entry-point name recovered from FSSM, if found.
     pub entry: Option<String>,
@@ -153,14 +157,60 @@ fn is_sopp(w: u32) -> bool {
     (w >> 23) == 0x17f
 }
 
+struct NativeProgram {
+    stage: Stage,
+    sm: (u32, u32),
+    bitcode_stripped: bool,
+    fssm: Vec<u8>,
+    isa: Vec<u8>,
+    isa_off: usize,
+    isa_preamble: [u32; 4],
+    isa_data: Vec<u8>,
+    fspx_config: Option<[u32; 7]>,
+}
+
 /// Extract the native RDNA2 ISA (and metadata) from a full shader DXBC blob.
 pub fn extract(dxbc: &[u8]) -> Result<ShaderExtract, String> {
     let container = Dxbc::parse(dxbc)?;
-    let dxil = container
-        .chunk(b"DXIL")
-        .ok_or("no DXIL chunk (not an Xbox shader?)")?;
-    let body = &dxbc[dxil.offset..dxil.offset + dxil.size];
+    let chunk_body = |cc: &[u8; 4]| container.chunk(cc).map(|c| &dxbc[c.offset..c.offset + c.size]);
+    let native = if let Some(body) = chunk_body(b"DXIL") {
+        extract_dxil(body)?
+    } else {
+        let body = chunk_body(b"ACCC").ok_or("no DXIL or ACCC chunk")?;
+        let threads = chunk_body(b"PSV0").and_then(meta::parse_compute_threads)
+            .ok_or("ACCC needs compute PSV dimensions")?;
+        fspx::extract(body, threads)?
+    };
+    let NativeProgram {
+        stage, sm, bitcode_stripped, fssm, isa, isa_off, isa_preamble, isa_data, fspx_config,
+    } = native;
+    let entry = find_entry_name(&fssm);
 
+    Ok(ShaderExtract {
+        stage,
+        shader_model: sm,
+        bitcode_stripped,
+        fspx_config,
+        entry,
+        isa,
+        isa_offset_in_fssm: isa_off,
+        isa_preamble,
+        psv_threads: if stage == Stage::Compute { chunk_body(b"PSV0").and_then(meta::parse_compute_threads) } else { None },
+        isa_data,
+        fssm,
+        has_input_sig: container.chunk(b"ISG1").is_some() || container.chunk(b"ISGN").is_some(),
+        has_output_sig: container.chunk(b"OSG1").is_some() || container.chunk(b"OSGN").is_some(),
+        has_psv0: container.chunk(b"PSV0").is_some(),
+        has_root_sig: container.chunk(b"RTS0").is_some(),
+        input_sig: chunk_body(b"ISG1").and_then(|b| meta::parse_signature(b).ok()).unwrap_or_default(),
+        output_sig: chunk_body(b"OSG1").and_then(|b| meta::parse_signature(b).ok()).unwrap_or_default(),
+        resources: chunk_body(b"PSV0").and_then(|b| meta::parse_psv0(b).ok()).unwrap_or_default(),
+        gs_info: chunk_body(b"PSV0").and_then(meta::parse_psv0_gs),
+        root_sig: chunk_body(b"RTS0").and_then(|b| meta::parse_rts0(b).ok()),
+    })
+}
+
+fn extract_dxil(body: &[u8]) -> Result<NativeProgram, String> {
     // DxilProgramHeader: ProgramVersion u32, SizeInUint32 u32, then DxilBitcodeHeader
     // { DxilMagic 'DXIL', DxilVersion, BitcodeOffset, BitcodeSize }. XDAT follows (off 24).
     let program_version = u32_at(body, 0)?;
@@ -222,29 +272,8 @@ pub fn extract(dxbc: &[u8]) -> Result<ShaderExtract, String> {
         }
         p
     };
-    let chunk_body = |cc: &[u8; 4]| container.chunk(cc).map(|c| &dxbc[c.offset..c.offset + c.size]);
-    let entry = find_entry_name(&fssm);
-
-    Ok(ShaderExtract {
-        stage,
-        shader_model: sm,
-        bitcode_stripped,
-        entry,
-        isa,
-        isa_offset_in_fssm: isa_off,
-        isa_preamble,
-        psv_threads: if stage == Stage::Compute { chunk_body(b"PSV0").and_then(meta::parse_compute_threads) } else { None },
-        isa_data,
-        fssm,
-        has_input_sig: container.chunk(b"ISG1").is_some() || container.chunk(b"ISGN").is_some(),
-        has_output_sig: container.chunk(b"OSG1").is_some() || container.chunk(b"OSGN").is_some(),
-        has_psv0: container.chunk(b"PSV0").is_some(),
-        has_root_sig: container.chunk(b"RTS0").is_some(),
-        input_sig: chunk_body(b"ISG1").and_then(|b| meta::parse_signature(b).ok()).unwrap_or_default(),
-        output_sig: chunk_body(b"OSG1").and_then(|b| meta::parse_signature(b).ok()).unwrap_or_default(),
-        resources: chunk_body(b"PSV0").and_then(|b| meta::parse_psv0(b).ok()).unwrap_or_default(),
-        gs_info: chunk_body(b"PSV0").and_then(meta::parse_psv0_gs),
-        root_sig: chunk_body(b"RTS0").and_then(|b| meta::parse_rts0(b).ok()),
+    Ok(NativeProgram {
+        stage, sm, bitcode_stripped, fssm, isa, isa_off, isa_preamble, isa_data, fspx_config: None,
     })
 }
 

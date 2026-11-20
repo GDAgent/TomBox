@@ -5,13 +5,13 @@
 #include <string>
 #include <vector>
 
-enum class ComputeProbe { OfflineFallback, UavBarrier, ThreadDispatch, VectorAlu, PackedRoot };
+enum class ComputeProbe { OfflineFallback, UavBarrier, ThreadDispatch, VectorAlu, PackedRoot32, PackedRoot64 };
 using VectorRow = std::array<UINT, 8>; // v0, v1, v2, initial VCC; result, VCC, EXEC, marker
 
 static int run_compute(Frame& frame, ComputeProbe probe, D3D12_SHADER_BYTECODE shader, UINT groups,
                        VectorRow* rows = nullptr) {
     const bool test_dispatch = probe == ComputeProbe::ThreadDispatch;
-    const bool packed = probe == ComputeProbe::PackedRoot;
+    const bool packed = probe == ComputeProbe::PackedRoot32 || probe == ComputeProbe::PackedRoot64;
     auto* dev = frame.dev.Get();
     D3D12_DESCRIPTOR_RANGE range{D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 0};
     D3D12_ROOT_PARAMETER params[2]{};
@@ -52,7 +52,7 @@ static int run_compute(Frame& frame, ComputeProbe probe, D3D12_SHADER_BYTECODE s
     heap.Type = D3D12_HEAP_TYPE_DEFAULT;
     heap.CreationNodeMask = heap.VisibleNodeMask = 1;
     auto buffer = frame.readback->GetDesc();
-    const UINT elements = packed ? groups * 32 : groups;
+    const UINT elements = groups * (probe == ComputeProbe::PackedRoot64 ? 64 : packed ? 32 : 1);
     buffer.Width = UINT64(elements) * stride;
     buffer.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     ComPtr<ID3D12Resource> output;
@@ -210,12 +210,118 @@ static int check_packed_root() {
     for (UINT i = 0; i < 71; ++i) expected[i][4] = expected[i][1] + 0xf8000047u;
     Frame frame;
     if (frame.init(8, 4, false, sizeof(rows)) ||
-        run_compute(frame, ComputeProbe::PackedRoot, {packed_root_cs, sizeof(packed_root_cs)}, 3, rows.data())) return 1;
+        run_compute(frame, ComputeProbe::PackedRoot32, {packed_root_cs, sizeof(packed_root_cs)}, 3, rows.data())) return 1;
     if (rows != expected) {
         std::fputs("Packed root buffer readback mismatch\n", stderr);
         return 1;
     }
     return 0;
+}
+
+// Compare both ballot words and leave sentinel values in every masked lane.
+static int check_packed_ballot() {
+    std::array<VectorRow, 128> rows;
+    for (UINT i = 0; i < rows.size(); ++i) {
+        rows[i].fill(0xccccccccu);
+        rows[i][1] = (i * 37 % 11) < 5;
+    }
+    auto expected = rows;
+    for (UINT group = 0; group < 2; ++group) {
+        UINT bits[2]{};
+        for (UINT lane = 0; lane < 57; ++lane) {
+            if (rows[group * 64 + lane][1]) bits[lane / 32] |= 1u << (lane % 32);
+        }
+        for (UINT lane = 0; lane < 57; ++lane) {
+            expected[group * 64 + lane][4] = bits[0] ^ lane;
+            expected[group * 64 + lane][5] = bits[1] ^ lane;
+        }
+    }
+    Frame frame;
+    if (frame.init(8, 4, false, sizeof(rows)) ||
+        run_compute(frame, ComputeProbe::PackedRoot64, {packed_ballot_cs, sizeof(packed_ballot_cs)}, 2, rows.data())) return 1;
+    if (rows != expected) {
+        std::fputs("Packed wave64 ballot readback mismatch\n", stderr);
+        return 1;
+    }
+    return 0;
+}
+
+static int check_packed_scan(UINT width) {
+    std::vector<VectorRow> rows(3 * width);
+    for (UINT i = 0; i < rows.size(); ++i) {
+        rows[i].fill(0x5a5a5a5a);
+        rows[i][1] = (i + 1) * 0x85ebca6bu;
+    }
+    auto expected = rows;
+    for (UINT group = 0; group < 3; ++group) {
+        UINT sum = 0;
+        for (UINT lane = 0; lane < width; ++lane) {
+            auto& row = expected[group * width + lane];
+            sum += row[1];
+            row[4] = sum;
+        }
+    }
+    Frame frame;
+    const auto shader = width == 32 ? D3D12_SHADER_BYTECODE{packed_scan32_cs, sizeof(packed_scan32_cs)}
+                                    : D3D12_SHADER_BYTECODE{packed_scan64_cs, sizeof(packed_scan64_cs)};
+    const auto probe = width == 32 ? ComputeProbe::PackedRoot32 : ComputeProbe::PackedRoot64;
+    if (frame.init(8, 4, false, rows.size() * sizeof(VectorRow)) ||
+        run_compute(frame, probe, shader, 3, rows.data())) return 1;
+    if (rows != expected) {
+        std::fprintf(stderr, "Packed wave%u scan readback mismatch\n", width);
+        return 1;
+    }
+    return 0;
+}
+
+static int check_packed_quad() {
+    std::array<VectorRow, 96> rows;
+    auto bits = [](float value) { UINT u; std::memcpy(&u, &value, sizeof(u)); return u; };
+    auto input = [](UINT i) { return float(i * i + 1); };
+    auto first = [&](UINT i) { return i < 71 ? input(i ^ 1) + input(i) : input(i); };
+    for (UINT i = 0; i < rows.size(); ++i) {
+        rows[i].fill(0xdeadbeef);
+        rows[i][1] = bits(input(i));
+    }
+    auto expected = rows;
+    for (UINT i = 0; i < 71; ++i) {
+        expected[i][4] = bits(first(i));
+        expected[i][5] = bits(first(i ^ 2) + first(i));
+    }
+    Frame frame;
+    if (frame.init(8, 4, false, sizeof(rows)) ||
+        run_compute(frame, ComputeProbe::PackedRoot32, {packed_quad_cs, sizeof(packed_quad_cs)}, 3, rows.data())) return 1;
+    if (rows != expected) {
+        std::fputs("FP32 DPP quad add readback mismatch\n", stderr);
+        return 1;
+    }
+    return 0;
+}
+
+static int check_retiring_wave() {
+    std::array<VectorRow, 3 * 64> rows;
+    for (UINT i = 0; i < rows.size(); ++i) {
+        rows[i].fill(0xdeadbeef);
+        rows[i][1] = 0xf37a5900u + 17 * i;
+    }
+    auto expected = rows;
+    for (UINT i = 0; i < rows.size(); ++i) {
+        if (i % 64 < 20) expected[i][4] = rows[i + 32][1];
+    }
+    Frame frame;
+    if (frame.init(8, 4, false, sizeof(rows)) ||
+        run_compute(frame, ComputeProbe::PackedRoot64, {retiring_wave_cs, sizeof(retiring_wave_cs)}, 3, rows.data())) return 1;
+    if (rows != expected) {
+        std::fputs("LDS readback after early wave exit failed\n", stderr);
+        return 1;
+    }
+    return 0;
+}
+
+static int check_packed_compute() {
+    if (check_packed_root() || check_packed_quad() || check_retiring_wave() || check_packed_scan(32)) return 1;
+    if (!GetEnvironmentVariableA("TOMBOX_PROBE_WAVE64", nullptr, 0)) return 0;
+    return check_packed_ballot() || check_packed_scan(64);
 }
 
 // The launcher generates a suite of stripped Xbox compute shaders and source registers.

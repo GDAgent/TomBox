@@ -105,6 +105,79 @@ if __name__ == "__main__":
         end,
     ], signature(), signature(), packed_root, threads=(1, 0, 0), psv=psv))
 
+    # Keep a value in every lane before EXEC masks the tail. FI=1 must read
+    # those saved values even when the neighbor branches around the exchange.
+    emit("packed_quad_cs", shader(5, [
+        0xBE820300, 0x8703FF01, 255, 0xF4040301, 0xFA000000,
+        0xBF8CC07F, 0xBE8D1D95, 0xBE8E03C1, 0xBE8F03FF, 0x11014FAC,
+        0xD7460002, 0x04010A04,         # v2 = group X * 32 + local X
+        0xE0302004, 0x80030302, 0xBF8C3F70,
+        0x7E080303,                     # v4 = v3 = input
+        0x7DA804FF, 71, 0xBF880008,     # cmpx 71 > v2; skip to end if empty
+        0x060806FA, 0xFF0CB103,         # v4 = v3[lane xor 1] + v3
+        0x060A08FA, 0xFF0C4E04,         # v5 = v4[lane xor 2] + v4
+        0xE0702010, 0x80030402, 0xE0702014, 0x80030502, end,
+    ], signature(), signature(), packed_root, psv=psv))
+
+    ballot_psv = words(48, 0, 0, 0, 0, 0, 0, 5, 0, 0, 64, 1, 1, 0)
+    # A wave can retire after writing LDS while another reaches S_BARRIER.
+    # Read the retiring wave's data in the surviving lanes of each workgroup.
+    emit("retiring_wave_cs", shader(5, [
+        0xBE820300, 0x8703FF01, 255, 0xF4040301, 0xFA000000,
+        0xBF8CC07F, 0xBE8D1D95, 0xBE8E03C1, 0xBE8F03FF, 0x11014FAC,
+        0xD7460002, 0x04010C04,         # v2 = group X * 64 + local X
+        0xE0302004, 0x80030302, 0xBF8C3F70,
+        0x34080082, 0xD8340000, 0x00000304, 0xBF8CC07F,  # LDS[local X] = input
+        0x7DA80094, 0xBF880008,         # keep first 20 lanes, branch to ENDPGM
+        0xBF8A0000, 0x3A0A08FF, 128,    # barrier, toggle wave bit in byte address
+        0xD8D80000, 0x06000005, 0xBF8CC07F,
+        0xE0702010, 0x80030602, end,
+    ], signature(), signature(), packed_root, threads=(64, 1, 1), psv=ballot_psv))
+
+    emit("packed_ballot_cs", shader(5, [
+        0xBE820300, 0x8703FF01, 255,    # copy the packed root pointer low word first
+        0xF4040301, 0xFA000000,         # s[12:13] = UAV address
+        0xBF8CC07F, 0xBE8D1D95,         # descriptor stride = 32
+        0xBE8E03C1, 0xBE8F03FF, 0x11014FAC,
+        0x360200BF,                     # v1 = local X & 63
+        0xD7460002, 0x04010C04,         # v2 = (group X << 6) + local X
+        0xE0302004, 0x80030302,         # v3 = row[v2].word1
+        0xBF8C3F70, 0x7D8802B9,         # vcc = lane index < 57
+        0xBE88246A,                     # save EXEC in s[8:9], mask out lanes 57..63
+        0xD485000A, 0x00020680,         # ballot v3 != 0 into s[10:11]
+        0x3A0A020A, 0x3A0C020B,         # XOR each ballot word with the lane index
+        0xE0702010, 0x80030502,         # row[v2].word4 = low XOR
+        0xE0702014, 0x80030602,         # row[v2].word5 = high XOR
+        0xBEFE0408, end,                # restore EXEC
+    ], signature(), signature(), packed_root, threads=(64, 1, 1), psv=ballot_psv))
+
+    for width in (32, 64):
+        log_width = width.bit_length() - 1
+        scan = [
+            0xBE820300, 0x8703FF01, 255,  # s[2:3] = root argument pointer
+            0xF4040301, 0xFA000000, 0xBF8CC07F,
+            0xBE8D1D95, 0xBE8E03C1, 0xBE8F03FF, 0x11014FAC,  # 32-byte row stride
+            0x7D840080 | (width - 1),    # compare local X with the last lane
+            0xD7460002, 0x04010004 | ((128 + log_width) << 9),
+            0xE0302004, 0x80030302, 0xBF8C3F70,  # v3 = row[v2].word1
+        ]
+        for bit in range(5):
+            distance = 1 << bit
+            swizzle = (32 - 2 * distance) | ((distance - 1) << 5)
+            # Gather the last prefix of the preceding block and add it in the upper block.
+            mask = sum(1 << lane for lane in range(32) if lane & distance)
+            scan.extend([0xBE8603FF, mask])
+            if width == 64:
+                scan.extend([0xBE8703FF, mask])
+            scan.extend([0xD8D40000 | swizzle, 0x04000003, 0xBF8CC07F,
+                         0xD5010004, 0x001A0880, 0x4A060903])
+        if width == 64:
+            scan.extend([0xBE860380, 0xBE8703C1, 0xD7600008, 0x00013F03,
+                         0xD5010004, 0x00181080, 0x4A060903])
+        scan.extend([0xE0702010, 0x80030302, end])  # row[v2].word4 = inclusive sum
+        emit(f"packed_scan{width}_cs", shader(5, scan, signature(), signature(), packed_root,
+             psv=words(48, 0, 0, 0, 0, 0, 0, 5, 0, 0, width, 1, 1, 0)))
+
     increment_prefix = [
         0xF4080302, 0xFA000000,         # s_load_dwordx4 s[12:15], s[4:5], 0
         0xBF8CC07F,                     # s_waitcnt lgkmcnt(0)

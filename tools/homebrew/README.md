@@ -229,8 +229,15 @@ pipeline for each generated shader, dispatches one workgroup per input and reads
 back the result, VCC, EXEC and a completion marker. The Rust reference evaluates the
 same inputs independently and checks the outputs relevant to each instruction.
 A packed-root shader reads inline constants and a root UAV. It dispatches three 32-thread groups and checks every output word, including the 25 masked lanes. Multi-thread probes also select one reader per workgroup and exchange values between lanes.
-Set `TOMBOX_PROBE_WAVE64=1` on a device that runs 64-lane waves to check nonzero
-upper-half lane counts. The companion memory suite checks buffer and texture reads,
+The integer wave-sum probe requests 32-lane waves on a shader model 6.6 device.
+Set `TOMBOX_PROBE_WAVE64=1` on a device that runs 64-lane waves to also check the
+64-lane sum, its upper-half subtotal and nonzero upper-half lane counts. A second packed-root shader checks both words of a 64-lane ballot against CPU masks for two groups, including seven inactive lanes in each.
+Coin Run also checks a three-group prefix sum at each enabled wave width. Every lane is compared with a wrapping CPU sum.
+The FidelityFX prepass probes exercise both FP32 quad permutations, including a
+read from an inactive neighbor. A separate 64-thread group writes unique values
+to shared memory before 44 threads exit. The other 20 read values from the
+upper half of the group after a barrier. Both tests check the untouched output rows.
+The companion memory suite checks buffer and texture reads,
 writes and atomic results. A 16×16 graphics probe checks geometry emission, exports,
 flat attributes, both interpolation steps and a pixel-quad swizzle against a CPU image.
 The final game runs check the 2D and 3D scenes, texture arrays, cube faces and thread dispatch.
@@ -244,6 +251,49 @@ reference coverage. The `cache_probe` column records cross-wave UAV visibility f
 `buffer_gl0_inv` and `buffer_gl1_inv`, and preservation of a register value and
 condition flag in all three defined `s_inst_prefetch` modes. Physical cache contents
 and instruction-fetch distance remain unmeasured. [Recorded results](../progress/coin-rdna2-coverage.tsv)
+
+### Retail FidelityFX prepass
+
+Build the homebrew tools and pass the October Scarlett upscaler as a data file.
+The probe creates a compute pipeline from the original 256-thread shader and
+its embedded root signature. It checks both outputs across four workgroups.
+The texture reference covers reset, valid history and adjacent pixels with NaN
+and finite motion. The raw tensor reference uses per-quadrant biases and a
+nonzero luminance coefficient. Partial dimensions leave guard words untouched.
+
+```sh
+tools/homebrew/build-clear.sh
+tools/homebrew/play-coins.sh --fsr-prepass-test /path/to/amd_fidelityfx_upscaler_xbox.dll
+```
+
+### Retail FidelityFX postpasses
+
+Pass the Scarlett upscaler DLL to the probe as a data file. It locates the 13
+FSR4 postpasses from the tested build by container hash and dispatches each
+through TomBox’s compute pipeline. The CPU reference checks the cleared tensor
+borders, every interior word and surrounding guards. Three input sizes exercise
+ordinary padding and the right and bottom limits.
+
+```sh
+tools/homebrew/play-coins.sh --fsr-postpass-test /path/to/amd_fidelityfx_upscaler_xbox.dll
+```
+
+### Retail BVH radix sort
+
+With a wave64-capable shader model 6.6 device and the GXDK 250405 BVH builder,
+run the four translated compute kernels as a full sort under Proton.
+
+```bash
+tools/homebrew/build-clear.sh
+tools/homebrew/play-coins.sh --bvh-sort-test /path/to/XboxBvhBuilder.dll
+```
+
+Use the same `PROTON` and DXC setup as for `--rdna2-test`. The probe reads four
+shader containers from the supplied file and creates their pipelines through
+TomBox. It sorts 16,384 keys in four byte passes on the GPU. After each pass it
+compares keys and original indices with a stable CPU sort and checks the guards
+on both buffers. The three-group homebrew prefix tests above run independently
+of the supplied library.
 
 ### Graphics readback
 

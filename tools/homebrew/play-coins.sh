@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 set -eu
+if [[ ${1:-} == --bvh-sort-test || ${1:-} == --fsr-postpass-test || ${1:-} == --fsr-prepass-test ]]; then
+    if [[ $# != 2 || ! -f $2 ]]; then
+        echo "Usage: $0 $1 path-to-retail-library.dll" >&2
+        exit 2
+    fi
+    library_path=$(realpath -- "$2")
+fi
 cd "$(dirname "$0")/../.."
 : "${PROTON:?Set PROTON to the absolute path of the Proton Experimental proton executable}"
 build="$PWD/target/x86_64-pc-windows-msvc/release"
@@ -11,6 +18,13 @@ if [[ ${1:-} == --rdna2-test ]]; then
 fi
 if [[ ${1:-} == --fidelityfx-test || ${1:-} == --fidelityfx-context ]]; then
     required+=(fidelityfx_probe.exe d3d12_xs.dll xmem.dll)
+fi
+if [[ ${1:-} == --bvh-sort-test ]]; then
+    required+=(bvh_sort_probe.exe bvh_commands.dll)
+elif [[ ${1:-} == --fsr-prepass-test ]]; then
+    required+=(fsr_prepass_probe.exe d3d12_xs.dll)
+elif [[ ${1:-} == --fsr-postpass-test ]]; then
+    required+=(fsr_postpass_probe.exe d3d12_xs.dll)
 fi
 if [[ ${1:-} == --compute-barrier-test || ${1:-} == --thread-dispatch-test ]]; then
     required+=(bvh_commands.dll)
@@ -36,6 +50,23 @@ export TOMBOX_LOG="${TOMBOX_LOG:-coin-window.log}"
 # The Windows GUI executable has no console of its own. Capture its scripted
 # checks through cmd so Linux callers see pixel mismatches and the exit status.
 case "${1:-}" in
+    --bvh-sort-test|--fsr-postpass-test|--fsr-prepass-test)
+        export TOMBOX_DXC_DIR="${TOMBOX_DXC_DIR:-Z:$PWD}"
+        if [[ $1 == --bvh-sort-test ]]; then
+            export TOMBOX_BVH_LIBRARY="Z:$library_path"
+            probe=bvh_sort_probe
+        else
+            export TOMBOX_FSR_LIBRARY="Z:$library_path"
+            probe=fsr_postpass_probe
+            if [[ $1 == --fsr-prepass-test ]]; then probe=fsr_prepass_probe; fi
+        fi
+        result=$(mktemp retail-probe.XXXXXXXX)
+        trap 'rm -f -- "$result"' EXIT
+        status=0
+        "$PROTON" run cmd.exe /d /c "$probe.exe > $result 2>&1" || status=$?
+        cat "$result"
+        exit "$status"
+        ;;
     --rdna2-test)
         scratch=$(mktemp -d rdna2-check.XXXXXXXX)
         trap 'rm -f -- "$scratch"/{cases.bin,suite.bin,results.bin,game.log,memory.log,memory.exe,memory-mnemonics.txt,graphics-gs.dxbc,graphics-ps.dxbc,coverage.tsv}; rmdir -- "$scratch"' EXIT

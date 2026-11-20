@@ -158,6 +158,8 @@ pub struct RootSig {
     pub flags: u32,
     pub params: Vec<RootParam>,
     pub num_static_samplers: u32,
+    /// D3D12_STATIC_SAMPLER_DESC words in serialized v1.0/v1.1 signatures.
+    pub static_samplers: Vec<[u32; 13]>,
 }
 
 /// Parse an RTS0 (serialized root signature) chunk body.
@@ -212,5 +214,20 @@ pub fn parse_rts0(body: &[u8]) -> Result<RootSig, String> {
         };
         params.push(RootParam { visibility, kind });
     }
-    Ok(RootSig { version, flags, params, num_static_samplers })
+    let mut static_samplers = Vec::new();
+    if matches!(version, 1 | 2) && num_static_samplers != 0 {
+        let offset = u32_at(body, 16)? as usize;
+        let bytes = body.get(offset..).ok_or("invalid static sampler offset")?;
+        if num_static_samplers as usize > bytes.len() / 52 {
+            return Err("truncated static sampler array".into());
+        }
+        for desc in bytes.chunks_exact(52).take(num_static_samplers as usize) {
+            let mut words = [0; 13];
+            for (word, bytes) in words.iter_mut().zip(desc.chunks_exact(4)) {
+                *word = u32::from_le_bytes(bytes.try_into().unwrap());
+            }
+            static_samplers.push(words);
+        }
+    }
+    Ok(RootSig { version, flags, params, num_static_samplers, static_samplers })
 }

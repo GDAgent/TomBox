@@ -100,20 +100,24 @@ fn is_denorm(u: u32) -> bool {
 
 /// f32 -> f16 bits, round to nearest even (`rtz = false`) or toward zero, with f16 denormals.
 fn f16_from(x: f32, rtz: bool) -> u32 {
-    let sign = (x.to_bits() >> 16) & 0x8000;
+    f16_from_f64(f64::from(x), rtz)
+}
+
+fn f16_from_f64(x: f64, rtz: bool) -> u32 {
+    let sign = u32::from(x.is_sign_negative()) << 15;
     if x.is_nan() {
         return sign | 0x7e00;
     }
     if x.is_infinite() {
         return sign | 0x7c00;
     }
-    let a = (x as f64).abs();
+    let a = x.abs();
     if a == 0.0 {
         return sign;
     }
     let e = ((a.to_bits() >> 52) & 0x7ff) as i32 - 1023; // a is a normal f64
     let q = 2f64.powi(if e < -14 { -24 } else { e - 10 });
-    let n = a / q; // exact: a has at most 24 significant bits
+    let n = a / q; // Scaling by a power of two is exact.
     let n = if rtz { n.trunc() } else { n.round_ties_even() };
     let v = n * q;
     if v > 65504.0 {
@@ -137,6 +141,11 @@ fn f16_to(h: u32) -> f32 {
         (1.0 + m as f32 / 1024.0) * 2f32.powi(e as i32 - 15)
     };
     if s == 1 { -v } else { v }
+}
+
+fn fma_half(a: u32, b: u32, c: u32) -> u32 {
+    let value = f64::from(f16_to(a)) * f64::from(f16_to(b)) + f64::from(f16_to(c));
+    f16_from_f64(value, false)
 }
 
 fn ulp_diff(a: f32, b: f32) -> u64 {
@@ -682,6 +691,13 @@ fn cases() -> Vec<Case> {
         c.push(Case { out: Out::Vcc, ..case(&format!("v_cmp_{cc}_f16"), vopc(hop), [H, H, I], move |a, b2, _, _| Want::U(hfun(a, b2) as u32)) });
         c.push(Case { out: Out::Exec, vcc_in: true, ..case(&format!("v_cmpx_{cc}_f16"), vopc(hop + 0x10), [H, H, I], move |a, b2, _, _| Want::U(hfun(a, b2) as u32)) });
     }
+    // The FSR prepass uses both equality and ordered comparisons against abs(src1).
+    for (cc, opcode, pred) in [("eq", 2, fcmp[2].1), ("ge", 6, fcmp[6].1)] {
+        c.push(Case { out: Out::Vcc, ..case(&format!("v_cmp_{cc}_f32 abs(src1)"), vop3(opcode, 2, Mods { abs: 2, ..m0 }, VCC_LO, None),
+            [F, F, I], move |a, b, _, _| Want::U(pred(f(a), f(b).abs()) as u32)) });
+    }
+    c.push(Case { out: Out::Exec, vcc_in: true, ..case("v_cmpx_lt_f32 -abs(src0)", vop3(0x11, 2, Mods { abs: 1, neg: 1, ..m0 }, 0, None),
+        [F, F, I], |a, b, _, _| Want::U((-f(a).abs() < f(b)) as u32)) });
     let icmp: [(&str, fn(i64, i64) -> bool); 8] = [
         ("f", |_, _| false),
         ("lt", |a, b| a < b),
@@ -761,9 +777,16 @@ fn cases() -> Vec<Case> {
         c.push(case(n, v3(op, 2), [H, H, I], move |a, b2, _, _| Want::H(f16_from(fun(f16_to(a & 0xffff), f16_to(b2 & 0xffff)), false))));
     }
     c.push(case("v_fma_f16", v3(0x34b, 3), [H, H, H], |a, b2, c2, _| {
-        let (x, y, z) = (f16_to(a & 0xffff), f16_to(b2 & 0xffff), f16_to(c2 & 0xffff));
-        Want::H(f16_from(((x as f64) * (y as f64) + z as f64) as f32, false))
+        Want::H(fma_half(a, b2, c2))
     }));
+    // Native GFX1036 results with v3=0xacda1234 and v1 holding (2.0,1.0).
+    // The retail kernel interleaves writes to the high and low halves of the same VGPR.
+    for (sel, result) in [(0, 0xacda3c00), (8, 0x3c001234), (2, 0xacda4200),
+                          (1, 0xacdabc00), (4, 0xacda4000), (15, 0x00001234)] {
+        let words = vec![0x7e06_02ff, 0xacda1234, 0x7e02_02ff, 0x40003c00,
+            0xd74b_0003 | (sel << 11), 0x03ce_02f4, S_ENDPGM];
+        c.push(case(&format!("v_fma_f16 op_sel={sel}"), words, [I; 3], move |_, _, _, _| Want::U(result)));
+    }
     c.push(case("v_fmac_f16", v3(0x136, 2), [H, H, H], |a, b2, c2, _| {
         let (x, y, z) = (f16_to(a & 0xffff), f16_to(b2 & 0xffff), f16_to(c2 & 0xffff));
         Want::H(f16_from(((x as f64) * (y as f64) + z as f64) as f32, false))
@@ -789,6 +812,29 @@ fn cases() -> Vec<Case> {
     // Truncating conversion with saturation; NaN -> 0 (inferred from the f32 conversions).
     c.push(case("v_cvt_u16_f16", v3(0x1d2, 1), [H, I, I], |a, _, _, _| Want::U((f16_to(a & 0xffff) as u16) as u32)));
     c.push(case("v_cvt_i16_f16", v3(0x1d3, 1), [H, I, I], |a, _, _, _| Want::U((f16_to(a & 0xffff) as i16) as u16 as u32)));
+    c.push(case("v_cvt_pk_u8_f32", v3(0x15e, 3), [F, I, I], |a, selector, rest, _| {
+        let shift = (selector & 3) * 8;
+        let byte = f(a).round_ties_even() as u8;
+        Want::U((rest & !(255 << shift)) | (u32::from(byte) << shift))
+    }));
+    for (bits, byte) in [(0x3f00_0000, 0), (0x3fc0_0000, 2), (0x4020_0000, 2),
+                         (0x437e_e666, 255), (0x7f80_0000, 255), (0x7fc0_1234, 0)] {
+        let mut words = vec![0x7e00_02ff, bits];
+        words.extend(v3(0x15e, 3));
+        c.push(case(&format!("v_cvt_pk_u8_f32 {bits:x}"), words, [I; 3], move |_, selector, rest, _| {
+            let shift = (selector & 3) * 8;
+            Want::U((rest & !(255 << shift)) | (byte << shift))
+        }));
+    }
+    // Copy the third input into v3. The compact FMAC reads both old destination halves.
+    let fmac = 0x7806_0300;
+    c.push(case("v_pk_fmac_f16", vec![0x7e06_0302, fmac, S_ENDPGM], [H2; 3], |a, b, c, _| {
+        Want::H2(fma_half(a, b, c), fma_half(a >> 16, b >> 16, c >> 16))
+    }));
+    c.push(case("v_pk_fmac_f16 midpoint", vec![
+        0x7e00_02ff, 0x3d00_3e00, 0x7e02_02ff, 0x3c02_3c01,
+        0x7e06_02ff, 0x0001_8001, fmac, S_ENDPGM,
+    ], [I; 3], |_, _, _, _| Want::U(0x3d03_3e01)));
     // --- packed half floats (VOP3P, default op_sel)
     let pk: [(&str, u32, usize, fn(f32, f32, f32) -> f32); 5] = [
         ("v_pk_fma_f16", 0x0e, 3, |a, b, c| ((a as f64) * (b as f64) + c as f64) as f32),
@@ -1215,6 +1261,7 @@ fn coin_run_valu_conformance() {
     }
     let retail: BTreeSet<_> = include_str!("../../../tools/progress/mnemonics.txt")
         .lines().chain(include_str!("../../../tools/progress/bvh-mnemonics.txt").lines())
+        .chain(include_str!("../../../tools/progress/fsr-mnemonics.txt").lines())
         .filter_map(|line| line.split_whitespace().next()).filter(|name| !name.contains('<')).collect();
     let names: BTreeSet<_> = exercised.iter().map(String::as_str).chain(memory.iter().copied()).chain(graphics.iter().copied()).chain(cache_checks.keys().map(String::as_str)).chain(retail.iter().copied()).collect();
     let mut coverage = BufWriter::new(File::create(dir.join("coverage.tsv")).unwrap());
@@ -1306,9 +1353,9 @@ fn valu_conformance() {
         report.push_str(&format!("{:28} {:5} vectors, {:5} mismatches\n", c.name, vecs.len(), bad));
         if bad == 0 && !vecs.is_empty() {
             let isa: Vec<u8> = c.words.iter().flat_map(|w| w.to_le_bytes()).collect();
-            let name = tombox_xshader::rdna2::disassemble(&isa)[0].mnemonic.clone();
-            assert_eq!(Some(name.as_str()), c.name.split_whitespace().next(), "case {}", c.name);
-            verified.insert(name);
+            let name = c.name.split_whitespace().next().unwrap();
+            assert!(tombox_xshader::rdna2::disassemble(&isa).iter().any(|ins| ins.mnemonic == name), "case {}", c.name);
+            verified.insert(name.to_owned());
         }
         if bad > 0 {
             for e in &examples {

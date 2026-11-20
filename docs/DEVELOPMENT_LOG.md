@@ -1218,3 +1218,145 @@ all 16 words of a scalar load, all three words of a flat load, 64-bit shifts and
 scalar bit operations, and buffer AND/OR atomics with and without returning the old value.
 Direct GPU reference checks cover 306 of 314 retail-observed instructions. Three more have
 limited cache probes. [GPU results](../tools/progress/coin-rdna2-coverage.tsv)
+
+## 2026-11-20 — Integer wave sums in BVH compute shaders
+
+Seven BVH shaders use a masked, unsigned 32-bit sum across a wave. The translator
+now recognizes both the 32-lane and 64-lane sequences. It preserves the intermediate
+vector and scalar registers and restores EXEC. The 64-lane form reads the upper half
+from lane 32 before broadcasting the final result from lane zero. The compute shader
+requests its guest wave width through shader model 6.6. Lane reads need participating
+source lanes, so the translator checks for full waves and branches that could skip
+the reduction. [AMD RDNA2 ISA](https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/instruction-set-architectures/rdna2-shader-instruction-set-architecture.pdf) · [HLSL wave size](https://microsoft.github.io/DirectX-Specs/d3d/HLSL_SM_6_6_WaveSize.html)
+
+Coin Run compared the sums with independent wrapping-integer references in 128-thread
+groups with varying lane masks. Wave32 passed on NVIDIA and Radeon, and wave64 passed
+on Radeon. Separate register checks cover both widths of `s_or_saveexec`, including
+overlapping source and destination registers and SCC. Direct GPU checks now cover
+308 of the 314 retail-observed instructions. [Coverage report](../tools/progress/coin-rdna2-coverage.tsv)
+
+All seven shaders reached a later instruction during translation. Six next encounter
+a prefix sum, and one encounters a floating-point minimum with a different prologue.
+A fresh DXC scan still compiled 6 of 52 BVH shaders and all 43 distinct checked-in
+Fortnite fixtures. The combined retail map remains at 107 green instructions.
+
+## 2026-11-20 — Wave64 histogram GPU readback
+
+The BVH histogram shader (`df7efd69ef9e6a32`) copies the low word of its root
+argument pointer before masking the high word. It uses both halves of a wave64
+comparison result as integers to count inputs in each bin, then combines counts
+in group-shared memory with `ds_add_u32`. TomBox now recognizes those paired
+ballot uses and requests a 64-lane wave through shader model 6.6.
+
+Under Proton on Radeon, three groups of 512 threads each processed 2,048 input
+words per group. Two runs used pseudorandom data with bit shifts 0 and 13 and
+output strides 5 and 7. A third used a single bin per group with shift 16 and
+stride 6. All 768 bin counts and all 7,424 guard words matched the integer CPU
+reference in each run. Coin Run repeats the two-word ballot check using a
+homebrew shader and an independently constructed lane mask.
+
+A clean DXC scan compiled 7 of 52 BVH kernels and all 43 distinct checked-in
+Fortnite fixtures. This was the last observed untranslated kernel containing
+`ds_add_u32` or `s_not_b32`. Both are now green, bringing the combined retail
+tracker to 109 of 526. [BVH scan counts](../tools/progress/bvh-mnemonics.txt)
+
+## 2026-11-20 — Retail prefix scans and radix sort
+
+Nine more kernels passed GPU readback, bringing the BVH result to 16 of 52. Seven
+compute exclusive prefix sums over two, four or eight words per lane. Their
+five shared-memory swizzles gather a subtotal within each 32-lane half-wave.
+The 64-lane forms broadcast lane 31 to carry that subtotal into the upper half.
+Three-group dispatches matched a wrapping CPU sum with block totals both enabled
+and disabled, including the untouched words of both buffers. Three of the variants
+combine four or eight waves per group using an LDS subtotal loop. The wave32 variants
+passed on NVIDIA and Radeon. The wave64 variants passed on Radeon.
+
+The scatter kernel uses the same swizzles, dynamic lane reads, 64-bit ballots
+and shared-memory stores. Each of three Radeon dispatches matched a stable CPU
+sort of 6,144 key/index pairs by the selected byte. The checks covered two
+shifts on pseudorandom input and a single-bucket case. A separate kernel has 19 inline
+constants before its root descriptors. Its record copy, first-record flag and
+computed marker write passed on NVIDIA and Radeon with 0, 1 and 71 active records.
+
+Coin Run includes original wave32 and wave64 prefix-sum fixtures. The optional
+retail test feeds GPU histogram counts into a two-level prefix scan and then into
+scatter. It checks all 16,384 key/index pairs after each of four byte passes,
+including the order of equal keys and output guards. The test uses the GXDK
+250405 command-list barrier between dispatches. [Run the sort](../tools/homebrew/README.md#retail-bvh-radix-sort)
+
+A fresh DXC scan compiled 16 BVH kernels and all 43 distinct checked-in Fortnite
+fixtures. The final outstanding retail uses of `ds_read2st64_b32`,
+`ds_write2st64_b32`, `ds_swizzle_b32`, `s_or_b64`, `v_cmp_ne_i32` and
+`v_mbcnt_hi_u32_b32` now translate. This raises
+the combined tracker from 109 to 115 of 526. [BVH counts](../tools/progress/bvh-mnemonics.txt)
+
+## 2026-11-20 — Retail FidelityFX postpasses and VOPC
+
+The Scarlett upscaler DLL (SHA-256 `faff02f294a7e9149ce079dffe3dedbcabe99b1f180ab14222aa8689e00a75fa`)
+contains 29 distinct DXBC compute shaders. Their ACCC chunks carry an FSPX v1
+section directory. Section 6 holds native RDNA2 code, and PSV0 carries the
+workgroup dimensions. The translator recognizes the wave32 postpass layout,
+loads b0 via its root CBV and resolves the raw UAV against both the root table and
+PSV binding. A wave32 comparison can write s8 while a separately computed
+predicate remains live in s9.
+
+All 13 tensor border-clear postpasses compiled with DXC. Each passed three GPU
+readback cases on the RTX 4070 Ti SUPER and the Ryzen 7 9800X3D integrated GPU
+under RADV. The 16 failures in the full-library scan comprise eight unsupported
+compute register layouts, five vector OR reductions, two floating-point add
+reductions and one lane read. These are the first reported translation errors per
+shader. [Reproduce the postpass test](../tools/homebrew/README.md#retail-fidelityfx-postpasses)
+
+The new scan makes `v_cmpx_le_i32` green with 13/13 translations. Failing FSR4
+shaders also use `v_cmp_eq_i32`, `v_cmp_ne_i32` and `v_cmp_ge_u32`, putting those
+three back in amber. Across the three retail sources, 9 of 122 named VOPC
+instructions are green, 33 appear in shaders still failing translation, and 80
+have GPU probes only. The overall retail-green count is 87/526. [FidelityFX scan counts](../tools/progress/fsr-mnemonics.txt)
+
+## 2026-11-20 — FidelityFX prepass instruction checks
+
+Kernel 27 is the sole scanned retail shader using `v_cmp_u_f32`. TomBox now
+decodes all 693 instructions in its 4,008-byte program. Its two FP32 quad
+permutations can fetch a saved register from an inactive neighbor. The prepass
+also uses 64-bit LDS reads, 128-bit LDS writes, packed FP16 fused multiply-add
+and float-to-byte packing. Native GFX1036 dispatches supplied reference values
+for byte rounding, a fused FP16 midpoint and half-register destination writes.
+The prepass exposed incorrect handling of absolute-value comparison operands
+and the untouched half of a `v_fma_f16` destination.
+
+Coin Run checked the two lane permutations and a shared-memory exchange in
+which some threads exit before the group barrier. All 507 generated instruction
+cases passed on the RTX 4070 Ti SUPER and on AMD using RADV, covering 2,041,192
+input vectors per run. Across the three retail sources, 320 of 336 observed
+instructions now have direct GPU checks. Three additional instructions have
+limited cache probes. [Coin Run verification](../tools/homebrew/README.md#rdna2-verification)
+
+Cold compilation passed for 13/29 FidelityFX shaders, 16/52 BVH shaders and
+43/43 distinct Fortnite fixtures. The FidelityFX failures now start at ten
+unsupported register layouts, five vector OR reductions and one lane read.
+Kernel 27 stops at its 256-thread register layout. Its first table load at
+`0x006c` uses byte offset `0x240`, consistent with raw SRV `t18` at a 32-byte
+descriptor stride. Its shader metadata also declares constant buffer `b1`, raw
+SRV `t17`, five texture SRVs, a static sampler and two UAVs. These bindings and
+the full prepass output still need end-to-end verification.
+The tracker now lists 530 named instructions, with 87 retail-green and 9/122
+green in VOPC. [FidelityFX scan counts](../tools/progress/fsr-mnemonics.txt)
+
+## 2026-11-20 — FSR4 prepass and 16-DLL audit
+
+Kernel 27 now translates through the normal Xbox compute PSO path. The FSPX
+binding analysis follows both descriptor tables and root CBV pairs through
+forward branches. It verifies the conversion to a byte-addressed buffer before
+mapping vector accesses, the PSV bindings before emitting image accesses, and
+the inline sampler against the serialized static sampler.
+
+The retail shader passed texture and quantized tensor readback for reset, mixed
+NaN/finite motion, and valid history on NVIDIA and AMD RADV. The fresh scans
+compiled 14/29 upscaler shaders, 16/52 BVH shaders and 43/43 distinct Fortnite
+fixtures. Six instructions became retail-green, bringing VOPC to 10/122 and
+the full instruction map to 93/530. [Prepass readback](../tools/homebrew/README.md#retail-fidelityfx-prepass)
+
+Of 611 distinct static imports across the 16 DLLs, 610 resolved and
+`xmem!XMemVirtualQuery` was missing. The audit records the distinction between
+missing exports, exported stubs and runtime-loaded service candidates.
+[Per-DLL findings](COMPATIBILITY.md#scarlett-dll-audit)
