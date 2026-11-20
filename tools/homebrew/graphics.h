@@ -133,17 +133,22 @@ struct Frame {
         return 0;
     }
 
-    int finish(bool present = false) {
-        transition(D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    // Copy one frame-sized, four-byte-per-pixel texture already in COPY_SOURCE.
+    void copy_to_readback(ID3D12Resource* resource, DXGI_FORMAT format) {
         D3D12_TEXTURE_COPY_LOCATION dst = {}, src = {};
         dst.pResource = readback.Get();
         dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-        dst.PlacedFootprint.Footprint = {DXGI_FORMAT_R8G8B8A8_UNORM, width, height, 1, pitch};
-        src.pResource = target.Get();
+        dst.PlacedFootprint.Footprint = {format, width, height, 1, pitch};
+        src.pResource = resource;
         src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         using CopyX = void (WINAPI*)(ID3D12GraphicsCommandList*, const D3D12_TEXTURE_COPY_LOCATION*,
                                      UINT, UINT, UINT, const D3D12_TEXTURE_COPY_LOCATION*, const D3D12_BOX*, UINT);
         xbox_method<CopyX>(list.Get(), 83)(list.Get(), &dst, 0, 0, 0, &src, nullptr, 0);
+    }
+
+    int finish(bool present = false) {
+        transition(D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        copy_to_readback(target.Get(), DXGI_FORMAT_R8G8B8A8_UNORM);
         transition(D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
         CHECK(list->Close());
         ID3D12CommandList* work[] = {list.Get()};
@@ -225,7 +230,7 @@ struct Mesh {
         return 0;
     }
 
-    int draw(Frame& frame, const void* vertex_data, UINT count, UINT stride,
+    int bind(Frame& frame, const void* vertex_data, UINT count, UINT stride,
              const D3D12_GPU_DESCRIPTOR_HANDLE* tables = nullptr, UINT table_count = 0) {
         if (UINT64(count) * stride > capacity_bytes) {
             std::fputs("Mesh exceeds vertex buffer capacity\n", stderr);
@@ -254,7 +259,13 @@ struct Mesh {
         list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         list->RSSetViewports(1, &viewport);
         list->RSSetScissorRects(1, &scissor);
-        list->DrawInstanced(count, 1, 0, 0);
+        return 0;
+    }
+
+    int draw(Frame& frame, const void* vertex_data, UINT count, UINT stride,
+             const D3D12_GPU_DESCRIPTOR_HANDLE* tables = nullptr, UINT table_count = 0) {
+        if (bind(frame, vertex_data, count, stride, tables, table_count)) return 1;
+        frame.list->DrawInstanced(count, 1, 0, 0);
         return 0;
     }
 };

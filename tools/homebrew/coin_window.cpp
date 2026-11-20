@@ -2,6 +2,7 @@
 #define UNICODE
 #include "graphics.h"
 #include "triangle_shaders.h"
+#include "compute_probe.h"
 #include "coin_scene.h"
 #include "coin_controller.h"
 #include "coin_audio.h"
@@ -200,6 +201,288 @@ static int sample_mip(BoardRenderer& renderer, ID3D12Resource* texture, DXGI_FOR
     D3D12_RANGE no_writes = {};
     frame.readback->Unmap(0, &no_writes);
     return 0;
+}
+
+template<typename ExpectedPixel>
+static int check_readback(Frame& frame, const char* operation, UINT slot, ExpectedPixel expected_pixel) {
+    void* mapped = nullptr;
+    D3D12_RANGE read{0, size_t(frame.pitch) * frame.height};
+    CHECK(frame.readback->Map(0, &read, &mapped));
+    unsigned mismatches = 0;
+    for (LONG y = 0; y < LONG(frame.height); ++y) {
+        for (LONG x = 0; x < LONG(frame.width); ++x) {
+            const auto expected = expected_pixel(x, y);
+            const auto* pixel = static_cast<const BYTE*>(mapped) + y * frame.pitch + 4 * x;
+            if (std::memcmp(pixel, expected.data(), 4) == 0) continue;
+            if (++mismatches == 1) {
+                std::fprintf(stderr, "Slot %u at (%ld,%ld): got %u %u %u %u, expected %u %u %u %u\n",
+                             slot, x, y, pixel[0], pixel[1], pixel[2], pixel[3],
+                             expected[0], expected[1], expected[2], expected[3]);
+            }
+        }
+    }
+    D3D12_RANGE no_writes{};
+    frame.readback->Unmap(0, &no_writes);
+    std::printf("%s slot %u: %u/%u texels match\n", operation, slot,
+                frame.width * frame.height - mismatches, frame.width * frame.height);
+    return mismatches != 0;
+}
+
+static int check_rect_readback(Frame& frame, const char* operation, UINT slot, const D3D12_RECT& rect,
+                               Color expected_base, Color expected_inside) {
+    return check_readback(frame, operation, slot, [&](LONG x, LONG y) {
+        return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom ? expected_inside : expected_base;
+    });
+}
+
+// Use separate CPU-only and shader-visible copies of the same UAV descriptor.
+template<typename T>
+static int check_uav_clear(Frame& frame, UINT slot, DXGI_FORMAT format,
+                           const T (&base)[4], const T (&inside)[4],
+                           Color expected_base, Color expected_inside) {
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    heap.CreationNodeMask = heap.VisibleNodeMask = 1;
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = frame.width;
+    desc.Height = frame.height;
+    desc.DepthOrArraySize = desc.MipLevels = desc.SampleDesc.Count = 1;
+    desc.Format = format;
+    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    ComPtr<ID3D12Resource> texture;
+    CHECK(frame.dev->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+          D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&texture)));
+    D3D12_DESCRIPTOR_HEAP_DESC hd{};
+    hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    hd.NumDescriptors = 1;
+    ComPtr<ID3D12DescriptorHeap> cpu_heap, gpu_heap;
+    CHECK(frame.dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&cpu_heap)));
+    hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    CHECK(frame.dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&gpu_heap)));
+    using Handle = UINT64 (WINAPI*)(ID3D12DescriptorHeap*);
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu{xbox_method<Handle>(cpu_heap.Get(), 9)(cpu_heap.Get())};
+    D3D12_CPU_DESCRIPTOR_HANDLE dest{xbox_method<Handle>(gpu_heap.Get(), 9)(gpu_heap.Get())};
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu{xbox_method<Handle>(gpu_heap.Get(), 10)(gpu_heap.Get())};
+    frame.dev->CreateUnorderedAccessView(texture.Get(), nullptr, nullptr, cpu);
+    frame.dev->CopyDescriptorsSimple(1, dest, cpu, hd.Type);
+    auto* list = frame.list.Get();
+    using Bind = void (WINAPI*)(ID3D12GraphicsCommandList*, UINT, ID3D12DescriptorHeap* const*);
+    xbox_method<Bind>(list, 32)(list, 1, gpu_heap.GetAddressOf());
+    using Clear = void (WINAPI*)(ID3D12GraphicsCommandList*, D3D12_GPU_DESCRIPTOR_HANDLE,
+                                 D3D12_CPU_DESCRIPTOR_HANDLE, ID3D12Resource*, const T*, UINT, const D3D12_RECT*);
+    auto clear = xbox_method<Clear>(list, slot);
+    clear(list, gpu, cpu, texture.Get(), base, 0, nullptr);
+    D3D12_RESOURCE_BARRIER order{};
+    order.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    order.UAV.pResource = texture.Get();
+    list->ResourceBarrier(1, &order);
+    constexpr D3D12_RECT rect{2, 1, 7, 4};
+    clear(list, gpu, cpu, texture.Get(), inside, 1, &rect);
+    D3D12_RESOURCE_BARRIER transition{};
+    transition.Transition = {texture.Get(), 0, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE};
+    list->ResourceBarrier(1, &transition);
+    frame.copy_to_readback(texture.Get(), format);
+    CHECK(list->Close());
+    ID3D12CommandList* work[] = {list};
+    frame.queue->ExecuteCommandLists(1, work);
+    if (frame.wait_for_gpu()) return 1;
+
+    return check_rect_readback(frame, "UAV clear", slot, rect, expected_base, expected_inside);
+}
+
+static int check_uav_clears() {
+    Frame frame;
+    if (frame.init(9, 6)) return 1;
+    const UINT uint_base[] = {17, 93, 201, 255}, uint_rect[] = {250, 42, 3, 88};
+    int result = check_uav_clear(frame, 53, DXGI_FORMAT_R8G8B8A8_UINT, uint_base, uint_rect,
+                                 {17,93,201,255}, {250,42,3,88});
+    if (result) return result;
+    CHECK(frame.alloc->Reset());
+    CHECK(frame.list->Reset(frame.alloc.Get(), nullptr));
+    // Avoid halfway values when the driver quantizes float clears to UNORM8.
+    const float float_base[] = {0.f, 0.25f, 0.4f, 1.f}, float_rect[] = {1.f, 0.f, 0.75f, 0.25f};
+    return check_uav_clear(frame, 54, DXGI_FORMAT_R8G8B8A8_UNORM, float_base, float_rect,
+                           {0,64,102,255}, {255,0,191,64});
+}
+
+// Xbox DCC options start in the desktop description's four bytes of tail padding.
+struct CommittedDescX {
+    D3D12_RESOURCE_DIMENSION dimension;
+    UINT64 alignment, width;
+    UINT height;
+    UINT16 depth_or_array_size, mip_levels;
+    DXGI_FORMAT format;
+    DXGI_SAMPLE_DESC samples;
+    D3D12_TEXTURE_LAYOUT layout;
+    UINT flags, dcc_options;
+    UINT64 reserved;
+};
+static_assert(offsetof(CommittedDescX, dcc_options) == 0x34 && sizeof(CommittedDescX) == 0x40);
+
+static int check_scarlett_copy() {
+    Frame frame;
+    if (frame.init(9, 6) || frame.begin({1, 0, 0, 1})) return 1;
+    const auto format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    heap.CreationNodeMask = heap.VisibleNodeMask = 1;
+    CommittedDescX desc{};
+    desc.dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.width = frame.width;
+    desc.height = frame.height;
+    desc.depth_or_array_size = desc.mip_levels = desc.samples.Count = 1;
+    desc.format = format;
+    using Create = HRESULT (WINAPI*)(ID3D12Device*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS,
+        const CommittedDescX*, D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*, REFIID, void**);
+    auto create = xbox_method<Create>(frame.dev.Get(), 76);
+    const auto state = D3D12_RESOURCE_STATE_COPY_DEST;
+    ComPtr<ID3D12Resource> source, intermediate;
+    desc.dcc_options = 3;
+    CHECK(create(frame.dev.Get(), &heap, D3D12_HEAP_FLAG_NONE, &desc, state, nullptr, IID_PPV_ARGS(&source)));
+    desc.layout = static_cast<D3D12_TEXTURE_LAYOUT>(0x101);
+    desc.flags = 0xc00005;
+    desc.dcc_options = 1;
+    CHECK(create(frame.dev.Get(), &heap, D3D12_HEAP_FLAG_NONE, &desc, state, nullptr, IID_PPV_ARGS(&intermediate)));
+    if (!source || !intermediate) {
+        std::fputs("Slot 76 returned success with a null resource\n", stderr);
+        return 1;
+    }
+    const auto actual = intermediate->GetDesc();
+    if (actual.Width != frame.width || actual.Height != frame.height || actual.Format != format ||
+        actual.Layout != D3D12_TEXTURE_LAYOUT_UNKNOWN ||
+        actual.Flags != (D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)) {
+        std::fputs("Slot 76 returned an unexpected texture description\n", stderr);
+        return 1;
+    }
+
+    desc.reserved = 1;
+    ComPtr<ID3D12Resource> unsupported;
+    if (create(frame.dev.Get(), &heap, D3D12_HEAP_FLAG_NONE, &desc, state, nullptr,
+               IID_PPV_ARGS(&unsupported)) != E_NOTIMPL || unsupported) {
+        std::fputs("Slot 76 accepted an unknown descriptor extension\n", stderr);
+        return 1;
+    }
+
+    heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    auto buffer = frame.readback->GetDesc();
+    ComPtr<ID3D12Resource> upload;
+    CHECK(frame.dev->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer,
+          D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload)));
+    BYTE* data = nullptr;
+    D3D12_RANGE no_reads{};
+    CHECK(upload->Map(0, &no_reads, reinterpret_cast<void**>(&data)));
+    for (UINT y = 0; y < frame.height; ++y) {
+        for (UINT x = 0; x < frame.width; ++x) {
+            Color color = {BYTE(x * 17), BYTE(y * 31), 93, 255};
+            std::memcpy(data + y * frame.pitch + x * 4, color.data(), 4);
+        }
+    }
+    upload->Unmap(0, nullptr);
+    D3D12_TEXTURE_COPY_LOCATION src{}, mid{}, dst{}, footprint{};
+    src.pResource = source.Get();
+    mid.pResource = intermediate.Get();
+    dst.pResource = frame.target.Get();
+    footprint.pResource = upload.Get();
+    footprint.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    footprint.PlacedFootprint.Footprint = {format, frame.width, frame.height, 1, frame.pitch};
+    auto* list = frame.list.Get();
+    using Copy = void (WINAPI*)(ID3D12GraphicsCommandList*, const D3D12_TEXTURE_COPY_LOCATION*,
+        UINT, UINT, UINT, const D3D12_TEXTURE_COPY_LOCATION*, const D3D12_BOX*, UINT);
+    auto copy = xbox_method<Copy>(list, 85);
+    copy(list, &src, 0, 0, 0, &footprint, nullptr, 0);
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Transition = {source.Get(), 0, state, D3D12_RESOURCE_STATE_COPY_SOURCE};
+    list->ResourceBarrier(1, &barrier);
+    copy(list, &mid, 0, 0, 0, &src, nullptr, 0);
+    barrier.Transition.pResource = intermediate.Get();
+    list->ResourceBarrier(1, &barrier);
+    frame.transition(D3D12_RESOURCE_STATE_RENDER_TARGET, state);
+    // Move a nonuniform 5x4 rectangle to a different origin.
+    const D3D12_BOX box{3, 2, 0, 8, 6, 1};
+    copy(list, &dst, 1, 1, 0, &mid, &box, 0);
+    frame.transition(state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    if (frame.finish()) return 1;
+    return check_readback(frame, "Scarlett copy", 85, [](LONG x, LONG y) -> Color {
+        if (x < 1 || x >= 6 || y < 1 || y >= 5) return {255, 0, 0, 255};
+        return {BYTE((x + 2) * 17), BYTE((y + 1) * 31), 93, 255};
+    });
+}
+
+static int check_indirect() {
+    Frame frame;
+    if (frame.init(12, 6) || frame.begin({1, 0, 0, 1})) return 1;
+    Mesh mesh;
+    const float vertices[][4] = {{-1,-1,0,1}, {-1,3,0,1}, {3,-1,0,1}};
+    const D3D12_INPUT_ELEMENT_DESC position = {"POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT};
+    if (mesh.init(frame.dev.Get(), {triangle_vs, sizeof(triangle_vs)}, {triangle_ps, sizeof(triangle_ps)},
+                  &position, 1, sizeof(vertices)) || mesh.bind(frame, vertices, 3, sizeof(vertices[0]))) return 1;
+
+    D3D12_INDIRECT_ARGUMENT_DESC arg{};
+    arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
+    D3D12_COMMAND_SIGNATURE_DESC desc{sizeof(D3D12_DRAW_ARGUMENTS), 1, &arg, 0};
+    ComPtr<ID3D12CommandSignature> signature;
+    CHECK(frame.dev->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&signature)));
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    heap.CreationNodeMask = heap.VisibleNodeMask = 1;
+    auto buffer = frame.readback->GetDesc();
+    ComPtr<ID3D12Resource> args;
+    CHECK(frame.dev->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer,
+          D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&args)));
+    // Count=0 at byte 4; the four words at byte 16 form the real draw.
+    const UINT payload[] = {1, 0, 0, 0, 3, 1, 0, 0};
+    void* data = nullptr;
+    D3D12_RANGE no_reads{};
+    CHECK(args->Map(0, &no_reads, &data));
+    std::memcpy(data, payload, sizeof(payload));
+    args->Unmap(0, nullptr);
+
+    LONG x = 0;
+    for (auto name : {L"scarlett_commands_legacy.dll", L"scarlett_commands_260402.dll", L"scarlett_commands_261000.dll"}) {
+        HMODULE dll = LoadLibraryW(name);
+        using Record = void (*)(ID3D12GraphicsCommandList*, ID3D12CommandSignature*, ID3D12Resource*, ID3D12Resource*);
+        auto record = dll ? reinterpret_cast<Record>(GetProcAddress(dll, "record_draw")) : nullptr;
+        if (!record) {
+            std::fwprintf(stderr, L"Failed to load record_draw from %ls\n", name);
+            if (dll) FreeLibrary(dll);
+            return 1;
+        }
+        // Each caller paints a different strip. The bottom count-buffer draw must do nothing.
+        D3D12_RECT strip{x, 0, x + 4, 3};
+        frame.list->RSSetScissorRects(1, &strip);
+        record(frame.list.Get(), signature.Get(), args.Get(), nullptr);
+        strip.top = 3;
+        strip.bottom = 6;
+        frame.list->RSSetScissorRects(1, &strip);
+        record(frame.list.Get(), signature.Get(), args.Get(), args.Get());
+        FreeLibrary(dll);
+        x += 4;
+    }
+    if (frame.finish()) return 1;
+    return check_rect_readback(frame, "Indirect draw across three caller modules", 61,
+                               {0,0,12,3}, {255,0,0,255}, {0,255,0,255});
+}
+
+static int check_discard() {
+    Frame frame;
+    if (frame.init(9, 6)) return 1;
+    auto* list = frame.list.Get();
+    using Discard = void (WINAPI*)(ID3D12GraphicsCommandList*, ID3D12Resource*, const D3D12_DISCARD_REGION*);
+    auto discard = xbox_method<Discard>(list, 55);
+    discard(list, frame.target.Get(), nullptr);
+    if (frame.begin({1, 0, 0, 1})) return 1;
+
+    constexpr D3D12_RECT rect{2, 1, 7, 4};
+    const D3D12_DISCARD_REGION region{1, &rect, 0, 1};
+    discard(list, frame.target.Get(), &region);
+    // Discarded data is undefined. Overwrite exactly the region before reading.
+    using Clear = void (WINAPI*)(ID3D12GraphicsCommandList*, D3D12_CPU_DESCRIPTOR_HANDLE,
+                                 const float*, UINT, const D3D12_RECT*);
+    const float green[] = {0, 1, 0, 1};
+    xbox_method<Clear>(list, 52)(list, frame.rtv, green, 1, &rect);
+    if (frame.finish()) return 1;
+    return check_rect_readback(frame, "Discard", 55, rect, {255,0,0,255}, {0,255,0,255});
 }
 
 // Keep mip 1 in COPY_SOURCE across PresentX while mip 0 remains shader-readable.
@@ -495,6 +778,11 @@ static HWND game_window() {
 }
 
 int main(int argc, char** argv) {
+    if (argc == 2 && !std::strcmp(argv[1], "--pso-fallback-test")) return check_compute_fallback();
+    if (argc == 2 && !std::strcmp(argv[1], "--indirect-test")) return check_indirect();
+    if (argc == 2 && !std::strcmp(argv[1], "--scarlett-copy-test")) return check_scarlett_copy();
+    if (argc == 2 && !std::strcmp(argv[1], "--discard-test")) return check_discard();
+    if (argc == 2 && !std::strcmp(argv[1], "--uav-test")) return check_uav_clears();
     const bool gameinput_test = argc == 2 && !std::strcmp(argv[1], "--gameinput-test");
     const bool controller_test = gameinput_test || (argc == 2 && !std::strcmp(argv[1], "--controller-test"));
     const bool scene_test = argc == 2 && !std::strcmp(argv[1], "--3d-test");
@@ -514,7 +802,7 @@ int main(int argc, char** argv) {
     const bool headless = audio_test || placed || (argc == 2 && !std::strcmp(argv[1], "--test"));
     const bool present_test = argc == 2 && !std::strcmp(argv[1], "--present-test");
     if (argc != 1 && !headless && !present_test && !cpu_tiled && !reference && !state_test && !stream_test && !scene_3d) {
-        std::fputs("usage: coin_window.exe [--audio-test | --test | --placed-test | --present-test | --tiled | --tiled-test | --tiled-reference FILE | --mip-reference FILE | --bc1-reference FILE | --rect-{rgba,bc1}-{wide,tall} FILE | --array-{rgba-tall,bc1-wide} FILE | --cube-test FILE | --state-test | --stream-test FILE | --3d | --3d-test | --controller-test | --gameinput-test]\n", stderr);
+        std::fputs("usage: coin_window.exe [--pso-fallback-test | --indirect-test | --scarlett-copy-test | --discard-test | --uav-test | --audio-test | --test | --placed-test | --present-test | --tiled | --tiled-test | --tiled-reference FILE | --mip-reference FILE | --bc1-reference FILE | --rect-{rgba,bc1}-{wide,tall} FILE | --array-{rgba-tall,bc1-wide} FILE | --cube-test FILE | --state-test | --stream-test FILE | --3d | --3d-test | --controller-test | --gameinput-test]\n", stderr);
         return 1;
     }
     HWND window = headless ? nullptr : game_window();

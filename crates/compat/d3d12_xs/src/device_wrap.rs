@@ -447,13 +447,25 @@ unsafe extern "system" fn create_committed_resource(
     let use_riid: *const Guid = &IID_ID3D12RESOURCE;
     // Mask D3D12_RESOURCE_DESC::Flags (offset 0x30) to PC-valid bits: Xbox sets
     // console-only flags (e.g. 0x300000) that PC D3D12 rejects, removing the device.
-    let mut desc_copy = [0u8; 0x40];
+    #[repr(align(8))]
+    struct AlignedDesc([u8; 0x38]);
+    let mut storage = AlignedDesc([0; 0x38]);
+    let desc_copy = &mut storage.0;
     let desc_ptr = if pdesc.is_null() {
         pdesc
     } else {
-        // D3D12_RESOURCE_DESC occupies 0x38 bytes on x64, including tail padding.
-        unsafe { core::ptr::copy_nonoverlapping(pdesc as *const u8, desc_copy.as_mut_ptr(), 0x38) };
+        // PC fields end at byte 52. The remaining four bytes can contain Xbox DCC options.
+        unsafe { core::ptr::copy_nonoverlapping(pdesc.cast::<u8>(), desc_copy.as_mut_ptr(), 0x34) };
         let flags = u32::from_le_bytes(desc_copy[0x30..0x34].try_into().unwrap());
+        // The Scarlett upscaler selects layout 0x101 for private GPU textures
+        // (April DLL RVA 0x3732). Their backing bytes never cross the API.
+        // D3D12_TEXTURE_LAYOUT_UNKNOWN lets the desktop driver tile them.
+        let dim = u32::from_le_bytes(desc_copy[..4].try_into().unwrap());
+        let layout = u32::from_le_bytes(desc_copy[0x2c..0x30].try_into().unwrap());
+        if dim == 3 && layout == 0x101 && heap_flags == 0 && !pheap.is_null()
+            && unsafe { *pheap } == 1 && flags & 0x10 == 0 {
+            desc_copy[0x2c..0x30].fill(0);
+        }
         const PC_RESOURCE_FLAGS: u32 = 0xFF; // RT|DSV|UAV|DENY_SRV|CROSS_ADAPTER|SIMUL|VIDEO*
         desc_copy[0x30..0x34].copy_from_slice(&(flags & PC_RESOURCE_FLAGS).to_le_bytes());
         desc_copy.as_ptr() as *const u32
@@ -485,6 +497,47 @@ unsafe extern "system" fn create_committed_resource(
             &format!("heapType={htype} dim={dim} width={w} initState={init_state:#x} riid={orig_riid} -> hr={hr:#010x} res={out:p}"));
     }
     hr
+}
+
+/// Device slot 67. The Scarlett upscaler retries slot 62 when offline ACO PSO
+/// deserialization fails. Reporting success here would leave it with a null PSO.
+unsafe extern "system" fn deserialize_compute_pso_x(
+    _this: *mut DeviceWrapper, _desc: *const c_void, _iid: *const Guid, out: *mut *mut c_void,
+) -> i32 {
+    if out.is_null() {
+        return E_POINTER;
+    }
+    unsafe { *out = core::ptr::null_mut() };
+    record("d3d12_xs", "DeserializeComputePipelineStateX", "offline ACO packets unsupported");
+    0x8000_4001u32 as i32 // E_NOTIMPL
+}
+
+/// Device slot 76. Both Scarlett upscalers pass the ordinary resource fields through
+/// Flags at byte 48, followed by DCC options. The PC driver chooses its physical layout.
+unsafe extern "system" fn create_committed_resource_x(
+    this: *mut DeviceWrapper, heap: *const u32, heap_flags: u32, desc: *const u32,
+    state: u32, clear: *const c_void, iid: *const Guid, out: *mut *mut c_void,
+) -> i32 {
+    if !out.is_null() {
+        unsafe { *out = core::ptr::null_mut() };
+    }
+    if heap.is_null() || desc.is_null() || iid.is_null() {
+        return E_POINTER;
+    }
+    if unsafe { &*iid } != &IID_ID3D12RESOURCE {
+        return E_NOINTERFACE;
+    }
+    // The public FFX binary enables DCC and force-texture-compatibility (0xc00000).
+    // Leave allocation of compression metadata to the host for this committed resource.
+    let flags = unsafe { *desc.add(12) };
+    let dcc_options = unsafe { *desc.add(13) };
+    let extension = unsafe { desc.add(14).cast::<u64>().read_unaligned() };
+    if flags & !(0x00c0_0000 | 0xff) != 0 || !matches!(dcc_options, 0 | 1 | 3) || extension != 0 {
+        record("d3d12_xs", "CreateCommittedResourceX",
+               &format!("unsupported description: flags={flags:#x} dcc={dcc_options:#x} extension={extension:#x}"));
+        return 0x8000_4001u32 as i32;
+    }
+    unsafe { create_committed_resource(this, heap, heap_flags, desc, state, clear, iid, out) }
 }
 
 // Forwarding thunk: this(rcx) -> this->real; jmp real->vtbl[slot].
@@ -1210,6 +1263,8 @@ fn vtable() -> *const usize {
         v[25] = get_resource_alloc_info as usize; // GetResourceAllocationInfo (null-safe)
         v[17] = create_cbv as usize; // CreateConstantBufferView (256-align size)
         v[27] = create_committed_resource as usize; // CreateCommittedResource (IID subst)
+        v[67] = deserialize_compute_pso_x as usize;
+        v[76] = create_committed_resource_x as usize;
         v[73] = create_command_list_x as usize;  // Xbox command-list create
         if crate::rtcap::enabled() {
             v[20] = create_rtv_traced as usize;

@@ -166,3 +166,48 @@ Honest ledger. Updated continuously.
 - **Binding trace cost.** Diagnostic only; it holds a reference on every buffer and a map
   entry per descriptor. Not suitable for normal runs as written. The same tracking is what
   a run-time check of structured-buffer strides would need.
+
+## Vector-ALU semantics (2026-11-20)
+
+- **Covered by the GPU conformance test** (`tests/valu_conformance.rs`, 207 cases): only
+  single instructions on one host GPU. Not covered: SDWA/DPP forms, `v_readlane` /
+  `v_writelane`, 64-bit ops, `v_movrel*`, interpolation, scalar ALU, and interactions
+  inside larger shaders. Image and buffer ops: see below.
+- **Fused vs. unfused multiply-add is not controlled.** HLSL has no single-precision FMA;
+  `a * b + c` may or may not be fused by DXC/the driver, while the console fuses `v_fma*` /
+  `v_fmac*` and does not fuse `v_mad*` / `v_mac*`. The test accepts either.
+- **DXC's default floating-point assumptions.** Shaders are compiled without `-Gis`; the
+  conformance test caught `x == x` being folded (now avoided), and other NaN-sensitive
+  rewrites inside larger shaders cannot be excluded. Compiling with `-Gis` (and adding the
+  flag to the cache key) is the general fix; its cost and effect in the game are unmeasured.
+- **f32 denormals** are left to the host implementation (inputs with denormals are not
+  tested). The console's denormal mode for these shaders is unknown.
+- **`v_cmpx_*` write only EXEC**, not VCC/SDST. Inferred from LLVM's GFX10 encodings and
+  the ISA guide ("write exec"); not observed on console. If they also wrote VCC, a shader
+  reading VCC after a CMPX would differ.
+- **The console ISA is a mix of GFX10.1 and GFX10.3** (see the 2026-11-20 log): an opcode
+  valid in only one reference is accepted. An opcode whose meaning differs between the two
+  would be mistranslated; none was found among the table entries.
+- **Transcendentals** (`exp`, `log`, `rcp`, `rsq`, `sqrt`, `sin`, `cos`) match within the
+  D3D minimum precision, not bit-exactly; `sin`/`cos` only for |x| ≤ 64 turns (the console's
+  results for large arguments are not reproduced).
+
+## Vector-memory semantics (2026-11-20)
+
+- **Covered by `tests/mem_conformance.rs`** (71 cases, including a packed load followed by integer arithmetic).
+  Not covered: image atomics, `image_get_resinfo` / `image_get_lod`, MSAA loads, 3D / array
+  / cube gathers, `_c` gathers, depth-compare with LOD or bias, filtering other than point,
+  border colours, sRGB / normalised / compressed formats (all cases use 32-bit float
+  texels), buffer atomics, byte / short buffer ops, MUBUF with OFFEN, constant-buffer
+  MUBUF.
+- **Cube arrays are not handled.** Sampled cube images address a face as `slice * 8 + face`
+  (ISA §8.2.4); the translation declares `TextureCube` and `tb_cube_dir` reads faces 0..5.
+- **D16 integer formats and TFE/LWE/LDS are refused**, not translated. A shader using them
+  fails translation with a message naming the bit.
+- **D16 rounding** of float results is round-to-nearest-even of the D3D f32 result. For
+  formats with more precision than f16 this matches a direct hardware conversion only if
+  the hardware also rounds to nearest even (not documented). The high half of the last
+  VGPR with an odd component count is written as 0; the hardware's value is unspecified.
+- **UNORM sampling** normalises by mip 0 of the view; the console's behaviour for
+  unnormalised coordinates on mipped views, and samplers that force unnormalised
+  coordinates through the S#, are not modelled.

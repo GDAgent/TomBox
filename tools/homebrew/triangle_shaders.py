@@ -69,6 +69,17 @@ if __name__ == "__main__":
         end,
     ], signature(("SV_Position", 1, 0)), signature(("SV_Target", 64, 0))))
 
+    # One compute-visible UAV table at u0; group ID X follows its pointer in s5.
+    compute_root = words(1, 1, 24, 0, 0, 0, 0, 0, 36, 1, 44, 1, 1, 0, 0, 0)
+    emit("fallback_cs", shader(5, [
+        0xF4080302, 0xFA000000,         # s_load_dwordx4 s[12:15], s[4:5], 0
+        0xBF8CC07F,                     # s_waitcnt lgkmcnt(0)
+        0x7E020205,                     # v_mov_b32 v1, s5
+        0x7E0402FF, 0x57AC71A9,         # v_mov_b32 v2, result
+        0xE0702000, 0x80030201,         # buffer_store_dword v2, v1, s[12:15], 0 idxen
+        end,
+    ], signature(), signature(), compute_root))
+
     # Pass the second vertex attribute (v8..v11) to the pixel stage as TEXCOORD0.
     emit("board_vs", shader(1, [
         0xF80000CF, 0x07060504,  # exp pos0 v4, v5, v6, v7

@@ -965,6 +965,126 @@ Not done: SRVs created before a slot is rebound still show as "no descriptor rec
 some tables (scene depth); `R16_UINT` targets are not decoded by the capture; whole-archive
 DXC sweep not rerun with these changes.
 
+## 2026-11-20 — Vector-ALU conformance on the GPU; opcode tables checked against AMD's specs
+
+Goal: find translator semantic bugs systematically instead of one at a time in the lobby.
+Done without game data (no dump on this machine); everything below runs from the repo.
+
+**Opcode tables vs. AMD's machine-readable ISA specs.** `tools/dev/isa_table_check.py`
+compares `rdna2/mnem.rs` with GPUOpen's `amdgpu_isa_rdna1.xml` / `amdgpu_isa_rdna2.xml`.
+Both references are needed: the 46 shader fixtures contain GFX10.1-only opcodes (VOP2
+`v_mac_f32` ×9, `v_madak_f32` ×37; VOP3 `v_mad_f32` ×15, `v_mad_legacy_f32` ×78) next to
+RDNA2 ones, so the console ISA is neither reference alone (opcode census:
+`cargo run --release -p tombox-xshader --example opstat -- <shaders>`). Wrong entries found
+and fixed (all unused by the fixtures, so latent for this title):
+- VOPC 0xd0–0xd7 are `v_cmpx_*_u32` (write EXEC); they were decoded as `v_cmp_{u..tru}_f16`
+  (write VCC) — a silent miscompile. The f16 U..TRU compares are at 0xe8–0xef. All 32-bit
+  and f16 `v_cmpx_*` forms are now decoded and translated (EXEC only, see TECHNICAL_DEBT).
+- FLAT 0x0e/0x0f: `load_dwordx4` / `load_dwordx3` were swapped (the same mistake as the
+  MUBUF swap of 2026-11-17).
+- VOP2 0x36–0x38 are `v_fmac/fmamk/fmaak_f16`, not `mac/madmk/madak`.
+- VOP3 0x16b does not exist in either reference (was labelled `v_mul_lo_i32`).
+After the fixes all 496 entries match (`python -I tools/dev/isa_table_check.py <xml dir>`).
+
+**GPU conformance harness.** `hlsl::translate_valu_probe` wraps hand-assembled VALU words
+in a compute shader using the same per-instruction emitter as real shaders; `gpu::Gpu` is a
+minimal D3D12 compute runner (raw vtables). `tests/valu_conformance.rs` runs 207 cases
+(VOP1/VOP2/VOP3/VOPC/VOP3P, modifiers, carries, compares including CMPX) over ~3,000–6,000
+input vectors each (special values + random) against reference models written from the RDNA2
+ISA guide (2020-11-30, downloaded from docs.amd.com) and compares on this machine's GPU.
+First run: 179 pass, 23 mismatch, 5 refused. Findings:
+- **Half-float rounding.** RDNA2 rounds f32→f16 to nearest even; D3D requires round-toward-
+  zero for float-to-smaller-float conversion (D3D11.3 functional spec §3.2.2), and HLSL
+  `f32tof16` on this GPU truncates accordingly. Every f16 result (`v_cvt_f16_f32`, f16
+  arithmetic, packed f16, `v_cvt_f16_{u16,i16}`, `v_fma_mix{lo,hi}`) was 1 ulp off in about
+  a third of cases. Now an integer-only round-to-nearest-even helper (`tb_f16_rne`).
+- **`v_cvt_pkrtz_f16_f32`** is round-toward-zero; it used `f32tof16`, whose rounding is the
+  driver's (RTZ by the D3D rule, so this GPU already matched). Now an explicit integer-only
+  RTZ (`tb_f16_rtz`). *Correction of a working hypothesis:* this does not explain the bloom
+  infinities — D3D also clamps out-of-range floats written to 16-bit float render targets to
+  ±65504 (spec §3.2.2), the same as the console's RTZ pack.
+- **`v_cmp_o/u_{f32,f16}` (+CMPX) were wrong for NaN:** `x == x` is folded to true under
+  DXC's default floating-point assumptions. Now bit-level NaN tests (`tb_isnan`). Relevance:
+  HLSL `isnan` guards compile to these; with the fold they never fired.
+- **`v_cmp_lg` / `nlg`** used `!=` (unordered); LG is the ordered not-equal. Fixed.
+- **`v_bfe_i32`** was wrong when offset + width > 32 (a shift amount wrapped); now LLVM
+  AMDGPU's definition (the guide's pseudocode omits the sign extension).
+- **`v_med3_f32`** with a NaN operand now follows the ISA (min3 of the three).
+- **`v_cvt_i16_f16` / `v_cvt_u16_f16`** of NaN now give 0; **`v_fract_f16`** stays below 1.
+- Newly translated (were refused): `v_ffbh_i32`, `v_mul_hi_i32_i24`, `v_mul_hi_u32_u24`,
+  `v_alignbyte_b32`, `v_ldexp_f32`.
+- `v_mad_legacy_f32` mismatches were denormal products flushed by the GPU; the harness
+  accepts a flushed denormal product (D3D leaves f32 denormals to the implementation).
+
+**Result:** 207/207 cases pass; `cargo test --release` (workspace) passes; all 43 unique
+fixture shaders translate and compile with DXC (`xscan --compile 1` over the concatenated
+fixtures). Also fixed: compare type inference treated `v_cmp_f_i32` as float evidence.
+
+**Not verified:** none of this has been run in the game (no dump here). Whether the
+`v_cmp_u` fix affects the lobby's bloom depends on whether its shaders use that opcode —
+the next run should count it with `opstat` over the frame's shaders.
+
+## 2026-11-20 (later) — Image and buffer conformance on the GPU; MIMG D16 / A16 / UNORM
+
+Goal: extend the conformance harness from vector ALU to vector memory (the handoff's next
+step), still without game data.
+
+**Harness.** `gpu::Gpu::run_bound` adds descriptor heaps, textures (1D/1D-array/2D/2D-array/
+3D/cube, mips; uploaded with `GetCopyableFootprints` + `CopyTextureRegion`), typed /
+structured / raw buffers, samplers, null descriptors for unused slots and UAV readback.
+`hlsl::translate_mem_probe` builds a compute probe whose root signature puts SRV, sampler
+and UAV tables in s4/s5/s6; the probe code `s_load`s T#/S#/V# from them, so descriptors are
+resolved by the same dataflow as game shaders and declared by the same code
+(`resource_decls`, split out of `finish` unchanged). `tests/mem_conformance.rs`: 70 cases,
+each one MIMG/MUBUF instruction over textures whose texels encode their own address, with
+exact expected values (point sampling at texel centres, gathers at texel corners, integer
+LODs from power-of-two gradients or quad spacing). Implicit-LOD sampling (`image_sample`,
+`_b`, `_cl`) is compiled as `cs_6_6` (compute quad derivatives) and skipped on devices
+without shader model 6.6. Run on an AMD Radeon RX 6600 XT (driver 32.0.21045.29003).
+
+**Passed as translated:** `image_load` / `image_load_mip` on every dimension, all 15 DMASKs
+and out-of-bounds texels; `image_sample_lz` / `_l` / `_d` (NSA) / `_lz_o` (offsets −8..7);
+cube `(s, t, face)` addressing via `tb_cube_dir`; `image_sample_c_lz` (operand order and
+replication); `image_gather4_lz` (channel select and texel order) and `_lz_o` with constant
+and run-time offsets; `image_store` / UAV `image_load`; `buffer_load_format_x/xyz/xyzw`,
+`buffer_store_format_xyzw`, structured `buffer_load_dword{,x3}` and `buffer_store_dwordx4`,
+including out-of-range indices.
+
+**Found: MIMG bits that were silently ignored.** The decoder and emitter never looked at D16
+(dword1[31]), A16 (dword1[30]), UNORM (dword0[12]), TFE (dword0[16]) or LWE (dword0[17])
+(positions from AMD's machine-readable RDNA2 spec; meaning from the ISA guide, Table 41).
+A shader using them got wrong values without any diagnostic:
+- D16 results are now f16 (round to nearest even) packed two per VGPR, for loads, samples,
+  gathers and compares; D16 stores unpack halves. D16 on integer-typed images is refused.
+- A16 addresses: 16-bit uints (no sampler) or f16s (with sampler) packed two per VGPR. The
+  offset and z-compare dwords stay 32-bit; the bias is an f16 in its own dword; derivatives
+  stay 32-bit (16-bit ones are the separate `_g16` opcodes). The bias / derivative layout is
+  not in the ISA guide; it is taken from Mesa's ACO (`aco_select_nir.cpp` `visit_tex`,
+  `aco_isel_helpers.cpp` `emit_pack_v1`, mesa af38c52), which emits these encodings.
+- UNORM with a sampler: coordinates are divided by the view's mip-0 size (`GetDimensions`).
+  Refused on cube maps.
+- TFE / LWE (status dword after the data) are refused. MUBUF LDS (dword0[16]) and TFE
+  (dword1[23]) are refused too.
+None of the 47 committed fixture shaders sets D16, A16, TFE, LWE or MUBUF LDS (`opstat`
+now tags these bits); UNORM appears only on loads/stores, where the ISA requires it. So
+there is no evidence yet that the title hits these paths; the full shader archive has not
+been counted.
+
+**Gather order.** Not in the ISA guide. Mesa's ACO returns the `image_gather4` vec4 to
+Vulkan/GL `textureGather` unreordered (outside a GFX8-and-older integer-cube workaround),
+and Vulkan/GL use D3D's order, so the translation's direct `Gather*` mapping is right.
+
+**Also:** DXC errors now keep every error line (validation failures used to report only
+"validation errors"); `Gpu::shader_model()`.
+
+**Result:** `cargo test --release` (workspace) passes; all 43 unique fixture shaders still
+translate and compile (`xscan --compile 1`). Their HLSL is unchanged except for
+declaration order, which differs between runs of the same build (see TECHNICAL_DEBT).
+
+**Not verified:** nothing here has run in the game. The cube-array face encoding
+(`slice * 8 + face` for sampled cubes, ISA §8.2.4) is not handled: `tb_cube_dir` takes
+faces 0..5 only.
+
 ## 2026-11-20 — Deterministic translation
 
 The same shader could translate to differently ordered HLSL from one run to the next: the
