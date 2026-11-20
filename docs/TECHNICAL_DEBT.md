@@ -211,7 +211,3 @@ Honest ledger. Updated continuously.
 - **UNORM sampling** normalises by mip 0 of the view; the console's behaviour for
   unnormalised coordinates on mipped views, and samplers that force unnormalised
   coordinates through the S#, are not modelled.
-- **Translation output is not deterministic.** Loop-flag declarations in `emit_body` come
-  from a `HashMap` iteration, so the same shader can translate to differently ordered HLSL
-  in different runs, and the compiled-shader cache (keyed by HLSL text) misses. Observed on
-  6 of 43 fixtures. Fix: emit in a sorted order.

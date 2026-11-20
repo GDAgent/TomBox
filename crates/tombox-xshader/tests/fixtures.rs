@@ -74,3 +74,29 @@ fn fixtures_translate_to_hlsl() {
     assert!(cs.hlsl.contains("[numthreads(4, 4, 4)]"));
     assert!(cs.hlsl.contains("RWTexture3D<float4> uav0 : register(u0)"));
 }
+
+/// The same shader must always translate to the same HLSL: the runtime's compiled-shader
+/// cache is keyed by the HLSL text. Every `HashMap` gets its own random seed, so iterating
+/// one while emitting shows up as differences between translations even within one process
+/// (observed: loop-flag declarations in 6 of the fixtures).
+#[test]
+fn fixtures_translate_deterministically() {
+    use tombox_xshader::hlsl::translate;
+    let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    dir.push("../../analysis/shaders");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("analysis/shaders") {
+        let p = entry.unwrap().path();
+        if p.extension().and_then(|e| e.to_str()) != Some("dxbc") {
+            continue;
+        }
+        let Ok(ex) = extract(&std::fs::read(&p).unwrap()) else { continue };
+        let Ok(first) = translate(&ex) else { continue };
+        for _ in 0..8 {
+            let again = translate(&ex).expect("translates once, translates again");
+            assert!(again.hlsl == first.hlsl, "{}: translation differs between runs", p.display());
+        }
+        checked += 1;
+    }
+    assert!(checked >= 40, "only {checked} fixtures translated");
+}

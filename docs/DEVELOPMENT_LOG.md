@@ -1084,3 +1084,13 @@ declaration order, which differs between runs of the same build (see TECHNICAL_D
 **Not verified:** nothing here has run in the game. The cube-array face encoding
 (`slice * 8 + face` for sampled cubes, ISA §8.2.4) is not handled: `tb_cube_dir` takes
 faces 0..5 only.
+
+## 2026-11-20 — Deterministic translation
+
+The same shader could translate to differently ordered HLSL from one run to the next: the
+loop-flag declarations of `emit_body` came from iterating a `HashMap`. The compiled-shader
+cache is keyed by the HLSL text, so affected shaders missed the cache and were compiled
+again at every game start (6 of 43 fixtures differed between two runs). The loop list is
+now sorted. `tests/fixtures.rs::fixtures_translate_deterministically` translates every
+fixture nine times and requires identical output; it fails without the fix. Not measured
+in game: how many of the title's shaders were affected, and the start-up time saved.
