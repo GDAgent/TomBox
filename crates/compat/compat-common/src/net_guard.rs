@@ -9,8 +9,10 @@
 //!   * **deny (default)** — every name resolution, outbound connect/sendto and WinHTTP
 //!     connection fails locally. Resolutions that cannot leave the machine are passed
 //!     through: a null/empty node (the wildcard or loopback address a socket binds to, e.g.
-//!     `getaddrinfo(NULL, port, AI_PASSIVE)`), `localhost`, and IP literals. Denying those
-//!     leaves a title unable to open even a local socket.
+//!     `getaddrinfo(NULL, port, AI_PASSIVE)`), `localhost`, this machine's own names, and IP
+//!     literals. `connect` / `WSAConnect` / `sendto` / `WSASendTo` are allowed towards
+//!     loopback only (a title talking to its own sockets). Denying those leaves a title
+//!     unable to start even a local UDP peer.
 //!   * **redirect** — `TOMBOX_NET_REDIRECT=<host>` (the project owner's own server). Every
 //!     host name the title asks for is replaced by `<host>`:
 //!       - `getaddrinfo` / `GetAddrInfoW` / `GetAddrInfoExW/A` / `gethostbyname` /
@@ -255,6 +257,50 @@ fn local_only(name: &str) -> bool {
     n.is_empty() || n.eq_ignore_ascii_case("localhost") || n.parse::<std::net::IpAddr>().is_ok()
 }
 
+/// This machine's own names resolve from its interface list, without a name server.
+fn local_or_own(name: &str) -> bool {
+    local_only(name) || local_names().iter().any(|l| l.eq_ignore_ascii_case(name.trim()))
+}
+
+/// Deny mode: loopback destinations only (and no explicit destination on a connected socket).
+unsafe fn loopback_dest(sa: *const u8, len: i32) -> bool {
+    sa.is_null() || sockaddr_ip(sa, len).is_some_and(|ip| is_loopback(&ip))
+}
+
+unsafe extern "system" fn d_connect(s: usize, name: *const u8, len: i32) -> i32 {
+    if !loopback_dest(name, len) {
+        deny_dest_why("connect", name, len, "not loopback");
+        return -1;
+    }
+    orig!(H_CONNECT, fn(usize, *const u8, i32) -> i32)(s, name, len)
+}
+
+unsafe extern "system" fn d_wsaconnect(s: usize, name: *const u8, len: i32, a: *mut c_void, b: *mut c_void, c: *mut c_void, d: *mut c_void) -> i32 {
+    if !loopback_dest(name, len) {
+        deny_dest_why("WSAConnect", name, len, "not loopback");
+        return -1;
+    }
+    orig!(H_WSACONNECT, fn(usize, *const u8, i32, *mut c_void, *mut c_void, *mut c_void, *mut c_void) -> i32)(s, name, len, a, b, c, d)
+}
+
+unsafe extern "system" fn d_sendto(s: usize, buf: *const u8, len: i32, flags: i32, to: *const u8, tolen: i32) -> i32 {
+    if !loopback_dest(to, tolen) {
+        deny_dest_why("sendto", to, tolen, "not loopback");
+        return -1;
+    }
+    orig!(H_SENDTO, fn(usize, *const u8, i32, i32, *const u8, i32) -> i32)(s, buf, len, flags, to, tolen)
+}
+
+unsafe extern "system" fn d_wsasendto(
+    s: usize, bufs: *const c_void, count: u32, sent: *mut u32, flags: u32, to: *const u8, tolen: i32, ov: *mut c_void, routine: *const c_void,
+) -> i32 {
+    if !loopback_dest(to, tolen) {
+        deny_dest_why("WSASendTo", to, tolen, "not loopback");
+        return -1;
+    }
+    orig!(H_WSASENDTO, fn(usize, *const c_void, u32, *mut u32, u32, *const u8, i32, *mut c_void, *const c_void) -> i32)(s, bufs, count, sent, flags, to, tolen, ov, routine)
+}
+
 fn deny_resolution(api: &str, name: &str) -> i32 {
     note(&format!("name resolution ({api} '{name}')"));
     unsafe { SetLastError(WSAHOST_NOT_FOUND as u32) };
@@ -263,7 +309,7 @@ fn deny_resolution(api: &str, name: &str) -> i32 {
 
 unsafe extern "system" fn d_getaddrinfo(node: *const u8, service: *const u8, hints: *const c_void, res: *mut *mut u8) -> i32 {
     let f = orig!(H_GETADDRINFO, fn(*const u8, *const u8, *const c_void, *mut *mut u8) -> i32);
-    if node.is_null() || local_only(&cstr(node)) {
+    if node.is_null() || local_or_own(&cstr(node)) {
         return f(node, service, hints, res);
     }
     deny_resolution("getaddrinfo", &cstr(node))
@@ -271,7 +317,7 @@ unsafe extern "system" fn d_getaddrinfo(node: *const u8, service: *const u8, hin
 
 unsafe extern "system" fn d_getaddrinfow(node: *const u16, service: *const u16, hints: *const c_void, res: *mut *mut u8) -> i32 {
     let f = orig!(H_GETADDRINFOW, fn(*const u16, *const u16, *const c_void, *mut *mut u8) -> i32);
-    if node.is_null() || local_only(&wstr(node)) {
+    if node.is_null() || local_or_own(&wstr(node)) {
         return f(node, service, hints, res);
     }
     deny_resolution("GetAddrInfoW", &wstr(node))
@@ -282,7 +328,7 @@ unsafe extern "system" fn d_getaddrinfoexw(
     timeout: *const c_void, ov: *mut c_void, routine: *const c_void, handle: *mut *mut c_void,
 ) -> i32 {
     let f: Ex<u16> = core::mem::transmute(ORIG[H_GETADDRINFOEXW].load(Ordering::Relaxed));
-    if name.is_null() || local_only(&wstr(name)) {
+    if name.is_null() || local_or_own(&wstr(name)) {
         return f(name, service, ns, nsp, hints, res, timeout, ov, routine, handle);
     }
     deny_resolution("GetAddrInfoExW", &wstr(name))
@@ -293,7 +339,7 @@ unsafe extern "system" fn d_getaddrinfoexa(
     timeout: *const c_void, ov: *mut c_void, routine: *const c_void, handle: *mut *mut c_void,
 ) -> i32 {
     let f: Ex<u8> = core::mem::transmute(ORIG[H_GETADDRINFOEXA].load(Ordering::Relaxed));
-    if name.is_null() || local_only(&cstr(name)) {
+    if name.is_null() || local_or_own(&cstr(name)) {
         return f(name, service, ns, nsp, hints, res, timeout, ov, routine, handle);
     }
     deny_resolution("GetAddrInfoExA", &cstr(name))
@@ -411,13 +457,17 @@ unsafe fn dest_allowed(sa: *const u8, len: i32) -> bool {
 }
 
 fn deny_dest(api: &str, sa: *const u8, len: i32) {
+    deny_dest_why(api, sa, len, "not the redirect host");
+}
+
+fn deny_dest_why(api: &str, sa: *const u8, len: i32, why: &str) {
     let ip = unsafe { sockaddr_ip(sa, len) };
     let s = match ip {
         Some(ip) if ip[..10] == [0u8; 10] && ip[10] == 0xff => format!("{}.{}.{}.{}", ip[12], ip[13], ip[14], ip[15]),
         Some(ip) => ip.chunks(2).map(|c| format!("{:02x}{:02x}", c[0], c[1])).collect::<Vec<_>>().join(":"),
         None => "unknown-family".into(),
     };
-    note(&format!("{api} to {s} (not the redirect host)"));
+    note(&format!("{api} to {s} ({why})"));
     unsafe { SetLastError(WSAENETUNREACH) };
 }
 
@@ -548,16 +598,20 @@ fn install_deny() {
     let wh = b"winhttp.dll\0";
     // Resolvers keep local-only lookups working (see the module docs). They need the
     // original, so they go through a trampoline; without one they fail closed.
-    let resolvers: [(&[u8], usize, usize); 4] = [
-        (b"getaddrinfo\0", H_GETADDRINFO, d_getaddrinfo as usize),
-        (b"GetAddrInfoW\0", H_GETADDRINFOW, d_getaddrinfow as usize),
-        (b"GetAddrInfoExW\0", H_GETADDRINFOEXW, d_getaddrinfoexw as usize),
-        (b"GetAddrInfoExA\0", H_GETADDRINFOEXA, d_getaddrinfoexa as usize),
+    let resolvers: [(&[u8], usize, usize, usize); 8] = [
+        (b"getaddrinfo\0", H_GETADDRINFO, d_getaddrinfo as usize, deny_resolve as usize),
+        (b"GetAddrInfoW\0", H_GETADDRINFOW, d_getaddrinfow as usize, deny_resolve as usize),
+        (b"GetAddrInfoExW\0", H_GETADDRINFOEXW, d_getaddrinfoexw as usize, deny_resolve as usize),
+        (b"GetAddrInfoExA\0", H_GETADDRINFOEXA, d_getaddrinfoexa as usize, deny_resolve as usize),
+        (b"connect\0", H_CONNECT, d_connect as usize, deny_sock as usize),
+        (b"WSAConnect\0", H_WSACONNECT, d_wsaconnect as usize, deny_sock as usize),
+        (b"sendto\0", H_SENDTO, d_sendto as usize, deny_sock as usize),
+        (b"WSASendTo\0", H_WSASENDTO, d_wsasendto as usize, deny_sock as usize),
     ];
     let mut ok = 0;
     let mut local = 0;
     let mut missing = Vec::new();
-    for (f, idx, hook) in resolvers {
+    for (f, idx, hook, deny) in resolvers {
         let name = String::from_utf8_lossy(&f[..f.len() - 1]).into_owned();
         let p = unsafe { resolve_export(ws, f) };
         if p.is_null() {
@@ -571,18 +625,14 @@ fn install_deny() {
                 local += usize::from(done);
                 done
             }
-            None => unsafe { write_jump(p, deny_resolve as usize) },
+            None => unsafe { write_jump(p, deny) },
         };
         if patched { ok += 1 } else { missing.push(name) }
     }
-    let table: [(&[u8], &[u8], usize); 10] = [
+    let table: [(&[u8], &[u8], usize); 6] = [
         (ws, b"gethostbyname\0", deny_null as usize),
-        (ws, b"connect\0", deny_sock as usize),
-        (ws, b"WSAConnect\0", deny_sock as usize),
         (ws, b"WSAConnectByNameW\0", deny_sock_bool as usize),
         (ws, b"WSAConnectByNameA\0", deny_sock_bool as usize),
-        (ws, b"sendto\0", deny_sock as usize),
-        (ws, b"WSASendTo\0", deny_sock as usize),
         (wh, b"WinHttpConnect\0", deny_null as usize),
         (wh, b"WinHttpOpenRequest\0", deny_null as usize),
         (wh, b"WinHttpSendRequest\0", deny_false as usize),
@@ -596,7 +646,7 @@ fn install_deny() {
         }
     }
     crate::record_raw("net_guard", "installed", &format!(
-        "{ok}/14 network entry points blocked in-process ({local}/4 resolvers pass local-only names){}",
+        "{ok}/14 network entry points blocked in-process ({local}/8 resolver and socket entry points pass local-only names and loopback){}",
         if missing.is_empty() { String::new() } else { format!(" (not patched: {})", missing.join(", ")) }));
 }
 
