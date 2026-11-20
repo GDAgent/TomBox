@@ -228,6 +228,36 @@ static int check_readback(Frame& frame, const char* operation, UINT slot, Expect
     return mismatches != 0;
 }
 
+static int check_shader_pixels(const char* directory) {
+    Frame frame;
+    Mesh mesh;
+    constexpr UINT size = 16;
+    const D3D12_INPUT_ELEMENT_DESC position = {
+        "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0
+    };
+    const float offscreen[][4] = {{2, 2, 0, 1}, {3, 2, 0, 1}, {2, 3, 0, 1}};
+    if (frame.init(size, size) || frame.begin({1, 0, 1, 1}) ||
+        mesh.init(frame.dev.Get(), {triangle_vs, sizeof(triangle_vs)}, {shader_probe_ps, sizeof(shader_probe_ps)},
+                  &position, 1, sizeof(offscreen), nullptr, 0, false, {shader_probe_gs, sizeof(shader_probe_gs)}) ||
+        mesh.draw(frame, offscreen, 3, sizeof(offscreen[0])) || frame.finish()) return 1;
+    const int status = check_readback(frame, "RDNA2 graphics", 60, [](LONG x, LONG y) -> Color {
+        const auto u8 = [](float v) { return static_cast<BYTE>(v * 255.0f + .5f); };
+        const float u = (x + .5f) / size;
+        const float diagonal = ((x ^ 1) + .5f) * ((y ^ 1) + .5f) / (size * size);
+        return {u8(u), u8(diagonal), u8(.25f), u8(.625f)};
+    });
+    if (status) return status;
+    // Give the verifier the actual shaders whose rendered pixels passed.
+    auto record = [directory](const char* file, const BYTE* bytes, size_t size) {
+        std::ofstream out(std::string(directory) + "/" + file, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(bytes), size);
+        out.close();
+        return out.good();
+    };
+    return !(record("graphics-gs.dxbc", shader_probe_gs, sizeof(shader_probe_gs)) &&
+             record("graphics-ps.dxbc", shader_probe_ps, sizeof(shader_probe_ps)));
+}
+
 static int check_rect_readback(Frame& frame, const char* operation, UINT slot, const D3D12_RECT& rect,
                                Color expected_base, Color expected_inside) {
     return check_readback(frame, operation, slot, [&](LONG x, LONG y) {
@@ -778,7 +808,7 @@ static HWND game_window() {
 }
 
 int main(int argc, char** argv) {
-    if (argc == 3 && !std::strcmp(argv[1], "--rdna2-test")) return check_rdna2(argv[2]);
+    if (argc == 3 && !std::strcmp(argv[1], "--rdna2-test")) return check_rdna2(argv[2]) || check_shader_pixels(argv[2]);
     if (argc == 2 && !std::strcmp(argv[1], "--thread-dispatch-test")) return check_compute(ComputeProbe::ThreadDispatch);
     if (argc == 2 && !std::strcmp(argv[1], "--compute-barrier-test")) return check_compute(ComputeProbe::UavBarrier);
     if (argc == 2 && !std::strcmp(argv[1], "--pso-fallback-test")) return check_compute(ComputeProbe::OfflineFallback);

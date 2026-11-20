@@ -111,7 +111,7 @@ atlas. Restarting restores the original pixels using the same GPU resources.
 
 | Command from the repo root | What it exercises |
 |---|---|
-| `tools/homebrew/play-coins.sh --rdna2-test` | Verifies ALU results through the game's Xbox compute pipeline, runs the memory conformance suite, and checks rendering and dispatch. [Requirements and coverage report](#rdna2-verification) |
+| `tools/homebrew/play-coins.sh --rdna2-test` | Verifies arithmetic and branches through the game's Xbox compute pipeline, runs the memory conformance suite, and checks rendering and dispatch. [Requirements and coverage report](#rdna2-verification) |
 | `tools/homebrew/play-coins.sh --3d` | Play on a perspective board with raised walls, octagonal coins and a camera that follows the player. Uses the same controls and rules. |
 | `tools/homebrew/play-coins.sh --3d-test` | Runs the 20-frame route in 3D, checking textured top and side faces, camera movement and depth occlusion by GPU readback. Requires a display. |
 | `tools/homebrew/play-coins.sh --audio-test` | Plays the board twice, checks which stereo channel carries each pickup, and measures both voices playing together on a private Linux audio monitor. |
@@ -225,18 +225,25 @@ xvfb-run -a tools/homebrew/play-coins.sh --rdna2-test
 ```
 
 The launcher rebuilds Coin Run and the runtime. The game creates an Xbox compute
-pipeline for each generated ALU shader, dispatches one workgroup per input and reads
+pipeline for each generated shader, dispatches one workgroup per input and reads
 back the result, VCC, EXEC and a completion marker. The Rust reference evaluates the
 same inputs independently and checks the outputs relevant to each instruction.
-The companion memory suite runs translated texture and buffer probes on D3D12.
+Multi-thread probes select one reader per workgroup and exchange values between lanes.
+Set `TOMBOX_PROBE_WAVE64=1` on a device that runs 64-lane waves to check nonzero
+upper-half lane counts. The companion memory suite checks buffer and texture reads,
+writes and atomic results. A 16×16 graphics probe checks geometry emission, exports,
+flat attributes, both interpolation steps and a pixel-quad swizzle against a CPU image.
 The final game runs check the 2D and 3D scenes, texture arrays, cube faces and thread dispatch.
-A missing compiler, insufficient shader model or an incorrect result fails the command.
+The launcher publishes the report only after every check passes. On RADV, use the desktop
+display for the full run if Xvfb reports missing DRI3 support during the presentation tests.
 
 A successful run writes `coin-rdna2-coverage.tsv` beside `coin_window.exe`.
-The three columns after the mnemonic record retail observation, an in-game ALU reference
-check and a companion memory reference check. Filter for `true / false / false` to find
-retail instructions that still need dedicated reference cases. Whole-scene checks exercise
-combinations of instructions. [Recorded results](../progress/coin-rdna2-coverage.tsv)
+Each row records retail observation and the type of passing GPU check. The
+`coin_run_alu`, `memory_probe` and `graphics_probe` columns count toward direct
+reference coverage. The `cache_probe` column records cross-wave UAV visibility for
+`buffer_gl0_inv` and `buffer_gl1_inv`, and preservation of a register value and
+condition flag in all three defined `s_inst_prefetch` modes. Physical cache contents
+and instruction-fetch distance remain unmeasured. [Recorded results](../progress/coin-rdna2-coverage.tsv)
 
 ### Graphics readback
 

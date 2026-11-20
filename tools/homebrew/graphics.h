@@ -182,7 +182,8 @@ struct Mesh {
 
     int init(ID3D12Device* dev, D3D12_SHADER_BYTECODE vs, D3D12_SHADER_BYTECODE ps,
              const D3D12_INPUT_ELEMENT_DESC* inputs, UINT input_count, UINT bytes,
-             const D3D12_ROOT_PARAMETER* tables = nullptr, UINT table_count = 0, bool with_depth = false) {
+             const D3D12_ROOT_PARAMETER* tables = nullptr, UINT table_count = 0, bool with_depth = false,
+             D3D12_SHADER_BYTECODE gs = {}) {
         D3D12_ROOT_SIGNATURE_DESC sig = {};
         sig.NumParameters = table_count;
         sig.pParameters = tables;
@@ -197,6 +198,7 @@ struct Mesh {
         pso.pRootSignature = root.Get();
         pso.VS = vs;
         pso.PS = ps;
+        pso.GS = gs;
         pso.InputLayout = {inputs, input_count};
         pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;

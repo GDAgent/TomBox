@@ -31,6 +31,9 @@ use tombox_xshader::dxc;
 
 #[cfg(windows)]
 const NV: u32 = 4; // v0..v2 = sources, v3 = destination (also loaded: MAC-style ops read it)
+#[path = "valu_conformance/observed.rs"]
+mod observed;
+
 const V: u32 = 256; // VGPR operand code base
 const VCC_LO: u32 = 106;
 const S_ENDPGM: u32 = 0xbf81_0000;
@@ -339,6 +342,8 @@ enum Out {
 struct Case {
     name: String,
     words: Vec<u32>,
+    group_size: u32,
+    table: Vec<u32>,
     doms: [Dom; 3],
     vcc_in: bool,
     out: Out,
@@ -350,7 +355,7 @@ struct Case {
 
 fn case(name: &str, words: Vec<u32>, doms: [Dom; 3], want: impl Fn(u32, u32, u32, u32) -> Want + 'static) -> Case {
     let float_in = doms.iter().any(|d| matches!(d, Dom::F | Dom::Trig));
-    Case { name: name.into(), words, doms, vcc_in: false, out: Out::V3, want: Box::new(move |a, b, c, v| (want(a, b, c, v), 0)), float_in }
+    Case { name: name.into(), words, group_size: 1, table: vec![], doms, vcc_in: false, out: Out::V3, want: Box::new(move |a, b, c, v| (want(a, b, c, v), 0)), float_in }
 }
 
 fn fl(x: f32) -> Want {
@@ -631,6 +636,8 @@ fn cases() -> Vec<Case> {
             name: n.into(),
             words,
             doms: [I, I, I],
+            group_size: 1,
+            table: vec![],
             vcc_in: cin,
             out: Out::V3Carry,
             float_in: false,
@@ -848,6 +855,233 @@ fn coin_scalar_compares() -> Vec<Case> {
     cases
 }
 
+/// Execute a scalar instruction with s16 as both source and destination. Seed SCC from
+/// the per-vector VCC input, then copy the final SCC into VCC for the paired readback.
+fn coin_scalar_arithmetic() -> Vec<Case> {
+    type Model = fn(u32, u32, bool) -> (u32, bool);
+    let sop2 = |op: u32| 0x8010_1110 | (op << 23); // s16, s16, s17
+    let sopk = |op: u32, imm: i16| 0xb010_0000 | (op << 23) | u32::from(imm as u16);
+    let probes: &[(&str, u32, Model)] = &[
+        ("s_and_b32", sop2(14), |a, b, _| (a & b, a & b != 0)),
+        ("s_or_b32", sop2(16), |a, b, _| (a | b, a | b != 0)),
+        ("s_xor_b32", sop2(18), |a, b, _| (a ^ b, a != b)),
+        ("s_lshl_b32", sop2(30), |a, b, _| { let v = a.wrapping_shl(b); (v, v != 0) }),
+        ("s_lshr_b32", sop2(32), |a, b, _| { let v = a.wrapping_shr(b); (v, v != 0) }),
+        ("s_ashr_i32", sop2(34), |a, b, _| { let v = (a as i32).wrapping_shr(b); (v as u32, v != 0) }),
+        ("s_bfe_u32", sop2(39), |a, b, _| scalar_field(a, b, false)),
+        ("s_bfe_i32", sop2(40), |a, b, _| scalar_field(a, b, true)),
+        ("s_bitset0_b32", 0xbe90_1b11, |a, b, flag| (a & !1u32.wrapping_shl(b), flag)),
+        ("s_brev_b32", 0xbe90_0b11, |_, b, flag| (b.reverse_bits(), flag)),
+        ("s_mov_b32", 0xbe90_0311, |_, b, flag| (b, flag)),
+        ("s_add_u32", sop2(0), |a, b, _| a.overflowing_add(b)),
+        ("s_sub_u32", sop2(1), |a, b, _| a.overflowing_sub(b)),
+        ("s_add_i32", sop2(2), |a, b, _| {
+            let (sum, overflow) = (a as i32).overflowing_add(b as i32);
+            (sum as u32, overflow)
+        }),
+        ("s_sub_i32", sop2(3), |a, b, _| {
+            let (diff, overflow) = (a as i32).overflowing_sub(b as i32);
+            (diff as u32, overflow)
+        }),
+        ("s_addc_u32", sop2(4), |a, b, carry| {
+            let sum = u64::from(a) + u64::from(b) + u64::from(carry);
+            (sum as u32, sum > u64::from(u32::MAX))
+        }),
+        ("s_subb_u32", sop2(5), |a, b, borrow| {
+            let diff = i64::from(a) - i64::from(b) - i64::from(borrow);
+            (diff as u32, diff < 0)
+        }),
+        ("s_min_i32", sop2(6), |a, b, _| ((a as i32).min(b as i32) as u32, (a as i32) < b as i32)),
+        ("s_min_u32", sop2(7), |a, b, _| (a.min(b), a < b)),
+        ("s_max_i32", sop2(8), |a, b, _| ((a as i32).max(b as i32) as u32, (a as i32) > b as i32)),
+        ("s_max_u32", sop2(9), |a, b, _| (a.max(b), a > b)),
+        ("s_cselect_b32", sop2(0x0a), |a, b, scc| (if scc { a } else { b }, scc)),
+        ("s_mul_i32", sop2(0x26), |a, b, scc| (a.wrapping_mul(b), scc)),
+        ("s_absdiff_i32", sop2(0x2c), |a, b, _| {
+            let diff = (a as i32).wrapping_sub(b as i32);
+            (diff.unsigned_abs(), diff != 0)
+        }),
+        ("s_mul_hi_u32", sop2(0x35), |a, b, scc| (((u64::from(a) * u64::from(b)) >> 32) as u32, scc)),
+        ("s_mul_hi_i32", sop2(0x36), |a, b, scc| (((i64::from(a as i32) * i64::from(b as i32)) >> 32) as u32, scc)),
+        ("s_cmov_b32", 0xbe90_0511, |a, b, scc| (if scc { b } else { a }, scc)),
+        ("s_sext_i32_i8", 0xbe90_1910, |a, _, scc| (i32::from(a as i8) as u32, scc)),
+        ("s_sext_i32_i16", 0xbe90_1a10, |a, _, scc| (i32::from(a as i16) as u32, scc)),
+        ("s_abs_i32", 0xbe90_3410, |a, _, _| ((a as i32).unsigned_abs(), a != 0)),
+        ("s_movk_i32", sopk(0, -3), |_, _, scc| ((-3i32) as u32, scc)),
+        ("s_cmovk_i32", sopk(2, -3), |a, _, scc| (if scc { (-3i32) as u32 } else { a }, scc)),
+        ("s_addk_i32 +1", sopk(15, 1), |a, _, _| {
+            let (sum, overflow) = (a as i32).overflowing_add(1);
+            (sum as u32, overflow)
+        }),
+        ("s_addk_i32 -1", sopk(15, -1), |a, _, _| {
+            let (sum, overflow) = (a as i32).overflowing_add(-1);
+            (sum as u32, overflow)
+        }),
+        ("s_mulk_i32", sopk(16, -3), |a, _, scc| (a.wrapping_mul((-3i32) as u32), scc)),
+    ];
+    let mut cases: Vec<_> = probes.iter().map(|&(name, instruction, model)| Case {
+        name: name.to_owned(),
+        // readfirstlane s16,v0; readfirstlane s17,v1; cmp_lg vcc_lo,0;
+        // instruction; mov v3,s16; mov vcc_lo,SCC; endpgm
+        words: vec![0x7e20_0500, 0x7e22_0501, 0xbf07_806a, instruction, 0x7e06_0210, 0xbeea_03fd, S_ENDPGM],
+        doms: [Dom::I; 3],
+        group_size: 1,
+        table: vec![],
+        vcc_in: true,
+        out: Out::V3Carry,
+        float_in: false,
+        want: Box::new(move |a, b, _, vcc| {
+            let (value, flag) = model(a, b, vcc != 0);
+            (Want::U(value), u32::from(flag))
+        }),
+    }).collect();
+    // The low-word instruction produces SCC for the high-word instruction. Compare
+    // the resulting high word and final SCC with a single 64-bit CPU operation.
+    for (name, lo, hi, subtract) in [
+        ("s_addc_u32 chained", sop2(0), 0x8212_8012, false),
+        ("s_subb_u32 chained", sop2(1), 0x8292_8012, true),
+    ] {
+        cases.push(Case {
+            name: name.into(),
+            words: vec![0x7e20_0500, 0x7e22_0501, 0x7e24_0502, lo, hi, 0x7e06_0212, 0xbeea_03fd, S_ENDPGM],
+            doms: [Dom::I; 3],
+            group_size: 1,
+            table: vec![],
+            vcc_in: false,
+            out: Out::V3Carry,
+            float_in: false,
+            want: Box::new(move |a, b, c, _| {
+                let lhs = (u64::from(c) << 32) | u64::from(a);
+                let (value, flag) = if subtract { lhs.overflowing_sub(u64::from(b)) } else { lhs.overflowing_add(u64::from(b)) };
+                (Want::U((value >> 32) as u32), u32::from(flag))
+            }),
+        });
+    }
+    cases
+}
+
+/// Only the bits remaining above the offset can contribute to the field.
+fn scalar_field(data: u32, control: u32, signed: bool) -> (u32, bool) {
+    let offset = control & 31;
+    let width = ((control >> 16) & 127).min(32 - offset);
+    if width == 0 {
+        return (0, false);
+    }
+    let mask = u32::MAX >> (32 - width);
+    let bits = (data >> offset) & mask;
+    let sign = 1 << (width - 1);
+    let result = if signed { (bits ^ sign).wrapping_sub(sign) } else { bits };
+    (result, result != 0)
+}
+
+/// Run each register-pair operation twice so both words and SCC reach the CPU.
+fn coin_scalar_pairs() -> Vec<Case> {
+    type Model = fn(u64, u64, bool) -> (u64, bool);
+    let sop2 = |op: u32| 0x8010_1210 | (op << 23); // s[16:17], s[16:17], s[18:19]
+    let probes: &[(&str, u32, Model)] = &[
+        ("s_and_b64", sop2(15), |x, y, _| (x & y, x & y != 0)),
+        ("s_or_b64", sop2(17), |x, y, _| (x | y, x | y != 0)),
+        ("s_xor_b64", sop2(19), |x, y, _| (x ^ y, x != y)),
+        ("s_andn2_b64", sop2(21), |x, y, _| (x & !y, x & !y != 0)),
+        ("s_cselect_b64", sop2(11), |x, y, scc| (if scc { x } else { y }, scc)),
+        ("s_wqm_b64", 0xbe90_0a10, |x, _, _| {
+            let mask = (0..16).filter(|k| x & (15 << (k*4)) != 0).fold(0, |mask,k| mask | (15 << (k*4)));
+            (mask, x != 0)
+        }),
+        ("s_mov_b64", 0xbe90_0412, |_, y, scc| (y, scc)),
+        ("s_lshl_b64", sop2(31), |x, y, _| { let v = x.wrapping_shl(y as u32); (v, v != 0) }),
+        ("s_bfm_b64", sop2(37), |x, y, scc| (((1u64 << (x & 63)) - 1).wrapping_shl(y as u32), scc)),
+        // BCNT writes only the low destination register.
+        ("s_bcnt1_i32_b64", 0xbe90_1010, |x, _, _| ((x & 0xffff_ffff_0000_0000) | u64::from(x.count_ones()), x != 0)),
+    ];
+    let mut cases = Vec::new();
+    for &(name, instruction, model) in probes {
+        for (half, register, shift) in [("low", 16, 0), ("high", 17, 32)] {
+            cases.push(Case {
+                name: format!("{name} {half}"),
+                // s[16:17]=(v0,v1), s[18:19]=(v2,v0), SCC = VCC != 0.
+                words: vec![0x7e20_0500, 0x7e22_0501, 0x7e24_0502, 0xbe93_0310, 0xbf07_806a,
+                            instruction, 0x7e06_0200 | register, 0xbeea_03fd, S_ENDPGM],
+                doms: [Dom::I; 3],
+                group_size: 1,
+                table: vec![],
+                vcc_in: true,
+                out: Out::V3Carry,
+                float_in: false,
+                want: Box::new(move |a, b, c, vcc| {
+                    let lhs = u64::from(a) | (u64::from(b) << 32);
+                    let rhs = u64::from(c) | (u64::from(a) << 32);
+                    let (value, scc) = model(lhs, rhs, vcc != 0);
+                    (Want::U((value >> shift) as u32), u32::from(scc))
+                }),
+            });
+        }
+    }
+    cases
+}
+
+fn coin_branches() -> Vec<Case> {
+    // A taken branch skips one scalar move even when the lane's EXEC is zero.
+    // Seed SCC, VCC and EXEC independently so reading the wrong flag is observable.
+    type Taken = fn(u32, u32, u32) -> bool;
+    let branches: &[(&str, u32, Taken)] = &[
+        ("s_branch", 2, |_, _, _| true),
+        ("s_cbranch_scc0", 4, |a, b, _| a >= b),
+        ("s_cbranch_scc1", 5, |a, b, _| a < b),
+        ("s_cbranch_vccz", 6, |_, _, vcc| vcc == 0),
+        ("s_cbranch_vccnz", 7, |_, _, vcc| vcc != 0),
+        ("s_cbranch_execz", 8, |a, _, _| a & 1 == 0),
+        ("s_cbranch_execnz", 9, |a, _, _| a & 1 != 0),
+    ];
+    branches.iter().map(|&(name, op, taken)| {
+        let mut probe = case(name, vec![
+            0x7e20_0500, 0x7e22_0501, 0xbe94_0310, // s16=a, s17=b, s20=a
+            0x8712_8110, 0xbefe_0312, 0xbf0a_1110, // EXEC=a&1, SCC=a<b
+            0xbf80_0001 | (op << 16), 0xbe94_0311, // branch past s20=b
+            0xbefe_0381, 0x7e06_0214, S_ENDPGM,   // restore EXEC, return s20
+        ], [Dom::I; 3], move |a, b, _, vcc| Want::U(if taken(a, b, vcc) { a } else { b }));
+        probe.vcc_in = true;
+        probe
+    }).collect()
+}
+
+fn coin_vector_ops() -> Vec<Case> {
+    use Dom::{F, H, I};
+    let mut cases = vec![
+        case("v_swap_b32 read v3", vec![0x7e00_cb03, S_ENDPGM], [I; 3], |a, _, _, _| Want::U(a)),
+        case("v_swap_b32 read v0", vec![0x7e00_cb03, 0x7e06_0300, S_ENDPGM], [I; 3], |_, _, c, _| Want::U(c)),
+        case("v_rcp_f16", vec![0x7e06_a900, S_ENDPGM], [H, I, I], |a, _, _, _| {
+            Want::H(f16_from(1.0 / f16_to(a & 0xffff), false))
+        }),
+        case("v_fmaak_f32", vec![0x5a06_0300, 0x3f40_0000, S_ENDPGM], [F, F, F], |a, b, _, _| {
+            mad_any(f(a), f(b), 0.75)
+        }),
+    ];
+    for (half, shift) in [("low", 0), ("high", 32)] {
+        // v[2:3] = v[0:1] << v2. Copy the requested half to v3.
+        let mut words = vec![0xd6ff_0002, 0x0202_0102];
+        if shift == 0 { words.push(0x7e06_0302); }
+        words.push(S_ENDPGM);
+        cases.push(case(&format!("v_lshlrev_b64 {half}"), words, [I; 3], move |a, b, c, _| {
+            let value = u64::from(a) | (u64::from(b) << 32);
+            Want::U((value.wrapping_shl(c) >> shift) as u32)
+        }));
+    }
+    type HalfOp = fn(f32, f32, f32) -> f32;
+    let half_ops: &[(&str, u32, HalfOp)] = &[
+        ("v_min3_f16", 0x351, |a, b, c| amd_min(amd_min(a, b), c)),
+        ("v_max3_f16", 0x354, |a, b, c| amd_max(amd_max(a, b), c)),
+        ("v_med3_f16", 0x357, amd_med3),
+    ];
+    for &(name, op, model) in half_ops {
+        cases.push(case(name, vop3(op, 3, Mods::default(), 3, None), [H; 3], move |a, b, c, _| {
+            let [a, b, c] = [a, b, c].map(|v| f16_to(v & 0xffff));
+            Want::H(f16_from(model(a, b, c), false))
+        }));
+    }
+    cases
+}
+
 // The launcher supplies an isolated directory. The Python wrapper packages the ISA into
 // Xbox shader containers and Coin Run returns four words per input through GPU readback.
 #[test]
@@ -860,7 +1094,13 @@ fn coin_run_valu_conformance() {
     let dir = PathBuf::from(env::var_os("TOMBOX_COIN_PROBE_DIR").expect("homebrew scratch directory"));
     let mut cases = cases();
     cases.extend(coin_scalar_compares());
+    cases.extend(coin_scalar_arithmetic());
+    cases.extend(coin_scalar_pairs());
+    cases.extend(coin_branches());
+    cases.extend(coin_vector_ops());
+    cases.extend(observed::cases());
     let mut exercised = BTreeSet::new();
+    let mut cache_checks = std::collections::BTreeMap::new();
     let mut inputs = BufWriter::new(File::create(dir.join("cases.bin")).unwrap());
     inputs.write_all(&(cases.len() as u32).to_le_bytes()).unwrap();
     let mut all_vectors = Vec::with_capacity(cases.len());
@@ -868,10 +1108,14 @@ fn coin_run_valu_conformance() {
         let isa: Vec<_> = c.words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let name = c.name.split_whitespace().next().unwrap();
         assert!(tombox_xshader::rdna2::disassemble(&isa).iter().any(|ins| ins.mnemonic == name), "{}", c.name);
-        exercised.insert(name.to_owned());
+        if let Some(scope) = observed::cache_check(name) {
+            cache_checks.insert(name.to_owned(), scope);
+        } else {
+            exercised.insert(name.to_owned());
+        }
         let vecs = case_vectors(c, index);
         assert!(!vecs.is_empty(), "{}", c.name);
-        for word in [c.words.len() as u32, vecs.len() as u32].iter().chain(&c.words) {
+        for word in [c.words.len() as u32, vecs.len() as u32, c.group_size, c.table.len() as u32].iter().chain(&c.words).chain(&c.table) {
             inputs.write_all(&word.to_le_bytes()).unwrap();
         }
         for v in &vecs {
@@ -911,20 +1155,39 @@ fn coin_run_valu_conformance() {
         }
     }
     assert_eq!(results.read(&mut [0; 1]).unwrap(), 0, "unexpected extra GPU readback");
-    assert_eq!(failures, 0, "Coin Run ALU cases failed");
+    assert_eq!(failures, 0, "Coin Run shader cases failed");
     let tracked = include_str!("../../../tools/progress/valu-mnemonics.txt");
     for name in tracked.lines() {
         assert!(exercised.contains(name), "missing Coin Run coverage for tracked mnemonic {name}");
     }
-    println!("Coin Run verified {} Xbox shader cases ({} ALU mnemonics) over {total} input vectors",
-             cases.len(), exercised.len());
+    println!("Coin Run verified {} Xbox shader cases ({} distinct instructions) over {total} input vectors",
+             cases.len(), exercised.len() + cache_checks.len());
     let memory = std::fs::read_to_string(dir.join("memory-mnemonics.txt")).expect("companion memory suite results");
     let memory: BTreeSet<_> = memory.lines().collect();
+    let mut graphics = BTreeSet::new();
+    for (file, required) in [
+        ("graphics-gs.dxbc", &["s_sendmsg"][..]),
+        ("graphics-ps.dxbc", &["exp", "ds_swizzle_b32", "v_interp_mov_f32", "v_interp_p1_f32", "v_interp_p2_f32"][..]),
+    ] {
+        let blob = std::fs::read(dir.join(file)).expect("shader from passing pixel readback");
+        let shader = tombox_xshader::extract(&blob).expect("valid graphics probe");
+        let program = tombox_xshader::rdna2::disassemble(&shader.isa);
+        for &name in required {
+            assert!(program.iter().any(|ins| ins.mnemonic == name), "{file} lost its {name} probe");
+            graphics.insert(name);
+        }
+    }
     for row in include_str!("../../../tools/progress/coin-rdna2-coverage.tsv").lines().skip(1) {
         let fields: Vec<_> = row.split('\t').collect();
-        let [name, _, game_checked, memory_checked] = fields[..] else { panic!("invalid coverage row: {row}") };
+        let [name, _, game_checked, memory_checked, graphics_checked, cache_check] = fields[..] else { panic!("invalid coverage row: {row}") };
         if game_checked == "true" {
-            assert!(exercised.contains(name), "lost Coin Run ALU coverage for {name}");
+            assert!(exercised.contains(name), "lost Coin Run shader coverage for {name}");
+        }
+        if graphics_checked == "true" {
+            assert!(graphics.contains(name), "lost graphics coverage for {name}");
+        }
+        if cache_check != "-" {
+            assert_eq!(cache_checks.get(name), Some(&cache_check), "lost cache probe for {name}");
         }
         if memory_checked == "true" {
             assert!(memory.contains(name), "lost memory probe coverage for {name}");
@@ -932,16 +1195,16 @@ fn coin_run_valu_conformance() {
     }
     let retail: BTreeSet<_> = include_str!("../../../tools/progress/mnemonics.txt")
         .lines().map(|line| line.split_whitespace().next().unwrap()).collect();
-    let names: BTreeSet<_> = exercised.iter().map(String::as_str).chain(memory.iter().copied()).chain(retail.iter().copied()).collect();
+    let names: BTreeSet<_> = exercised.iter().map(String::as_str).chain(memory.iter().copied()).chain(graphics.iter().copied()).chain(cache_checks.keys().map(String::as_str)).chain(retail.iter().copied()).collect();
     let mut coverage = BufWriter::new(File::create(dir.join("coverage.tsv")).unwrap());
-    writeln!(coverage, "mnemonic\tretail_observed\tcoin_run_alu\tmemory_probe").unwrap();
+    writeln!(coverage, "mnemonic\tretail_observed\tcoin_run_alu\tmemory_probe\tgraphics_probe\tcache_probe").unwrap();
     for name in names {
-        writeln!(coverage, "{name}\t{}\t{}\t{}", retail.contains(name), exercised.contains(name), memory.contains(name)).unwrap();
+        writeln!(coverage, "{name}\t{}\t{}\t{}\t{}\t{}", retail.contains(name), exercised.contains(name), memory.contains(name), graphics.contains(name), cache_checks.get(name).unwrap_or(&"-")).unwrap();
     }
     coverage.flush().unwrap();
-    let directly_checked = retail.iter().filter(|name| exercised.contains(**name) || memory.contains(**name)).count();
-    println!("Direct ALU and memory checks cover {directly_checked}/{} retail-observed instructions; {} still lack an instruction-level reference case.",
-             retail.len(), retail.len() - directly_checked);
+    let directly_checked = retail.iter().filter(|name| exercised.contains(**name) || memory.contains(**name) || graphics.contains(**name)).count();
+    let cache_count = retail.iter().filter(|name| cache_checks.contains_key(**name)).count();
+    println!("Direct reference checks cover {directly_checked}/{} retail-observed instructions. {cache_count} additional instructions passed limited cache probes.", retail.len());
 }
 
 #[cfg(windows)]

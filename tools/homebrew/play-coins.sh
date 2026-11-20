@@ -38,7 +38,7 @@ export TOMBOX_LOG="${TOMBOX_LOG:-coin-window.log}"
 case "${1:-}" in
     --rdna2-test)
         scratch=$(mktemp -d rdna2-check.XXXXXXXX)
-        trap 'rm -f -- "$scratch"/{cases.bin,suite.bin,results.bin,game.log,memory.log,memory.exe,memory-mnemonics.txt,coverage.tsv}; rmdir -- "$scratch"' EXIT
+        trap 'rm -f -- "$scratch"/{cases.bin,suite.bin,results.bin,game.log,memory.log,memory.exe,memory-mnemonics.txt,graphics-gs.dxbc,graphics-ps.dxbc,coverage.tsv}; rmdir -- "$scratch"' EXIT
         export TOMBOX_COIN_PROBE_DIR="$PWD/$scratch" PYTHONDONTWRITEBYTECODE=1
         export TOMBOX_DXC_DIR="${TOMBOX_DXC_DIR:-Z:$PWD}"
         python3 "$repo/tools/homebrew/rdna2_fixture.py" --memory "$scratch"

@@ -24,8 +24,17 @@ pub struct Translated {
     pub entry: &'static str,
     /// FXC/D3DCompile target profile.
     pub profile: &'static str,
+    /// Per-vertex parameter reads require a shader-model 6.1 pixel shader.
+    pub needs_barycentrics: bool,
     /// Workgroup dimensions for the subset verified to tolerate either Scarlett wave width.
     pub portable_compute_group: Option<[u32; 3]>,
+}
+
+#[cfg(windows)]
+impl Translated {
+    pub fn dxc_profile(&self) -> String {
+        if self.needs_barycentrics { "ps_6_1".into() } else { crate::dxc::profile_for(self.profile) }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,6 +143,16 @@ fn r(o: &Opnd) -> Result<String, String> {
 
 fn f(o: &Opnd) -> Result<String, String> {
     Ok(format!("asfloat({})", r(o)?))
+}
+
+/// Low `width` bits set, saturated to one word. Keep full-width shifts out of the generated code.
+fn low_mask(width: &str) -> String {
+    format!("(({width}) >= 32u ? 0xffffffffu : ((1u << (({width}) & 31u)) - 1u))")
+}
+
+/// Signed addition overflows when both operands have the same sign and the sum changes it.
+fn signed_add_overflow(a: &str, b: &str, sum: &str) -> String {
+    format!("((~({a} ^ {b}) & ({a} ^ {sum})) >> 31)")
 }
 
 /// Scalar register number of an operand (SGPRs, plus vcc_lo/vcc_hi = 106/107, which SMEM
@@ -273,6 +292,8 @@ struct Emitter<'a> {
     tmp: usize,
     /// PS attribute index -> input register (registers the shader actually reads).
     ps_attrs: Vec<u32>,
+    pulled_attrs: BTreeSet<usize>,
+    flat_attrs: BTreeSet<usize>,
     /// VS parameter-export index -> output register.
     out_params: Vec<u32>,
 }
@@ -300,7 +321,7 @@ const OP_WAVE_REDUCE: u32 = 0x7ff0;
 ///   v_mov_b32     vI, <identity>
 ///   v_cndmask_b32 vR, vI, vIn, sX    ; inactive lanes contribute the identity
 ///   v_min_f32     vR, <dpp>, vR      ; DPP row/quad permutes (src0 = 233 / 250)
-///   ...  vop3<0x378>, v_min_f32, v_readlane_b32 (lane 32), v_min_f32 ...
+///   ...  v_permlanex16_b32, v_min_f32, v_readlane_b32 (lane 32), v_min_f32 ...
 ///   v_readlane_b32 sRes, vR, 0       ; the result, a scalar
 ///   s_mov_b64     exec_lo, sX        ; restore exec
 /// ```
@@ -312,7 +333,7 @@ const OP_WAVE_REDUCE: u32 = 0x7ff0;
 ///
 /// Inferred, not documented: operand codes 233/250 as DPP with a trailing control dword and
 /// SOP1 0x29 as nand-saveexec are taken from the public GFX10 encoding and are consistent
-/// with this shader's instruction stream; the meaning of VOP3 0x378 is not needed.
+/// with this shader's instruction stream.
 /// Anything in the region that does not fit this shape is refused.
 fn lower_wave_reductions(insns: &mut [Insn]) -> Result<(), String> {
     let is_dpp = |i: &Insn| i.enc == Enc::Vop2 && matches!(i.src.first(), Some(Opnd::Raw(233 | 234 | 250)));
@@ -471,6 +492,61 @@ fn lower_lane_spills(insns: &mut [Insn]) -> Result<(), String> {
     Ok(())
 }
 
+/// Resolve local PC transfers when GETPC and a constant add form one basic block.
+fn lower_local_pc_transfers(insns: &mut [Insn]) -> Result<(), String> {
+    if !insns
+        .iter()
+        .any(|i| matches!(i.mnemonic.as_str(), "s_setpc_b64" | "s_swappc_b64"))
+    {
+        return Ok(());
+    }
+    let mut entries: BTreeSet<i64> = insns
+        .iter()
+        .filter(|i| i.enc == Enc::Sopp && Emitter::branch_cond(i.op).is_some())
+        .map(|i| i.offset as i64 + 4 + 4 * i.aux.imm)
+        .collect();
+    let mut local = Vec::new();
+    for (i, seq) in insns.windows(3).enumerate() {
+        let [pc, add, jump] = seq else { unreachable!() };
+        if !matches!(jump.mnemonic.as_str(), "s_setpc_b64" | "s_swappc_b64")
+            || pc.mnemonic != "s_getpc_b64"
+            || add.mnemonic != "s_add_u32"
+            || add.dst.first() != pc.dst.first()
+            || add.src.first() != pc.dst.first()
+            || jump.src.first() != pc.dst.first()
+        {
+            continue;
+        }
+        let offset = match add.src.get(1) {
+            Some(Opnd::ConstInt(k)) => *k,
+            Some(Opnd::Literal(k)) => i64::from(*k as i32),
+            _ => continue,
+        };
+        let target = pc.offset as i64 + 4 + offset;
+        if !insns.iter().any(|x| x.offset as i64 == target) {
+            return Err(format!(
+                "PC transfer at {:#x} targets outside the decoded instructions",
+                jump.offset
+            ));
+        }
+        entries.insert(target);
+        local.push((i, target));
+    }
+    for (i, target) in local {
+        if entries.contains(&(insns[i + 1].offset as i64)) || entries.contains(&(insns[i + 2].offset as i64)) {
+            return Err("branch enters a local PC-transfer sequence after GETPC".into());
+        }
+        let jump = &mut insns[i + 2];
+        jump.enc = Enc::Sopp;
+        jump.op = 2;
+        jump.aux.imm = (target - jump.offset as i64 - 4) / 4;
+        if jump.mnemonic == "s_setpc_b64" {
+            jump.dst.clear();
+        }
+    }
+    Ok(())
+}
+
 fn compute_group(ex: &ShaderExtract) -> [u32; 3] {
     let [_, x, y, z] = ex.isa_preamble;
     [x.max(1), y.max(1), z.max(1)]
@@ -496,6 +572,7 @@ pub fn translate(ex: &ShaderExtract) -> Result<Translated, String> {
             && ins.src.iter().chain(&ins.dst).all(|op| matches!(op, Opnd::Sgpr(_) | Opnd::Vgpr(_)
                 | Opnd::ConstInt(_) | Opnd::ConstF32(_) | Opnd::Literal(_)))
     })).then(|| compute_group(ex));
+    lower_local_pc_transfers(&mut insns)?;
     lower_wave_reductions(&mut insns)?;
     lower_lane_spills(&mut insns)?;
     let mut em = Emitter::new(ex, insns);
@@ -513,6 +590,7 @@ pub fn translate(ex: &ShaderExtract) -> Result<Translated, String> {
     em.resolve_resources()?;
     if is_ps {
         em.find_export_epilogs();
+        em.classify_interpolation();
     }
     em.infer_tbuf_types();
     let live_in = em.live_in();
@@ -524,7 +602,7 @@ pub fn translate(ex: &ShaderExtract) -> Result<Translated, String> {
     // ps_5_0 forces UAV slots to start after the render-target outputs (FXC X4509);
     // SM5.1 has no such rule, and D3D12 accepts SM5.1 bytecode.
     let profile = if is_ps && !em.uav.is_empty() { "ps_5_1" } else { profile };
-    Ok(Translated { hlsl, entry: "main", profile, portable_compute_group })
+    Ok(Translated { hlsl, entry: "main", profile, needs_barycentrics: !em.pulled_attrs.is_empty(), portable_compute_group })
 }
 
 /// Dwords per thread in the I/O buffer of [`translate_valu_probe`]: `v0..v{n-1}`, `vcc_lo`,
@@ -667,7 +745,7 @@ pub fn translate_mem_probe(words: &[u32], nvgprs: u32) -> Result<(String, MemPro
         }
         let ok = match ins.enc {
             Enc::Vop1 | Enc::Vop2 | Enc::Vop3 | Enc::Vopc | Enc::Mimg | Enc::Mubuf => true,
-            Enc::Smem => ins.op <= 4, // s_load_dword* of a descriptor
+            Enc::Smem => ins.op <= 4 || (8..=12).contains(&ins.op), // descriptor and buffer loads
             Enc::Sop1 => ins.mnemonic == "s_mov_b32" || ins.mnemonic == "s_mov_b64", // table-pointer copies
             Enc::Sopp => ins.mnemonic == "s_waitcnt" || ins.mnemonic == "s_nop",
             _ => false,
@@ -771,6 +849,8 @@ impl<'a> Emitter<'a> {
             // read. A register counts as read if any element packed into it is read — including
             // a system value sharing it (observed: PARTICLE_RANDOM unread + SV_IsFrontFace read
             // in the same register still occupies an attribute slot; d26fd88ff8712f9e).
+            pulled_attrs: BTreeSet::new(),
+            flat_attrs: BTreeSet::new(),
             ps_attrs: distinct_regs(ex.input_sig.iter().filter(|e| {
                 e.sysval == 0 && ex.input_sig.iter().any(|o| o.register == e.register && o.rw_mask != 0)
             })),
@@ -790,7 +870,7 @@ impl<'a> Emitter<'a> {
         // 7 registers after the swapped PC register pair instead (observed: `s_swappc_b64
         // s12, s12` -> SRV table s19, CBV s20 in a55400ccab602283; `s_swappc_b64 s4, s4` ->
         // SRV s11, CBV s12 in 4d318a496eebf6d3).
-        let chained = self.insns.iter().take(16).find(|i| i.mnemonic == "s_swappc_b64").and_then(|i| match i.dst.first() {
+        let chained = self.insns.iter().take(16).find(|i| i.enc == Enc::Sop1 && i.mnemonic == "s_swappc_b64").and_then(|i| match i.dst.first() {
             Some(Opnd::Sgpr(n)) => Some(*n as usize + 7),
             _ => None,
         });
@@ -801,6 +881,62 @@ impl<'a> Emitter<'a> {
             crate::meta::RootParamKind::Table(r) if r.len() == 1 && r[0].base_register == 0 => Some(r[0].range_type),
             _ => None,
         }
+    }
+
+    /// Standard adjacent P1/P2 pairs consume the rasterizer's interpolant. A shader
+    /// that reads the partial term or provides its own weights needs the vertex values.
+    fn classify_interpolation(&mut self) {
+        let mut smooth = BTreeSet::new();
+        // A branch into P2 bypasses P1. After a back edge the input registers
+        // may already contain values written later in the instruction stream.
+        let writes_weight =
+            |ins: &Insn| ins.mnemonic != "v_nop" && ins.dst.iter().any(|o| matches!(o, Opnd::Vgpr(0 | 1)));
+        let targets: BTreeSet<_> = self
+            .insns
+            .iter()
+            .filter(|i| i.enc == Enc::Sopp && Self::branch_cond(i.op).is_some())
+            .map(|i| i.offset as i64 + 4 + 4 * i.aux.imm)
+            .collect();
+        let has_back_edge = self
+            .insns
+            .iter()
+            .any(|i| i.enc == Enc::Sopp && Self::branch_cond(i.op).is_some() && i.aux.imm < 0);
+        let mut original_weights = !(has_back_edge && self.insns.iter().any(writes_weight));
+        let mut i = 0;
+        while i < self.insns.len() {
+            let ins = &self.insns[i];
+            if ins.enc == Enc::Vinterp {
+                let attr = ins.aux.imm as usize;
+                if ins.op == 2 && ins.raw[0] & 255 == 2 {
+                    self.flat_attrs.insert(attr);
+                } else {
+                    smooth.insert(attr);
+                    let paired = ins.op == 0
+                        && ins.src == [Opnd::Vgpr(0)]
+                        && original_weights
+                        && self.insns.get(i + 1).is_some_and(|p| {
+                            p.enc == Enc::Vinterp
+                                && p.op == 1
+                                && p.src == [Opnd::Vgpr(1)]
+                                && !targets.contains(&(p.offset as i64))
+                                && p.dst == ins.dst
+                                && p.aux.imm == ins.aux.imm
+                                && p.aux.imm2 == ins.aux.imm2
+                                && ins.dst != [Opnd::Vgpr(1)]
+                        });
+                    if paired {
+                        i += 1;
+                    } else {
+                        self.pulled_attrs.insert(attr);
+                    }
+                }
+            }
+            if writes_weight(ins) {
+                original_weights = false;
+            }
+            i += 1;
+        }
+        self.pulled_attrs.extend(self.flat_attrs.intersection(&smooth));
     }
 
     /// Classify descriptor loads and bind them to HLSL registers.
@@ -1553,8 +1689,7 @@ impl<'a> Emitter<'a> {
                         written.insert(d + k as u16);
                     }
                 }
-                // buffer_gl0_inv / buffer_gl1_inv (MUBUF 0x71 / 0x72) invalidate the GPU data caches: no
-                // resource, no data, and no PC equivalent.
+                // buffer_gl0_inv / buffer_gl1_inv (MUBUF 0x71 / 0x72) have no resource operands.
                 Enc::Mubuf if ins.op == 0x71 || ins.op == 0x72 => {}
                 Enc::Mubuf => {
                     let rs = ins.src.get(1).and_then(sg).ok_or("mubuf: bad srsrc")?;
@@ -1934,7 +2069,7 @@ impl<'a> Emitter<'a> {
                     self.touch(o);
                 }
                 let is_ctl = ins.enc == Enc::Sopp && (Self::branch_cond(ins.op).is_some() || ins.op == 1);
-                if !is_ctl {
+                if !is_ctl || ins.mnemonic == "s_swappc_b64" {
                     self.emit_insn(i, ins, is_ps, None)
                         .map_err(|e| format!("{e} [{} @ {:#x}]", ins.mnemonic, ins.offset))?;
                 }
@@ -2128,6 +2263,11 @@ impl<'a> Emitter<'a> {
                 Ok(())
             }
             Enc::Sopp => {
+                if m == "s_swappc_b64" {
+                    let link = d.ok_or("missing local PC link register")?;
+                    self.ws(&link, &format!("{:#x}u", ins.offset + 4))?;
+                    self.ws(&hi(&link), "0u")?;
+                }
                 let cond = match ins.op {
                     2 => Some("true".to_string()),
                     4 => Some("scc == 0u".into()),
@@ -2151,7 +2291,10 @@ impl<'a> Emitter<'a> {
                 let d = d.ok_or("no dst")?;
                 let (a, b) = (r(&s[0])?, r(&s[1])?);
                 if m == "s_bfm_b64" || m == "s_cselect_b64" || m == "s_lshl_b64" {
+                    let t = self.tmp;
+                    self.tmp += 1;
                     let (lo, hi_e) = if m == "s_lshl_b64" {
+                        self.touch(&hi(&s[0]));
                         let ah = r(&hi(&s[0]))?;
                         (
                             format!("((({b} & 63u) >= 32u) ? 0u : ({a} << ({b} & 31u)))"),
@@ -2160,18 +2303,26 @@ impl<'a> Emitter<'a> {
                             ),
                         )
                     } else if m == "s_bfm_b64" {
-                        // Bitfield mask ((1 << a) - 1) << b. Lane model keeps the low word;
-                        // counts >= 32 saturate it.
-                        (format!("((({a} & 63u) >= 32u ? 0xffffffffu : ((1u << ({a} & 31u)) - 1u)) << ({b} & 31u))"), "0u".to_string())
+                        // Intersect [start, end) with each 32-bit half of the destination.
+                        self.line(&format!("uint t{t}start = {b} & 63u, t{t}end = t{t}start + ({a} & 63u);"));
+                        let word_mask = |base: u32| {
+                            let start = low_mask(&format!("max(t{t}start, {base}u) - {base}u"));
+                            let end = low_mask(&format!("max(t{t}end, {base}u) - {base}u"));
+                            format!("({end} & ~{start})")
+                        };
+                        (word_mask(0), word_mask(32))
                     } else {
+                        self.touch(&hi(&s[0]));
+                        self.touch(&hi(&s[1]));
                         (
                             format!("((scc != 0u) ? {a} : {b})"),
                             format!("((scc != 0u) ? {} : {})", r(&hi(&s[0]))?, r(&hi(&s[1]))?),
                         )
                     };
-                    let t = self.tmp;
-                    self.tmp += 1;
                     self.line(&format!("uint t{t}l = {lo}; uint t{t}h = {hi_e};"));
+                    if m == "s_lshl_b64" {
+                        self.line(&format!("scc = ((t{t}l | t{t}h) != 0u) ? 1u : 0u;"));
+                    }
                     self.ws(&d, &format!("t{t}l"))?;
                     let dh = hi(&d);
                     self.touch(&dh);
@@ -2218,6 +2369,8 @@ impl<'a> Emitter<'a> {
                     "s_addc_u32" => format!("({a} + {b} + (scc & 1u))"),
                     "s_subb_u32" => format!("({a} - {b} - (scc & 1u))"),
                     "s_mul_i32" => format!("({a} * {b})"),
+                    // The subtraction wraps before taking the absolute value, including INT_MIN.
+                    "s_absdiff_i32" => format!("(asint({a} - {b}) < 0 ? ({b} - {a}) : ({a} - {b}))"),
                     "s_mul_hi_u32" => format!("tb_mulhi_u32({a}, {b})"),
                     "s_mul_hi_i32" => format!("tb_mulhi_i32({a}, {b})"),
                     "s_lshl_b32" => format!("({a} << ({b} & 31u))"),
@@ -2228,7 +2381,7 @@ impl<'a> Emitter<'a> {
                     "s_min_i32" => format!("asuint(min(asint({a}), asint({b})))"),
                     "s_max_i32" => format!("asuint(max(asint({a}), asint({b})))"),
                     "s_cselect_b32" => format!("((scc != 0u) ? {a} : {b})"),
-                    "s_bfe_u32" => format!("(({a} >> ({b} & 31u)) & ((1u << (({b} >> 16) & 31u)) - 1u))"),
+                    "s_bfe_u32" => format!("(({a} >> ({b} & 31u)) & {})", low_mask(&format!("({b} >> 16) & 127u"))),
                     "s_bfe_i32" => format!("tb_bfe_i32({a}, {b})"),
                     "s_bfm_b32" => format!("(((1u << ({a} & 31u)) - 1u) << ({b} & 31u))"),
                     "s_lshl1_add_u32" => format!("(({a} << 1) + {b})"),
@@ -2237,29 +2390,35 @@ impl<'a> Emitter<'a> {
                     "s_lshl4_add_u32" => format!("(({a} << 4) + {b})"),
                     _ => return Err("unsupported SOP2".into()),
                 };
+                let t = self.tmp;
+                self.tmp += 1;
+                let result = format!("t{t}");
+                self.line(&format!("uint {result} = {e};"));
+                // SCC may depend on both original sources even when SDST aliases one of them.
                 let scc = match m {
+                    "s_add_i32" => Some(signed_add_overflow(&a, &b, &result)),
+                    "s_sub_i32" => Some(format!("((({a} ^ {b}) & ({a} ^ {result})) >> 31)")),
                     "s_add_u32" => Some(format!("(({a} + {b}) < {a}) ? 1u : 0u")),
                     "s_addc_u32" => Some(format!("((({a} + {b}) < {a}) || (({a} + {b} + (scc & 1u)) < ({a} + {b}))) ? 1u : 0u")),
                     "s_subb_u32" => Some(format!("(({b} > {a}) || ((scc & 1u) > ({a} - {b}))) ? 1u : 0u")),
                     "s_sub_u32" => Some(format!("({b} > {a}) ? 1u : 0u")),
-                    "s_lshl_b32" | "s_lshr_b32" | "s_ashr_i32" | "s_bfe_u32" => Some("__NZ__".into()),
+                    "s_min_i32" => Some(format!("(asint({a}) < asint({b})) ? 1u : 0u")),
+                    "s_max_i32" => Some(format!("(asint({a}) > asint({b})) ? 1u : 0u")),
+                    "s_min_u32" => Some(format!("({a} < {b}) ? 1u : 0u")),
+                    "s_max_u32" => Some(format!("({a} > {b}) ? 1u : 0u")),
+                    "s_lshl_b32" | "s_lshr_b32" | "s_ashr_i32" | "s_bfe_u32" | "s_bfe_i32" | "s_absdiff_i32" => Some(format!("({result} != 0u) ? 1u : 0u")),
                     _ => None,
                 };
-                let t = self.tmp;
-                self.tmp += 1;
-                self.line(&format!("uint t{t} = {e};"));
-                match scc {
-                    Some(x) if x == "__NZ__" => self.line(&format!("scc = (t{t} != 0u) ? 1u : 0u;")),
-                    Some(x) => self.line(&format!("scc = {x};")),
-                    None => {}
+                if let Some(flag) = scc {
+                    self.line(&format!("scc = {flag};"));
                 }
-                self.ws(&d, &format!("t{t}"))
+                self.ws(&d, &result)
             }
             Enc::Sop1 => {
                 let d = d.ok_or("no dst")?;
                 let a = r(&s[0])?;
                 match m {
-                    "s_mov_b32" | "s_wqm_b32" => self.ws(&d, &a),
+                    "s_mov_b32" => self.ws(&d, &a),
                     // D[S0[4:0]] = 0 / 1
                     "s_bitset0_b32" => {
                         self.touch(&d);
@@ -2271,7 +2430,39 @@ impl<'a> Emitter<'a> {
                         let cur = r(&d)?;
                         self.ws(&d, &format!("({cur} | (1u << (({a}) & 31u)))"))
                     }
-                    "s_mov_b64" | "s_wqm_b64" => {
+                    "s_wqm_b32" | "s_wqm_b64" => {
+                        // For an ordinary scalar mask, replicate each nonempty nibble.
+                        // EXEC instead holds one guest bit per invocation.
+                        let t = self.tmp;
+                        self.tmp += 1;
+                        let wide = m.ends_with("_b64");
+                        if s[0] == Opnd::ExecLo {
+                            self.line("#if __SHADER_TARGET_MAJOR >= 6");
+                            self.line(&format!("uint4 t{t}ballot = WaveActiveBallot((exec_lo & 1u) != 0u);"));
+                            self.line(&format!("uint t{t}lane = WaveGetLaneIndex(); uint t{t}l = ((t{t}ballot[t{t}lane >> 5] >> (t{t}lane & 28u)) & 15u) != 0u;"));
+                            self.line("#else");
+                            self.line(&format!("uint4 t{t}ballot = uint4(exec_lo,0,0,0); uint t{t}l = exec_lo & 1u;"));
+                            self.line("#endif");
+                            self.line(&format!("uint t{t}h = 0u;"));
+                        } else {
+                            let expand = |word: &str| format!("((({word} | ({word} >> 1) | ({word} >> 2) | ({word} >> 3)) & 0x11111111u) * 15u)");
+                            self.line(&format!("uint t{t}l = {};", expand(&a)));
+                            let upper = if wide {
+                                self.touch(&hi(&s[0]));
+                                expand(&r(&hi(&s[0]))?)
+                            } else { "0u".into() };
+                            self.line(&format!("uint t{t}h = {upper};"));
+                        }
+                        if s[0] == Opnd::ExecLo {
+                            self.line(&format!("scc = any(t{t}ballot != 0u);"));
+                        } else {
+                            self.line(&format!("scc = ((t{t}l | t{t}h) != 0u);"));
+                        }
+                        self.ws(&d, &format!("t{t}l"))?;
+                        if wide { self.ws(&hi(&d), &format!("t{t}h"))?; }
+                        Ok(())
+                    }
+                    "s_mov_b64" => {
                         self.touch(&hi(&s[0]));
                         let ah = r(&hi(&s[0]))?;
                         let t = self.tmp;
@@ -2290,6 +2481,7 @@ impl<'a> Emitter<'a> {
                     "s_cmov_b32" => self.ws(&d, &format!("((scc != 0u) ? {a} : {})", name(&d)?)),
                     "s_brev_b32" => self.ws(&d, &format!("reversebits({a})")),
                     "s_bcnt1_i32_b64" => {
+                        self.touch(&hi(&s[0]));
                         // Population count of a 64-bit value — typically the number of active
                         // lanes (wave-level allocation). One invocation = one lane, so a lane
                         // mask counts as 0 or 1.
@@ -2318,9 +2510,21 @@ impl<'a> Emitter<'a> {
                         self.touch(&dh);
                         self.ws(&dh, "0u")
                     }
-                    "s_swappc_b64" => {
+                    "s_swappc_b64" if self.ex.stage == Stage::Vertex => {
                         // Vertex-fetch shader call: inputs are materialised from the D3D input layout.
                         self.line("// (fetch-shader call: vertex attributes come from the input layout)");
+                        Ok(())
+                    }
+                    "s_and_saveexec_b64" | "s_nand_saveexec_b64" => {
+                        self.touch(&hi(&s[0]));
+                        let upper = r(&hi(&s[0]))?;
+                        let invert = if m == "s_nand_saveexec_b64" { "~" } else { "" };
+                        let t = self.tmp;
+                        self.tmp += 1;
+                        self.line(&format!("uint t{t}l = {invert}({a} & exec_lo), t{t}h = {invert}({upper} & exec_hi);"));
+                        self.ws(&d, "exec_lo")?;
+                        self.ws(&hi(&d), "exec_hi")?;
+                        self.line(&format!("exec_lo = t{t}l; exec_hi = t{t}h; scc = ((exec_lo | exec_hi) != 0u);"));
                         Ok(())
                     }
                     _ if m.contains("saveexec") => {
@@ -2349,7 +2553,7 @@ impl<'a> Emitter<'a> {
                     }
                     // Return from a vertex shader chained in front of a geometry shader: the
                     // program ends here (it is followed directly by s_endpgm).
-                    "s_setpc_b64" if idx + 2 >= self.insns.len() => {
+                    "s_setpc_b64" if self.ex.stage == Stage::Vertex && idx + 2 >= self.insns.len() => {
                         self.line("// (return to the chained stage)");
                         Ok(())
                     }
@@ -2361,11 +2565,41 @@ impl<'a> Emitter<'a> {
                 let imm = format!("{:#x}u", ins.aux.imm as i32 as u32);
                 match m {
                     "s_movk_i32" => self.ws(&d, &imm),
+                    "s_cmovk_i32" => self.ws(&d, &format!("((scc != 0u) ? {imm} : {})", name(&d)?)),
+                    "s_setreg_imm32_b32" | "s_setreg_b32" | "s_getreg_b32"
+                        if matches!(ins.raw[0] & 63, 20 | 21) => {
+                        // The retail setup writes FLAT_SCRATCH_LO/HI. Model the
+                        // two register words and the encoded bit slice independently.
+                        let reg = format!("tb_flat_scratch{}", ins.raw[0] & 1);
+                        self.regs.insert(reg.clone());
+                        let shift = (ins.raw[0] >> 6) & 31;
+                        let width = ((ins.raw[0] >> 11) & 31) + 1;
+                        if shift + width > 32 { return Err("hardware register field exceeds word".into()); }
+                        let mask = u32::MAX >> (32 - width);
+                        if m == "s_getreg_b32" {
+                            return self.ws(&d, &format!("(({reg} >> {shift}) & {mask:#x}u)"));
+                        }
+                        let value = if m == "s_setreg_imm32_b32" {
+                            format!("{:#x}u", ins.raw.get(1).ok_or("missing hardware-register literal")?)
+                        } else {
+                            self.touch(&d);
+                            r(&d)?
+                        };
+                        self.line(&format!("{reg} = ({reg} & ~{:#x}u) | (({value} & {mask:#x}u) << {shift});", mask << shift));
+                        Ok(())
+                    }
                     // Hardware mode-register writes (rounding / denormal control) and the
                     // counter waits have no HLSL-visible effect.
                     "s_setreg_imm32_b32" | "s_setreg_b32" | "s_waitcnt_vscnt" | "s_waitcnt_vmcnt"
                     | "s_waitcnt_expcnt" | "s_waitcnt_lgkmcnt" => Ok(()),
-                    "s_addk_i32" => self.ws(&d, &format!("({} + {imm})", name(&d)?)),
+                    "s_addk_i32" => {
+                        let a = name(&d)?;
+                        let sum = format!("t{}", self.tmp);
+                        self.tmp += 1;
+                        self.line(&format!("uint {sum} = {a} + {imm};"));
+                        self.line(&format!("scc = {};", signed_add_overflow(&a, &imm, &sum)));
+                        self.ws(&d, &sum)
+                    }
                     "s_mulk_i32" => self.ws(&d, &format!("({} * {imm})", name(&d)?)),
                     _ if m.starts_with("s_cmpk_") => {
                         let fake = m.replace("s_cmpk_", "s_cmp_");
@@ -2475,7 +2709,11 @@ impl<'a> Emitter<'a> {
             }
             Enc::Mimg => self.emit_mimg(idx, ins),
             Enc::Mubuf if ins.op == 0x71 || ins.op == 0x72 => {
-                self.line("// (cache flush: no-op)");
+                // D3D12 exposes UAV memory visibility, not individual cache levels.
+                // A device fence has no thread rendezvous; guest S_BARRIER is separate.
+                if self.is_cs {
+                    self.line("DeviceMemoryBarrier();");
+                }
                 Ok(())
             }
             Enc::Mubuf => self.emit_mubuf(idx, ins),
@@ -2572,6 +2810,23 @@ impl<'a> Emitter<'a> {
             }
             Enc::Ds if self.is_gs && matches!(m, "ds_read_b32" | "ds_read2_b32" | "ds_write_b32" | "ds_write2_b32") => {
                 self.emit_gs_lds(ins)
+            }
+            Enc::Ds if self.is_cs && matches!(m, "ds_write_b64" | "ds_write2_b64") => {
+                if ins.raw[0] & (1 << 17) != 0 { return Err("GDS is unsupported".into()); }
+                self.uses_lds = true;
+                let offset = ins.aux.imm as u32;
+                let addr = r(&s[0])?;
+                let pairs = if m == "ds_write_b64" { 1 } else { 2 };
+                for k in 0..pairs {
+                    let byte = if pairs == 1 { offset } else { ((offset >> (8 * k)) & 255) * 8 };
+                    let Opnd::Vgpr(v) = s[1 + k] else { return Err("expected VGPR pair".into()) };
+                    let high = Opnd::Vgpr(v.checked_add(1).ok_or("invalid LDS register pair")?);
+                    self.touch(&high);
+                    let data = r(&s[1 + k])?;
+                    let upper = r(&high)?;
+                    self.line(&format!("if (exec_lo & 1u) {{ tb_lds[((({addr} + {byte}u) >> 2)) & 8191u] = {data}; tb_lds[((({addr} + {byte}u) >> 2) + 1u) & 8191u] = {upper}; }}"));
+                }
+                Ok(())
             }
             Enc::Ds
                 if self.is_cs
@@ -2676,29 +2931,24 @@ impl<'a> Emitter<'a> {
                 Ok(())
             }
             Enc::Ds if m == "ds_swizzle_b32" => {
-                // Quad swizzle (QDMode): each lane of a 2x2 pixel quad reads the lane selected
-                // by a 2-bit field of the 8-bit mask — how RDNA2 pixel shaders fetch neighbour
-                // values for derivatives. Per pixel: value at quad position (sx, sy) =
-                // v + (sx - px) * ddx_fine(v) + (sy - py) * ddy_fine(v), with (px, py) this
-                // pixel's position in its quad. Treats the register as float (derivative use).
-                if !is_ps {
-                    return Err("ds_swizzle outside a pixel shader".into());
-                }
+                if !is_ps { return Err("ds_swizzle outside a pixel shader".into()); }
                 let off = ins.aux.imm as u32;
-                if off & 0x8000 == 0 {
-                    return Err("ds_swizzle without QDMode unsupported".into());
-                }
+                if off & 0x8000 == 0 { return Err("ds_swizzle without QDMode unsupported".into()); }
                 self.uses_quad = true;
-                let src = f(&s[0])?;
+                let src = r(&s[0])?;
                 let t = self.tmp;
                 self.tmp += 1;
-                self.line(&format!("float t{t} = {src}; uint t{t}s = ({:#x}u >> (tb_quad * 2u)) & 3u;", off & 0xff));
-                self.wv(
-                    &d.ok_or("no dst")?,
-                    &format!(
-                        "asuint(t{t} + ((float)(t{t}s & 1u) - (float)(tb_quad & 1u)) * ddx_fine(t{t}) + ((float)(t{t}s >> 1) - (float)(tb_quad >> 1)) * ddy_fine(t{t}))"
-                    ),
-                )
+                // Read the original 32-bit words, including helper lanes. QuadReadLaneAt
+                // requires a uniform lane argument, so select after all four reads.
+                self.line("#if __SHADER_TARGET_MAJOR >= 6");
+                self.line(&format!("uint4 t{t}quad = uint4(QuadReadLaneAt({src}, 0), QuadReadLaneAt({src}, 1), QuadReadLaneAt({src}, 2), QuadReadLaneAt({src}, 3));"));
+                let dst = d.ok_or("no dst")?;
+                self.wv(&dst, &format!("t{t}quad[({:#x}u >> (tb_quad * 2u)) & 3u]", off & 255))?;
+                self.line("#else");
+                self.line(&format!("float t{t} = asfloat({src}); uint t{t}s = ({:#x}u >> (tb_quad * 2u)) & 3u;", off & 255));
+                self.wv(&dst, &format!("asuint(t{t} + ((float)(t{t}s & 1u) - (float)(tb_quad & 1u)) * ddx_fine(t{t}) + ((float)(t{t}s >> 1) - (float)(tb_quad >> 1)) * ddy_fine(t{t}))"))?;
+                self.line("#endif");
+                Ok(())
             }
             Enc::Vinterp => {
                 if !is_ps {
@@ -2715,6 +2965,41 @@ impl<'a> Emitter<'a> {
                 } else {
                     "0u".to_string()
                 };
+                if self.pulled_attrs.contains(&attr) {
+                    if let Some((ei, k)) = sig_lookup(&self.ex.input_sig, reg, chan) {
+                        let (_, n) = sig_type(&self.ex.input_sig[ei]);
+                        let field = if n == 1 { format!("i.i{ei}") } else { format!("i.i{ei}.{}", XYZW[k]) };
+                        let vertex = |index| {
+                            let bits = format!("GetAttributeAtVertex({field}, {index})");
+                            if self.ex.input_sig[ei].comp_type == 3 { bits } else { format!("asfloat({bits})") }
+                        };
+                        let p0 = vertex(0);
+                        let delta = |v| format!("({} - {p0})", vertex(v));
+                        let dst = d.ok_or("no interpolation destination")?;
+                        let expr = match ins.op {
+                            0 => format!("{p0} + {} * {}", f(&s[0])?, delta(1)),
+                            1 => format!("{} + {} * {}", f(&dst)?, f(&s[0])?, delta(2)),
+                            2 => match ins.raw[0] & 255 {
+                                0 => delta(1), 1 => delta(2), 2 => p0, _ => return Err("invalid interpolation parameter".into()),
+                            },
+                            _ => return Err("unsupported interpolation opcode".into()),
+                        };
+                        self.line("#if __SHADER_TARGET_MAJOR >= 6");
+                        self.wv(&dst, &format!("asuint({expr})"))?;
+                        self.line("#else");
+                        self.wv(&dst, &val)?;
+                        self.line("#endif");
+                        return Ok(());
+                    }
+                    // A missing channel is constant at all three vertices.
+                    let dst = d.ok_or("no interpolation destination")?;
+                    let constant = match ins.op {
+                        1 => return Ok(()), // the second delta is zero
+                        2 if matches!(ins.raw[0] & 255, 0 | 1) => "0u",
+                        _ => &val,
+                    };
+                    return self.wv(&dst, constant);
+                }
                 // p1 computes a partial term in hardware; the full interpolated value is
                 // already available per-pixel here, so both steps assign it.
                 self.wv(&d.ok_or("no dst")?, &val)
@@ -2885,7 +3170,7 @@ impl<'a> Emitter<'a> {
             let e = match m.as_str() {
                 "v_min3_f16" => format!("min(min({a}, {b}), {c})"),
                 "v_max3_f16" => format!("max(max({a}, {b}), {c})"),
-                _ => format!("max(min({a}, {b}), min(max({a}, {b}), {c}))"),
+                _ => format!("tb_med3({a}, {b}, {c})"),
             };
             return self.wv(&d, &hres(e));
         }
@@ -3108,6 +3393,7 @@ impl<'a> Emitter<'a> {
                 other => hi(other),
             };
             let n = format!("({} & 63u)", r(&s[0])?);
+            self.touch(&pair_hi(&s[1]));
             let (lo, hi_e) = (r(&s[1])?, r(&pair_hi(&s[1]))?);
             let t = self.tmp;
             self.tmp += 1;
@@ -3138,10 +3424,40 @@ impl<'a> Emitter<'a> {
             self.line(&format!("if (exec_lo & 1u) {{ uint t{t} = {x}; {x} = {y}; {y} = t{t}; }}"));
             return Ok(());
         }
+        if m == "v_permlanex16_b32" {
+            let flags = (ins.raw[0] >> 11) & 0xf;
+            if flags != 0 || ins.aux.mask != 0 || ins.aux.imm != 0 || ins.aux.imm2 != 0 {
+                return Err("permlanex16 modifiers unsupported".into());
+            }
+            let (value, lo, hi) = (r(&s[0])?, r(&s[1])?, r(&s[2])?);
+            let t = self.tmp;
+            self.tmp += 1;
+            self.line(&format!("uint t{t}lane = WaveGetLaneIndex(); uint t{t}sel = (t{t}lane & 8u) ? {hi} : {lo};"));
+            self.line(&format!("uint t{t}src = ((t{t}lane & ~15u) ^ 16u) | ((t{t}sel >> (4u * (t{t}lane & 7u))) & 15u);"));
+            self.line(&format!("uint t{t}value = WaveReadLaneAt({value}, t{t}src);"));
+            // FI=0, BOUND_CTRL=0: an inactive source preserves the destination.
+            self.line(&format!("uint4 t{t}active = WaveActiveBallot((exec_lo & 1u) != 0u);"));
+            self.line(&format!("if (t{t}active[t{t}src >> 5] & (1u << (t{t}src & 31u))) {{"));
+            self.wv(&d, &format!("t{t}value"))?;
+            self.line("}");
+            return Ok(());
+        }
         if m == "v_readfirstlane_b32" {
-            // Lane model: the first active lane's value. Compilers only use this on values
-            // that are uniform across the wave, so this lane's value is equivalent.
-            return self.ws(&d, &r(&s[0])?);
+            let value = r(&s[0])?;
+            if self.is_cs && compute_group(self.ex) == [1, 1, 1] {
+                return self.ws(&d, &value);
+            }
+            // Scalar writes reach every invocation. Select the first lane whose guest
+            // EXEC bit is set, even when the executing host wave also has masked lanes.
+            let t = self.tmp;
+            self.tmp += 1;
+            self.line("#if __SHADER_TARGET_MAJOR >= 6");
+            self.line(&format!("uint t{t} = WaveActiveMin((exec_lo & 1u) ? WaveGetLaneIndex() : 0xffffffffu);"));
+            self.ws(&d, &format!("WaveReadLaneAt({value}, t{t} == 0xffffffffu ? 0u : t{t})"))?;
+            self.line("#else");
+            self.ws(&d, &value)?;
+            self.line("#endif");
+            return Ok(());
         }
         let vop3 = ins.enc == Enc::Vop3;
         let k = format!("asfloat({:#x}u)", ins.raw.last().copied().unwrap_or(0));
@@ -3232,9 +3548,18 @@ impl<'a> Emitter<'a> {
             "v_mul_u32_u24" => format!("(({a} & 0xffffffu) * ({b} & 0xffffffu))"),
             "v_mul_i32_i24" => format!("asuint((asint({a} << 8) >> 8) * (asint({b} << 8) >> 8))"),
             "v_mul_lo_u32" => format!("({a} * {b})"),
-            // Count of mask bits below this lane, plus src1. One invocation = one lane with
-            // nothing below it, so the count term is zero.
-            "v_mbcnt_lo_u32_b32" | "v_mbcnt_hi_u32_b32" => b,
+            // Count the mask bits below this lane in the selected 32-bit word.
+            "v_mbcnt_lo_u32_b32" | "v_mbcnt_hi_u32_b32" => {
+                let lane = if m == "v_mbcnt_lo_u32_b32" { "WaveGetLaneIndex()" } else { "max(32u, WaveGetLaneIndex()) - 32u" };
+                let t = self.tmp;
+                self.tmp += 1;
+                self.line("#if __SHADER_TARGET_MAJOR >= 6");
+                self.line(&format!("uint t{t} = countbits({a} & {});", low_mask(lane)));
+                self.line("#else");
+                self.line(&format!("uint t{t} = 0u;"));
+                self.line("#endif");
+                format!("({b} + t{t})")
+            }
             "v_mul_hi_u32" => format!("tb_mulhi_u32({a}, {b})"),
             "v_mul_hi_u32_u24" => format!("tb_mulhi_u32({a} & 0xffffffu, {b} & 0xffffffu)"),
             "v_mul_hi_i32_i24" => format!("tb_mulhi_i32(asuint(asint({a} << 8) >> 8), asuint(asint({b} << 8) >> 8))"),
@@ -3768,7 +4093,10 @@ impl<'a> Emitter<'a> {
                 self.tmp += 1;
                 self.line(&format!("uint t{t} = 0u;"));
                 self.line(&format!("if (exec_lo & 1u) {func}(uav{slot}[uint{ncoord}({})], {}, t{t});", c.join(", "), r(&o)?));
-                return self.wv(&o, &format!("t{t}"));
+                if ins.raw[0] & (1 << 13) != 0 { // GLC requests the old value in VDATA.
+                    self.wv(&o, &format!("t{t}"))?;
+                }
+                return Ok(());
             }
             if ins.mnemonic == "image_store" && as_uint {
                 let o = Opnd::Vgpr(vd);
@@ -4334,10 +4662,13 @@ impl<'a> Emitter<'a> {
             }
             let _ = writeln!(h, "SamplerComparisonState scmp{slot} : register(s{slot});");
         }
+        let device_fence = self.is_cs && self.insns.iter().any(|i| i.enc == Enc::Mubuf && matches!(i.op, 0x71 | 0x72));
+        let coherent = if device_fence { "globallycoherent " } else { "" };
         for (is_uav, slot) in self.sbuf.keys() {
             let (ty, nm, reg) = if *is_uav { ("RWStructuredBuffer", "ubuf", "u") } else { ("StructuredBuffer", "sbuf", "t") };
+            let qualifier = if *is_uav { coherent } else { "" };
             let _ = writeln!(h, "struct TbElem_{nm}{slot} {{ uint w[{}]; }};
-{ty}<TbElem_{nm}{slot}> {nm}{slot} : register({reg}{slot});", self.sbuf_words((*is_uav, *slot)));
+{qualifier}{ty}<TbElem_{nm}{slot}> {nm}{slot} : register({reg}{slot});", self.sbuf_words((*is_uav, *slot)));
             if self.sbuf_flat.contains(&(*is_uav, *slot)) {
                 // Word at a byte offset: the element stride is a property of the view, not of
                 // the shader, so it is queried.
@@ -4346,7 +4677,7 @@ impl<'a> Emitter<'a> {
         }
         for (is_uav, slot) in &self.tbuf {
             let _ = if *is_uav && self.tbuf_uint.contains(slot) {
-                writeln!(h, "RWBuffer<uint> utb{slot} : register(u{slot});")
+                writeln!(h, "{coherent}RWBuffer<uint> utb{slot} : register(u{slot});")
             } else {
                 let e = match self.tbuf_ty.get(&(*is_uav, *slot)) {
                     Some(2) => "int4",
@@ -4354,7 +4685,7 @@ impl<'a> Emitter<'a> {
                     None => "float4",
                 };
                 if *is_uav {
-                    writeln!(h, "RWBuffer<{e}> utb{slot} : register(u{slot});")
+                    writeln!(h, "{coherent}RWBuffer<{e}> utb{slot} : register(u{slot});")
                 } else {
                     writeln!(h, "Buffer<{e}> stb{slot} : register(t{slot});")
                 }
@@ -4376,7 +4707,7 @@ impl<'a> Emitter<'a> {
                 (5, true) => "RWTexture2DArray<uint>".to_string(),
                 _ => return Err(format!("UAV dim {dim} unsupported")),
             };
-            let _ = writeln!(h, "{ty} uav{slot} : register(u{slot});");
+            let _ = writeln!(h, "{coherent}{ty} uav{slot} : register(u{slot});");
         }
         if self.uses_code {
             // Constant tables embedded after the program in the code section. Code pointers
@@ -4428,6 +4759,9 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) {{");
 ");
             return Ok(h);
         }
+        if !self.pulled_attrs.is_empty() {
+            h.push_str("#if __SHADER_TARGET_MAJOR >= 6\n#define TB_VERTEX_INPUT nointerpolation\n#else\n#define TB_VERTEX_INPUT\n#endif\n");
+        }
         let _ = writeln!(h, "struct SIn {{");
         // HLSL requires system-generated inputs (SV_IsFrontFace, SV_SampleIndex,
         // SV_PrimitiveID, ...) to follow all ordinary parameters, so emit them last.
@@ -4445,11 +4779,18 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) {{");
                     let s = semantic(o);
                     s.starts_with("SV_DepthLessEqual") || s.starts_with("SV_DepthGreaterEqual")
                 });
+                // A parameter read exclusively with V_INTERP_MOV P0 comes from
+                // the provoking vertex. Keep other attributes smoothly interpolated.
+                let attr = self.ps_attrs.iter().position(|&r| e.sysval == 0 && r == e.register);
+                let flat_p0 = is_ps && attr.is_some_and(|a| self.flat_attrs.contains(&a));
+                let pulled = is_ps && attr.is_some_and(|a| self.pulled_attrs.contains(&a));
                 let interp = if !is_ps {
                     ""
                 } else if e.sysval == 1 && cons_depth {
                     "linear noperspective centroid "
-                } else if e.comp_type != 3 {
+                } else if pulled {
+                    "TB_VERTEX_INPUT "
+                } else if e.comp_type != 3 || flat_p0 {
                     "nointerpolation "
                 } else if e.name.contains("_centroid") {
                     "centroid "
@@ -4458,6 +4799,9 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) {{");
                 };
                 let _ = writeln!(h, "    {interp}{ty} i{ei} : {};", semantic(e));
             }
+        }
+        if !self.pulled_attrs.is_empty() {
+            h.push_str("#if __SHADER_TARGET_MAJOR >= 6\n    float3 tb_bary : SV_Barycentrics;\n#endif\n");
         }
         let pos_field = match ex.input_sig.iter().position(|e| e.sysval == 1) {
             Some(ei) => format!("i.i{ei}"),
@@ -4562,6 +4906,13 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) {{");
             let _ = writeln!(init, "    uint tb_quad = ((uint){pos_field}.x & 1u) | (((uint){pos_field}.y & 1u) << 1);");
         }
         if is_ps {
+            if !self.pulled_attrs.is_empty() {
+                init.push_str("#if __SHADER_TARGET_MAJOR >= 6\n");
+                for (reg, weight) in [("v0","y"),("v1","z")] {
+                    if self.regs.contains(reg) { let _ = writeln!(init, "    {reg} = asuint(i.tb_bary.{weight});"); }
+                }
+                init.push_str("#endif\n");
+            }
             // PS entry ABI (observed): v0/v1 = perspective-centre barycentrics, then the
             // fragment position x, y, z, 1/w in v2..v5 when the shader reads it.
             if let Some(ei) = ex.input_sig.iter().position(|e| e.sysval == 1) {

@@ -184,3 +184,21 @@ fn thread_dispatch_metadata_rejects_access_to_the_wave_mask() {
     assert_eq!(make(0x7e00_0281), Some([8, 4, 1])); // v_mov_b32 v0, 1
     assert_eq!(make(0x7e00_027e), None); // v_mov_b32 v0, exec_lo
 }
+
+/// A coherent GPU may return the expected value even if the translator drops the fence.
+/// Check the device-scope lowering as well as the cross-wave readback in Coin Run.
+#[test]
+fn buffer_cache_controls_fence_compute_uavs() {
+    for opcode in [0x71, 0x72] {
+        let program = [
+            0xf408_0302, 0xfa00_0000, // UAV descriptor in s[12:15]
+            0xe070_2000, 0x8003_0107, // store v1
+            0xe000_0000 | opcode << 18, 0, S_ENDPGM,
+        ];
+        let root = RootSig { version: 1, flags: 0, params: vec![table(1, 1, 0)], num_static_samplers: 0 };
+        let ex = shader(Stage::Compute, &program, vec![], vec![], Some(root));
+        let hlsl = translate(&ex).unwrap().hlsl;
+        assert!(hlsl.contains("globallycoherent RWStructuredBuffer"));
+        assert_eq!(hlsl.matches("DeviceMemoryBarrier();").count(), 1);
+    }
+}

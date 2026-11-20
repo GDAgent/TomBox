@@ -36,7 +36,7 @@ fn main() -> std::process::ExitCode {
         return ExitCode::FAILURE;
     }
     let t = hlsl::translate(&ex).expect("translate");
-    let profile = dxc::profile_for(t.profile);
+    let profile = t.dxc_profile();
     let code = match dxc::compile(&t.hlsl, &profile) {
         Ok(c) => c,
         Err(e) => {

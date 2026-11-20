@@ -1134,3 +1134,55 @@ existing retail scan. [Per-instruction results](../tools/progress/coin-rdna2-cov
 All six unsigned `s_cmpk_*` predicates initially failed inputs with the high immediate
 bit set. The decoder now zero-extends the 16-bit immediate for unsigned comparisons
 and sign-extends it for signed comparisons. [AMD RDNA 2 ISA reference, §12.2](https://docs.amd.com/api/khub/documents/Et~wpu9g~Ffl7d9q0QZ~Og/content)
+
+## 2026-11-20 — Scalar arithmetic and condition flags
+
+TomBox now translates `s_absdiff_i32` and `s_cmovk_i32`. Coin Run reproduced stale
+scalar condition flags (SCC) on seven instructions. Signed add, subtract and add-immediate
+now set SCC on overflow. Signed and unsigned minimum and maximum set SCC when the first
+operand wins a strict comparison and clear it on ties. [AMD RDNA 2 ISA reference, §§12.1–12.2](https://docs.amd.com/api/khub/documents/Et~wpu9g~Ffl7d9q0QZ~Og/content)
+
+Coin Run gained 26 cases for 23 scalar instructions. They check the result and flag
+against CPU arithmetic when the destination overwrites a source, and check two-word
+carry and borrow against 64-bit addition and subtraction. Under Proton, all 313 shader
+cases passed across 1,238,061 input vectors. Direct ALU and memory checks now cover
+163 of 272 retail-observed instructions, up from 152. [Per-instruction results](../tools/progress/coin-rdna2-coverage.tsv)
+
+## 2026-11-20 — Direct GPU checks for 203 retail shader instructions
+
+Direct GPU verification increased from 163 to 203 of 272 retail-observed instructions.
+Coin Run added checks for 34 arithmetic and branch instructions. The companion memory
+suite added six buffer load and store instructions, including checks that partial stores
+preserve adjacent words. Under Proton, all 358 Coin Run shader cases passed across
+1,424,317 input vectors, along with 77 memory cases. [Per-instruction results](../tools/progress/coin-rdna2-coverage.tsv)
+
+GPU readback exposed five translation errors. Unsigned scalar bitfield extraction
+discarded the upper width bits. Signed extraction and 64-bit scalar left shift left
+the condition flag stale. The 64-bit bitfield mask lost its upper word and wrapped
+offsets at bit 32. Half-precision median selected the wrong value for NaN inputs.
+The register-pair probes check both halves and the scalar condition flag. The seven
+branch probes check control flow with independently seeded SCC, VCC and EXEC in a
+one-thread workgroup. [AMD RDNA 2 ISA reference, §§12.1, 12.5 and 12.12](https://docs.amd.com/api/khub/documents/Et~wpu9g~Ffl7d9q0QZ~Og/content)
+
+## 2026-11-20 — GPU probes for all 272 retail-observed shader instructions
+
+Coin Run increased direct reference coverage from 203 to 269 retail-observed
+mnemonics. The three remaining cache controls have scoped GPU checks. Each buffer
+invalidation runs between a UAV write and a reload from another wave in a 128-thread
+group. Both lower to a device memory barrier on coherent compute UAVs. All three
+defined instruction-prefetch modes preserve the tested register value and condition
+flag. The physical cache level and fetch distance remain unmeasured.
+[Per-instruction results](../tools/progress/coin-rdna2-coverage.tsv)
+
+The compute suite passed 438 shaders over 1,757,689 input vectors. The 98 memory
+cases include both settings of the atomic return flag and every word of the scalar
+buffer loads. A 256-pixel graphics reference exposed errors in flat interpolation
+and diagonal quad reads. It also checks geometry emission and the intermediate
+value between the two interpolation steps. The graphics probe uses DXC shader
+model 6.1 for per-vertex reads. The wave64 run additionally checks nonzero upper-half
+lane counts. The complete suite passed on NVIDIA under Xvfb and on Radeon with the
+desktop display. All 43 distinct checked-in retail shader fixtures compiled with DXC.
+
+The retail tracker now uses the decoded names `v_fmac_f16`, `v_fmaak_f16` and
+`v_permlanex16_b32` for three existing entries. Their retail occurrence counts carry
+over from the earlier scan. [AMD RDNA 2 ISA reference](https://docs.amd.com/api/khub/documents/Et~wpu9g~Ffl7d9q0QZ~Og/content)

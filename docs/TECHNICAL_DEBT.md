@@ -91,13 +91,14 @@ Honest ledger. Updated continuously.
   are still treated as constant-buffer reads, which is wrong if one candidate is a buffer.
   The structured read declares a 4-dword element and indexes past it when the real stride is
   larger (works with DXC's raw-buffer lowering; not guaranteed by HLSL).
-* MUBUF store opcodes 0x1e/0x1f were swapped by analogy with the load pair; unverified.
 * Indexed constant-buffer arrays assume a 16-byte element stride.
 * Compute thread-group id registers are assumed to follow the user-data SGPRs.
 * PS entry ABI assumes perspective-centre barycentrics in v0/v1 and position in v2..v5.
-* `v_readfirstlane` / `v_mbcnt` / `s_bcnt1(exec)` are translated under a one-lane-per-
-  invocation model (exact only when the compiler used them for wave-level bookkeeping).
-* Translated output has not yet been validated against rendered pixels.
+* DXC uses host wave operations for `v_readfirstlane` and `v_mbcnt`. Guest and host
+  wave widths can differ. A scalar population count of EXEC still sees the invocation's
+  projected mask. The SM5 fallback retains its single-lane approximations.
+* Coin Run validates synthetic graphics output against reference pixels. Retail
+  shader equivalence still needs matched reference captures.
 
 ## Placed textures / texel mirroring (2026-11-17)
 
@@ -172,10 +173,19 @@ Honest ledger. Updated continuously.
 - **Covered by the GPU conformance test** (`tests/valu_conformance.rs`, 263 cases):
   per-instruction behavior on one host GPU, including two SDWA word-select comparisons
   and a pair of CMPX instructions that successively mask lanes. Gaps include other SDWA
-  forms, DPP, `v_readlane` / `v_writelane`, 64-bit ops, `v_movrel*`, interpolation and
-  interactions inside larger shaders. Coin Run also checks the 24 signed and unsigned
-  32-bit scalar register and immediate comparison mnemonics through Xbox compute PSOs.
-  The remaining scalar ALU families need dedicated probes. [Coverage report](../tools/progress/coin-rdna2-coverage.tsv)
+  forms, general DPP patterns, dynamic lane indices, and interactions inside larger shaders.
+  Coin Run checks constant-index lane spills, relative VGPR moves, a 128-thread LDS
+  exchange and selected interpolation forms. Through Xbox compute PSOs, Coin Run also checks
+  24 scalar comparisons and 23 scalar arithmetic, selection, move and sign-extension
+  instructions. The arithmetic probes read back both the result and the scalar condition
+  flag, including carry and borrow across two words. Coin Run also checks both halves
+  of scalar left shifts and bitfield masks, and 32-bit signed and unsigned field extraction.
+  Its seven branch probes use one active lane per workgroup. Branches with divergent
+  lanes and scalar 64-bit right shifts still need dedicated probes. The local PC-transfer
+  tests cover a GETPC plus constant displacement. Reciprocal exception flags and
+  concurrent stores to adjacent LDS halfwords remain untested. Cache probes measure
+  cross-wave UAV visibility and register preservation. Hardware cache levels and prefetch
+  distance remain unverified. [Coverage report](../tools/progress/coin-rdna2-coverage.tsv)
 - **Fused vs. unfused multiply-add is not controlled.** HLSL has no single-precision FMA;
   `a * b + c` may or may not be fused by DXC/the driver, while the console fuses `v_fma*` /
   `v_fmac*` and does not fuse `v_mad*` / `v_mac*`. The test accepts either.

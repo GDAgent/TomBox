@@ -22,7 +22,7 @@ def exact(stream, size):
 
 def package_cases(directory):
     # gfx1030: load one four-word input from u0[group_id.x], seed VCC and the
-    # accumulator, then run the case's original ISA in a one-thread workgroup.
+    # accumulator, then run the case's original ISA. Multi-thread cases also receive the local ID.
     prefix = [
         0xF4080302, 0xFA000000, 0xBF8CC07F,     # load UAV descriptor into s[12:15]
         0x7E0E0205,                            # v7 = group ID x
@@ -39,13 +39,29 @@ def package_cases(directory):
         count, = struct.unpack("<I", exact(source, 4))
         suite.write(struct.pack("<I", count))
         for _ in range(count):
-            words, groups = struct.unpack("<II", exact(source, 8))
-            if not 0 < words <= 65536 or not 0 < groups <= 65535:
+            words, groups, threads, constants = struct.unpack("<4I", exact(source, 16))
+            if not (0 < words <= 65536 and 0 < groups <= 65535 and threads in (1, 32, 64, 128) and constants <= 1024):
                 raise ValueError("invalid shader size or dispatch dimensions")
             body = struct.unpack(f"<{words}I", exact(source, words * 4))
             if body[-1] != 0xBF810000:
                 raise ValueError("probe missing s_endpgm")
-            xbox = shader(5, [*prefix, *body[:-1], *suffix], signature(), signature(), compute_root, (1, 1, 1))
+            table = struct.unpack(f"<{constants}I", exact(source, constants * 4))
+            program = list(body[:-1])
+            entry = prefix
+            finish = suffix
+            if threads > 1:
+                # Per group, choose one writer from the input. The CPU knows which
+                # lane produced the output even when the instruction exchanges data.
+                entry = [0xBEBC047E, 0x7E280300, *prefix, 0x362A00FF, threads - 1]
+                # s[60:61] holds the launch EXEC mask. Restore every original
+                # lane before selecting the writer, including lanes in the high word.
+                finish = [suffix[0], 0xBEFE043C, *suffix[2:-3], 0x7DA42B14, *suffix[-3:]]
+            if table:
+                # Relocate the first GETPC's following instruction to the embedded table.
+                if program[:3] != [0xBE901F00, 0x8010FF10, 0xC0DE0000]:
+                    raise ValueError("missing PC-relative table relocation")
+                program[2] = 4 * (len(program) - 1 + len(finish))
+            xbox = shader(5, [*entry, *program, *finish, *table], signature(), signature(), compute_root, (threads, 1, 1))
             suite.write(struct.pack("<II", len(xbox), groups))
             suite.write(xbox)
             # Second half of each 32-byte UAV record is reserved for the shader's outputs.

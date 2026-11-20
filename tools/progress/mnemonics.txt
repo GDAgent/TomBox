@@ -191,7 +191,9 @@ v_fma_f32 103093 103093
 v_fma_mix_f32 16 16
 v_fma_mixhi_f16 2 2
 v_fma_mixlo_f16 4 4
+v_fmaak_f16 2 2
 v_fmaak_f32 12542 12542
+v_fmac_f16 3 3
 v_fmac_f32 99992 99992
 v_fract_f32 28181 28181
 v_interp_mov_f32 15330 15330
@@ -203,13 +205,11 @@ v_lshl_or_b32 5597 5597
 v_lshlrev_b32 21537 21537
 v_lshlrev_b64 18 18
 v_lshrrev_b32 13484 13484
-v_mac_f16 3 3
 v_mac_f32 4744 4744
 v_mad_f32 4384 4384
 v_mad_i32_i24 165 165
 v_mad_legacy_f32 922 922
 v_mad_u32_u24 4202 4202
-v_madak_f16 2 2
 v_madak_f32 6254 6254
 v_max3_f16 2 2
 v_max3_f32 24054 24054
@@ -245,6 +245,7 @@ v_not_b32 10 10
 v_or3_b32 2677 2677
 v_or_b32 32231 32231
 v_perm_b32 2 2
+v_permlanex16_b32 2 2
 v_pk_fma_f16 1 1
 v_pk_max_f16 2 2
 v_pk_min_f16 2 2
@@ -269,4 +270,3 @@ v_trunc_f32 49714 49714
 v_writelane_b32 5603 5603
 v_xad_u32 2954 2954
 v_xor_b32 251 251
-vop3<0x378> 2 2

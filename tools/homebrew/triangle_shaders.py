@@ -27,7 +27,7 @@ def signature(*elements):
     return words(len(elements), 8) + entries + names
 
 
-def shader(stage, instructions, inputs, outputs, root=None, threads=(0, 0, 0)):
+def shader(stage, instructions, inputs, outputs, root=None, threads=(0, 0, 0), psv=None):
     # The compute preamble with explicit dimensions is followed by a driver v_nop marker.
     marker = (0xD5800000, 0x03FE0000, 0) if any(threads) else ()
     code = words(16, *threads, *marker, *instructions)
@@ -40,6 +40,8 @@ def shader(stage, instructions, inputs, outputs, root=None, threads=(0, 0, 0)):
             + b"DXIL" + words(0x100, 16 + len(body) - 4, 4) + body)
 
     chunks = [(b"ISG1", inputs), (b"OSG1", outputs), (b"DXIL", dxil)]
+    if psv is not None:
+        chunks.append((b"PSV0", psv))
     if root is not None:
         chunks.append((b"RTS0", root))
     start = 32 + 4 * len(chunks)
@@ -111,6 +113,31 @@ if __name__ == "__main__":
         end,
     ], signature(("POSITION", 0, 15), ("TEXCOORD", 0, 15)),
        signature(("SV_Position", 1, 0), ("TEXCOORD", 0, 0))))
+    # Geometry probe: emit a different triangle from the (offscreen) input.
+    # Each 48-byte output record holds position, UV and a flat per-vertex tag.
+    geometry = [0x7E100280]  # v8 = LDS output base 0
+    for vertex, (x, y, u, v, tag) in enumerate([(-1, 1, 0, 0, .25), (3, 1, 2, 0, .5), (-1, -3, 0, 2, .75)]):
+        for component, value in enumerate([x, y, 0, 1, u, v, (0, 1, .5)[vertex], 0, tag, 0, 0, 0]):
+            literal, = struct.unpack("<I", struct.pack("<f", value))
+            geometry.extend([0x7E1202FF, literal,  # v9 = data
+                             0xD8340000 | (48 * vertex + 4 * component), 0x0908])  # ds_write_b32
+        geometry.append(0xBF900022 if vertex < 2 else 0xBF900032)  # emit; final emit and cut
+    geometry.extend([0xBF900003, end])
+    # PSVRuntimeInfo1: triangle input, triangle-strip output, max 3 vertices.
+    psv = words(28, 3, 5, 1, 0, 0, 0, (3 << 16) | 2, 0)
+    gs_out = signature(("SV_Position", 1, 0), ("TEXCOORD", 0, 0), ("COLOR", 0, 0))
+    emit("shader_probe_gs", shader(2, geometry, signature(("SV_Position", 1, 15)), gs_out, psv=psv))
+    emit("shader_probe_ps", shader(0, [
+        0xC8100000, 0xC8110001,  # interpolate u into v4
+        0xC8140100, 0xC8150101,  # interpolate v into v5
+        0xC81A0402,              # v_interp_mov_f32 v6, p0, attr1.x
+        0x10100B04,              # v8 = u*v, nonlinear across a pixel quad
+        0xD8D4801B, 0x08000008,  # ds_swizzle_b32 v8, v8: diagonally opposite pixel
+        # Use an intermediate P1 value and custom I/J weights in alpha.
+        0x7E1202FF, 0x3E800000, 0x7E1402F0,  # v9=.25, v10=.5
+        0xC81C0209, 0x060E0EFF, 0x3E000000, 0xC81D020A,
+        0xF800080F, 0x07060804, end,
+    ], signature(("SV_Position", 1, 0), ("TEXCOORD", 0, 7), ("COLOR", 0, 1)), signature(("SV_Target", 64, 0))))
     # Fixed tilted view and perspective projection of camera-relative world positions.
     # gfx1030 encodings assembled with llvm-mc. UVs pass through to the atlas sampler.
     emit("scene_vs", shader(1, [

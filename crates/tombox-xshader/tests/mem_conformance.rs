@@ -370,6 +370,8 @@ fn cases() -> Vec<Case> {
     modifier_cases(&mut c);
     lod_cases(&mut c);
     buffer_cases(&mut c);
+    atomic_cases(&mut c);
+    scalar_load_cases(&mut c);
     a16_lod_cases(&mut c);
     c
 }
@@ -482,6 +484,7 @@ fn buffer_cases(c: &mut Vec<Case>) {
     // the view are not loaded at all, the instruction writes one VGPR).
     for (name, op, n, fmt, fbytes) in [
         ("buffer_load_format_x r32f", LOAD_FORMAT_X, 1u32, R32F, 4u32),
+        ("buffer_load_format_xy rgba32f", 0x01, 2, RGBA32F, 16),
         ("buffer_load_format_xyz rgba32f", LOAD_FORMAT_XYZ, 3, RGBA32F, 16),
         ("buffer_load_format_xyzw rgba32f", LOAD_FORMAT_XYZW, 4, RGBA32F, 16),
     ] {
@@ -565,27 +568,61 @@ fn buffer_cases(c: &mut Vec<Case>) {
         });
     }
 
-    // Structured store, 16-byte elements.
-    {
-        let mut words = prologue(None, None, Some(0));
-        words.extend(mubuf(STORE_DWORDX4, 0, false, true, 0, 8, U_SGPR));
+    // Partial loads start inside the element. Check untouched destination registers
+    // and include four indices beyond the end of the SRV.
+    for (name, op, count, start) in [
+        ("buffer_load_dwordx2", 0x0d, 2, 1),
+        ("buffer_load_dwordx4", 0x0e, 4, 0),
+    ] {
+        let data: Vec<u32> = (0..4 * N).map(|i| 17 * i + 5).collect();
+        let mut words = prologue(Some(0), None, None);
+        words.extend(mubuf(op, 4 * start, false, true, 0, DATA as u32, T_SGPR));
         words.push(S_ENDPGM);
         c.push(Case {
-            name: "buffer_store_dwordx4 structured".into(),
+            name: format!("{name} structured"),
+            words,
+            srv: vec![Binding::Buffer(BufferData { data: words_le(&data), format: 0, format_bytes: 0, stride: 16 })],
+            samplers: vec![],
+            uav: vec![],
+            inputs: (0..N + 4).map(|i| ([i, 0, 0, 0], [0; 4])).collect(),
+            want: Box::new(move |a, _| {
+                let v = std::array::from_fn(|k| if a[0] < N { 17 * (4 * a[0] + start + k as u32) + 5 } else { 0 });
+                packed(v, (1 << count) - 1)
+            }),
+            uav_check: None,
+            sm66: false,
+        });
+    }
+
+    // One writer per element. Read back the entire UAV including the words before
+    // and after each partial store, which must retain their initialization pattern.
+    const STORED_ELEMENTS: u32 = 64;
+    for (name, op, count, start) in [
+        ("buffer_store_dword", 0x1c, 1, 2),
+        ("buffer_store_dwordx2", 0x1d, 2, 1),
+        ("buffer_store_dwordx3", 0x1f, 3, 1),
+        ("buffer_store_dwordx4", STORE_DWORDX4, 4, 0),
+    ] {
+        let mut words = prologue(None, None, Some(0));
+        words.extend(mubuf(op, 4 * start, false, true, 0, 8, U_SGPR));
+        words.push(S_ENDPGM);
+        c.push(Case {
+            name: format!("{name} structured"),
             words,
             srv: vec![],
             samplers: vec![],
-            uav: vec![Binding::Buffer(BufferData { data: vec![0x55; (N * 16) as usize], format: 0, format_bytes: 0, stride: 16 })],
-            inputs: (0..N).map(|i| ([i, 0, 0, 0], [7 * i, 7 * i + 1, 7 * i + 2, 7 * i + 3])).collect(),
+            uav: vec![Binding::Buffer(BufferData { data: vec![0x55; (STORED_ELEMENTS * 16) as usize], format: 0, format_bytes: 0, stride: 16 })],
+            inputs: (0..STORED_ELEMENTS).map(|i| ([i, 0, 0, 0], [7 * i, 7 * i + 1, 7 * i + 2, 7 * i + 3])).collect(),
             want: Box::new(|_, _| packed([0; 4], 0)),
             uav_check: Some(Box::new(move |b: &Binding| {
                 let Binding::Buffer(b) = b else { return Err("not a buffer".into()) };
-                for i in 0..N {
+                for i in 0..STORED_ELEMENTS {
                     for k in 0..4 {
                         let o = (16 * i + 4 * k) as usize;
                         let got = u32::from_le_bytes(b.data[o..o + 4].try_into().unwrap());
-                        if got != 7 * i + k {
-                            return Err(format!("element {i}.{k} = {got}, want {}", 7 * i + k));
+                        let want = if (start..start + count).contains(&k) { 7 * i + k - start } else { 0x5555_5555 };
+                        if got != want {
+                            return Err(format!("element {i}.{k} = {got:08x}, want {want:08x}"));
                         }
                     }
                 }
@@ -593,6 +630,144 @@ fn buffer_cases(c: &mut Vec<Case>) {
             })),
             sm66: false,
         });
+    }
+}
+
+/// A full group addresses distinct locations. Check the final UAV and the optional
+/// old value independently for both settings of the return-value (GLC) bit.
+fn atomic_cases(cases: &mut Vec<Case>) {
+    const R32_UINT: u32 = 42;
+    type Update = fn(u32, u32) -> u32;
+    let ops: &[(&str, u32, Update)] = &[
+        ("buffer_atomic_add", 0x32, u32::wrapping_add),
+        ("buffer_atomic_swap", 0x30, |_, new| new),
+        ("buffer_atomic_umax", 0x38, u32::max),
+        ("buffer_atomic_umin", 0x36, u32::min),
+        ("image_atomic_add", 0x11, u32::wrapping_add),
+        ("image_atomic_umax", 0x17, u32::max),
+    ];
+    let old = |i: u32| (i + 1).wrapping_mul(0xe16d_2937);
+    let operand = |i: u32| (64 - i).wrapping_mul(0x9715_50c3);
+    for &(name, op, update) in ops {
+        for glc in [false, true] {
+            let image = name.starts_with("image");
+            let init = words_le(&(0..64).map(old).collect::<Vec<_>>());
+            let binding = if image {
+                Binding::Texture(Texture {
+                    dim: TexDim::D2,
+                    format: R32_UINT,
+                    texel_bytes: 4,
+                    width: 8,
+                    height: 8,
+                    depth: 1,
+                    mips: 1,
+                    data: init,
+                })
+            } else {
+                Binding::Buffer(BufferData {
+                    data: init,
+                    format: R32_UINT,
+                    format_bytes: 4,
+                    stride: 0,
+                })
+            };
+            let mut words = prologue(None, None, Some(0));
+            words.push(0x7e08_0308); // v4 = v8 (operand).
+            let mut atomic = if image {
+                mimg(
+                    op,
+                    D2,
+                    1,
+                    0,
+                    4,
+                    U_SGPR,
+                    0,
+                    Flags {
+                        unorm: true,
+                        ..Default::default()
+                    },
+                )
+            } else {
+                mubuf(op, 0, false, true, 0, 4, U_SGPR)
+            };
+            atomic[0] |= u32::from(glc) << if image { 13 } else { 14 };
+            words.extend(atomic);
+            words.extend([S_WAITCNT_0, S_ENDPGM]);
+            cases.push(Case {
+                name: format!("{name} glc={glc}"),
+                words,
+                srv: vec![],
+                samplers: vec![],
+                uav: vec![binding],
+                inputs: (0..64)
+                    .map(|i| {
+                        (
+                            if image { [i % 8, i / 8, 0, 0] } else { [i, 0, 0, 0] },
+                            [operand(i), 0, 0, 0],
+                        )
+                    })
+                    .collect(),
+                want: Box::new(move |a, _| {
+                    let i = if image { a[0] + 8 * a[1] } else { a[0] };
+                    packed([if glc { old(i) } else { operand(i) }, 0, 0, 0], 1)
+                }),
+                uav_check: Some(Box::new(move |binding| {
+                    let data = match binding {
+                        Binding::Texture(t) => &t.data,
+                        Binding::Buffer(b) => &b.data,
+                        Binding::Null => return Err("missing atomic UAV".into()),
+                    };
+                    let expected: Vec<_> = (0..64).map(|i| update(old(i), operand(i))).collect();
+                    if *data != words_le(&expected) {
+                        return Err("atomic UAV contents differ".into());
+                    }
+                    Ok(())
+                })),
+                sm66: false,
+            });
+        }
+    }
+}
+
+fn scalar_load_cases(cases: &mut Vec<Case>) {
+    let value = |i: u32| i.wrapping_mul(0xb71f_4695);
+    for (op, name) in [
+        "s_buffer_load_dword",
+        "s_buffer_load_dwordx2",
+        "s_buffer_load_dwordx4",
+        "s_buffer_load_dwordx8",
+        "s_buffer_load_dwordx16",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let count = 1u32 << op;
+        for first in (0..count).step_by(4) {
+            let mut words = prologue(Some(0), None, None);
+            words.extend(s_load(8 + op as u32, 32, T_SGPR, 12));
+            words.push(S_WAITCNT_0);
+            let n = (count - first).min(4);
+            for k in 0..n {
+                words.push(0x7e00_0200 | ((DATA as u32 + k) << 17) | (32 + first + k));
+            }
+            words.push(S_ENDPGM);
+            cases.push(Case {
+                name: format!("{name} words {first}..{}", first + n),
+                words,
+                srv: vec![Binding::Buffer(BufferData {
+                    data: words_le(&(0..32).map(value).collect::<Vec<_>>()),
+                    format: 0,
+                    format_bytes: 0,
+                    stride: 16,
+                })],
+                samplers: vec![],
+                uav: vec![],
+                inputs: vec![([0; 4], [0; 4]); 64],
+                want: Box::new(move |_, _| packed(std::array::from_fn(|k| value(3 + first + k as u32)), (1 << n) - 1)),
+                uav_check: None,
+                sm66: false,
+            });
+        }
     }
 }
 
@@ -1262,7 +1437,7 @@ fn mem_conformance() {
         } else if required && !c.inputs.is_empty() {
             use tombox_xshader::rdna2::{disassemble, Enc};
             for ins in disassemble(&words_le(&c.words)) {
-                if matches!(ins.enc, Enc::Mimg | Enc::Mubuf) {
+                if matches!(ins.enc, Enc::Mimg | Enc::Mubuf) || (ins.enc == Enc::Smem && (8..=12).contains(&ins.op)) {
                     verified.insert(ins.mnemonic);
                 }
             }

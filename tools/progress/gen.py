@@ -73,7 +73,9 @@ def instructions():
         results = list(csv.DictReader(f, delimiter="\t"))
     game = {r["mnemonic"] for r in results if r["coin_run_alu"] == "true"}
     memory = {r["mnemonic"] for r in results if r["memory_probe"] == "true"}
-    probed = vector | game | memory
+    graphics = {r["mnemonic"] for r in results if r["graphics_probe"] == "true"}
+    cache = {r["mnemonic"]: r["cache_probe"] for r in results if r["cache_probe"] != "-"}
+    probed = vector | game | memory | graphics
     families, cur = {}, None
     for line in src.split("\n"):
         line = line.partition("//")[0]
@@ -104,8 +106,14 @@ def instructions():
             evidence.append("Coin Run Xbox shader readback passed")
         if n in memory:
             evidence.append("vector memory GPU probe passed")
+        if n in graphics:
+            evidence.append("Coin Run graphics pixel reference passed")
+        if n in cache:
+            evidence.append({"uav_visibility": "cross-wave UAV visibility passed", "state_preserved": "instruction-prefetch state preservation passed"}[cache[n]])
         labels.setdefault(family, []).append(f"{n}: {', '.join(evidence) or 'no retail or GPU probe evidence'}")
-    return groups, labels, len(probed - used.keys())
+    detail = (f" · GPU checks {len(probed & used.keys())}/{len(used)} retail"
+              f" · {len(cache)} cache probes · {len(probed - used.keys())} others checked")
+    return groups, labels, detail
 
 # ---- drawing ------------------------------------------------------------------------
 def squarify(items, x, y, w, h):
@@ -178,9 +186,9 @@ def pct_colour(p):
 o, y = [], 0
 y, a_done, a_n = section(o, y, "Imported system functions*", imports(), 300)
 y, b_done, b_n = section(o, y, "Direct3D 12.x interface methods", d3d12x(), 170)
-isa_groups, isa_labels, gpu_only = instructions()
-y, c_done, c_n = section(o, y, "RDNA2 instructions in translated retail shaders", isa_groups, 260,
-                         f" · {gpu_only} additional instructions verified in GPU probes", isa_labels)
+isa_groups, isa_labels, isa_detail = instructions()
+y, c_done, c_n = section(o, y, "RDNA2 in translated retail shaders", isa_groups, 260,
+                         isa_detail, isa_labels)
 svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 {y:.0f}" width="1000" height="{y:.0f}">\n'
        f'<rect x="0" y="0" width="1000" height="{y:.0f}" fill="{BG}"/>\n' + "\n".join(o) + "\n</svg>\n")
 open(os.path.join(root, "docs", "img", "progress.svg"), "w", encoding="utf-8").write(svg)

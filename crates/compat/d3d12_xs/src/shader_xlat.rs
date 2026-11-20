@@ -153,9 +153,9 @@ fn translate_uncached(blob: &[u8], hash: u64) -> Result<CompiledShader, String> 
         && std::env::var("TOMBOX_SHADER_COMPILER").map(|v| v != "fxc").unwrap_or(true);
     static ANNOUNCED: std::sync::Once = std::sync::Once::new();
     ANNOUNCED.call_once(|| {
-        record("d3d12_xs", "shader_xlat", if use_dxc { "compiler: DXC (shader model 6.0, DXIL)" } else { "compiler: FXC (shader model 5, DXBC) - DXC not available or disabled" });
+        record("d3d12_xs", "shader_xlat", if use_dxc { "compiler: DXC (shader model 6, DXIL)" } else { "compiler: FXC (shader model 5, DXBC) - DXC not available or disabled" });
     });
-    let profile = if use_dxc { tombox_xshader::dxc::profile_for(t.profile) } else { t.profile.to_string() };
+    let profile = if use_dxc { t.dxc_profile() } else { t.profile.to_string() };
     let _ = disk_cache_dir(); // creates the cache directory
     let compiled = |code| CompiledShader { code: Arc::new(code), portable_compute_group: t.portable_compute_group };
     let cached = Some(tombox_xshader::dxc::cache_path(&t.hlsl, &profile));

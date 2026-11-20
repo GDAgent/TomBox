@@ -139,6 +139,7 @@ pub fn vop3(op: u32) -> Option<&'static str> {
         0x36d => "v_add3_u32", 0x36f => "v_lshl_or_b32", 0x371 => "v_and_or_b32", 0x372 => "v_or3_b32",
         0x30f => "v_add_co_u32", 0x310 => "v_sub_co_u32", 0x319 => "v_subrev_co_u32",
         0x344 => "v_perm_b32", 0x351 => "v_min3_f16", 0x354 => "v_max3_f16", 0x357 => "v_med3_f16",
+        0x378 => "v_permlanex16_b32",
         0x360 => "v_readlane_b32", 0x361 => "v_writelane_b32", 0x363 => "v_bfm_b32", 0x364 => "v_bcnt_u32_b32",
         0x34b => "v_fma_f16",
         0x40e => "v_pk_fma_f16", 0x40f => "v_pk_add_f16", 0x410 => "v_pk_mul_f16", 0x411 => "v_pk_min_f16", 0x412 => "v_pk_max_f16",

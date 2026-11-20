@@ -383,7 +383,7 @@ fn process(blob: &[u8], compile: bool) -> (String, Result<(), String>, bool) {
                 #[cfg(windows)]
                 Ok(t) => {
                     // Default: DXC (shader model 6.0), in process.
-                    let profile = tombox_xshader::dxc::profile_for(t.profile);
+                    let profile = t.dxc_profile();
                     let path = tombox_xshader::dxc::cache_path(&t.hlsl, &profile);
                     if path.exists() {
                         return (st, Ok(()), false);
