@@ -1,11 +1,12 @@
 {
-  "updated": "2026-11-19",
+  "updated": "2026-11-20",
   "milestones": {"done": 14, "total": 19},
   "shaders": {"translated": 105506, "total": 105506},
   "import_overrides": {
     "comment": "partial = resolved but a stub, a forwarder, or not verified to work; none = not provided",
     "AcpHal.dll": "partial", "MFPlat.DLL": "partial", "MFReadWrite.dll": "partial",
     "XAudio2_9.dll": "partial", "GameInput.dll": "partial", "GameChat2.dll": "none",
+    "GameInput.dll!#1": "done", "XAudio2_9.dll!#1": "done",
     "XMemGetWorkingSetStatistics": "partial", "XMemTransferMemory": "partial",
     "D3D12XboxSetProcessDebugFlags": "partial"
   },

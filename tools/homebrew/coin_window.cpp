@@ -4,6 +4,7 @@
 #include "triangle_shaders.h"
 #include "coin_scene.h"
 #include "coin_controller.h"
+#include "coin_audio.h"
 #include "bc1_reference.h"
 #include <vector>
 #include <algorithm>
@@ -509,10 +510,11 @@ int main(int argc, char** argv) {
             if (!std::strcmp(argv[1], candidate.option)) reference = &candidate;
         }
     }
-    const bool headless = placed || (argc == 2 && !std::strcmp(argv[1], "--test"));
+    const bool audio_test = argc == 2 && !std::strcmp(argv[1], "--audio-test");
+    const bool headless = audio_test || placed || (argc == 2 && !std::strcmp(argv[1], "--test"));
     const bool present_test = argc == 2 && !std::strcmp(argv[1], "--present-test");
     if (argc != 1 && !headless && !present_test && !cpu_tiled && !reference && !state_test && !stream_test && !scene_3d) {
-        std::fputs("usage: coin_window.exe [--test | --placed-test | --present-test | --tiled | --tiled-test | --tiled-reference FILE | --mip-reference FILE | --bc1-reference FILE | --rect-{rgba,bc1}-{wide,tall} FILE | --array-{rgba-tall,bc1-wide} FILE | --cube-test FILE | --state-test | --stream-test FILE | --3d | --3d-test | --controller-test | --gameinput-test]\n", stderr);
+        std::fputs("usage: coin_window.exe [--audio-test | --test | --placed-test | --present-test | --tiled | --tiled-test | --tiled-reference FILE | --mip-reference FILE | --bc1-reference FILE | --rect-{rgba,bc1}-{wide,tall} FILE | --array-{rgba-tall,bc1-wide} FILE | --cube-test FILE | --state-test | --stream-test FILE | --3d | --3d-test | --controller-test | --gameinput-test]\n", stderr);
         return 1;
     }
     HWND window = headless ? nullptr : game_window();
@@ -542,7 +544,38 @@ int main(int argc, char** argv) {
         return renderer.render(board, window != nullptr, scene_test || controller_test);
     };
     if (paint()) return 1;
-    if (headless || present_test || tiled_test || scene_test) {
+    const bool scripted = headless || present_test || tiled_test || scene_test;
+    CoinAudio audio;
+    bool sound = audio_test || (!scripted && !controller_test);
+    if (sound) {
+        const HRESULT hr = audio.init();
+        if (FAILED(hr)) {
+            std::fprintf(stderr, "Pickup audio initialization failed (HRESULT 0x%08lx)\n", hr);
+            if (audio_test) return 1;
+            sound = false;
+        }
+    }
+    // Return -1 on failure, 0 for a blocked action and 1 for a board change.
+    auto move = [&](unsigned char key, CoinController* pad = nullptr) {
+        const auto previous_coins = board.coins;
+        bool changed = coin_move(game.get(), key);
+        if ((scripted || changed) && paint()) return -1;
+        if (board.coins < previous_coins) {
+            if (pad) pad->pickup();
+            if (sound) {
+                const size_t column = board.player % board.width;
+                const auto side = column < board.width / 2 ? CoinSide::Left : CoinSide::Right;
+                const HRESULT hr = audio.pickup(side);
+                if (FAILED(hr)) {
+                    std::fprintf(stderr, "Pickup audio submission failed (HRESULT 0x%08lx)\n", hr);
+                    if (audio_test) return -1;
+                    sound = false;
+                }
+            }
+        }
+        return int(changed);
+    };
+    if (scripted) {
         // Independent expected states for the canonical map, including blocked moves.
         // The mask tracks the top-right coin (1) and bottom-left coin (2).
         struct Step { char key; unsigned player, mask; bool changed; };
@@ -555,8 +588,9 @@ int main(int argc, char** argv) {
         };
         if (board.player != 0 || board.coins != 2) return 1;
         for (const auto& step : route) {
-            bool changed = coin_move(game.get(), step.key);
-            if (paint()) return 1;
+            int changed = move(step.key);
+            if (changed < 0) return 1;
+            if (audio_test) Sleep(200); // Separate moves and let the last tone finish before teardown.
             unsigned coins = (step.mask & 1) + (step.mask >> 1);
             if (changed != step.changed || board.player != step.player || board.coins != coins ||
                 board.tiles[3] != (step.mask & 1 ? '*' : '.') ||
@@ -564,6 +598,12 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "Game state mismatch at frame %llu after %c\n", renderer.frame.frame, step.key);
                 return 1;
             }
+        }
+        if (audio_test) {
+            // Exercise simultaneous voices separately from the four gameplay pickups.
+            CHECK(audio.pickup(CoinSide::Left));
+            CHECK(audio.pickup(CoinSide::Right));
+            Sleep(250);
         }
         if (scene_test) std::printf("Verified perspective, textured faces and depth occlusion across %llu frames, both pickup orders and restart.\n",
                                    renderer.checked_frames);
@@ -608,8 +648,7 @@ int main(int argc, char** argv) {
                 }
                 if (action) {
                     const auto previous_coins = board.coins;
-                    if (coin_move(game.get(), action) && paint()) return 1;
-                    if (board.coins < previous_coins) pad.pickup();
+                    if (move(action, &pad) < 0) return 1;
                     if (controller_test) {
                         last_action = GetTickCount64();
                         std::printf("pad %c %zu %zu\n", action, board.player, board.coins);
@@ -621,7 +660,7 @@ int main(int argc, char** argv) {
             }
             if (msg.message == WM_KEYDOWN && (msg.hwnd == window || IsChild(window, msg.hwnd))) {
                 if (msg.wParam == 'Q' || msg.wParam == VK_ESCAPE) break;
-                if (coin_move(game.get(), static_cast<unsigned char>(msg.wParam)) && paint()) return 1;
+                if (move(static_cast<unsigned char>(msg.wParam)) < 0) return 1;
             }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);

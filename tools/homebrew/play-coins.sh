@@ -22,10 +22,14 @@ export TOMBOX_LOG="${TOMBOX_LOG:-coin-window.log}"
 # The Windows GUI executable has no console of its own. Capture its scripted
 # checks through cmd so Linux callers see pixel mismatches and the exit status.
 case "${1:-}" in
-    --test|--placed-test|--present-test|--tiled-test|--tiled-reference|--mip-reference|--bc1-reference|--rect-test|--array-test|--cube-test|--state-test|--stream-test|--3d-test|--controller-test|--gameinput-test)
+    --test|--placed-test|--present-test|--tiled-test|--tiled-reference|--mip-reference|--bc1-reference|--rect-test|--array-test|--cube-test|--state-test|--stream-test|--3d-test|--controller-test|--gameinput-test|--audio-test)
         if [[ $# == 1 ]]; then
             scratch=$(mktemp -d coin-check.XXXXXXXX)
             trap 'rm -f -- "$scratch/result.txt" "$scratch/barriers.log" "$scratch/"*.bin; rmdir -- "$scratch"' EXIT
+            if [[ $1 == --audio-test ]]; then
+                dbus-run-session -- python3 "$repo/tools/homebrew/audio_fixture.py" "$scratch/result.txt"
+                exit 0
+            fi
             if [[ $1 == --gameinput-test ]]; then
                 WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}gameinput=n" \
                     python3 "$repo/tools/homebrew/controller_fixture.py" "$scratch/result.txt" "$1"

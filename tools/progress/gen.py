@@ -38,7 +38,9 @@ def imports():
         else:
             g = mod.rsplit(".", 1)[0]
         for f in funcs:
-            groups.setdefault(g, []).append(ov.get(f, ov.get(mod, "done")))
+            # Ordinals repeat across DLLs. Prefer a verified module/function pair.
+            state = ov.get(f"{mod}!{f}", ov.get(f, ov.get(mod, "done")))
+            groups.setdefault(g, []).append(state)
     return groups
 
 def d3d12x():

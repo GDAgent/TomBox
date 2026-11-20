@@ -21,7 +21,7 @@ build_pe() {
 }
 build_pe "$build/clear_pixel.exe" tools/homebrew/clear_pixel.cpp "$build/d3d12_xs.dll.lib"
 build_pe "$build/coin_window.exe" tools/homebrew/coin_window.cpp "$build/d3d12_xs.dll.lib" "$build/examples/coin_rules.lib" "$build/xmem.dll.lib" \
-    /subsystem:windows /entry:mainCRTStartup user32.lib xinput.lib ntdll.lib advapi32.lib userenv.lib ws2_32.lib bcrypt.lib
+    /subsystem:windows /entry:mainCRTStartup user32.lib ole32.lib xinput.lib ntdll.lib advapi32.lib userenv.lib ws2_32.lib bcrypt.lib
 
 # Keep the optional GameInput runtime separate from the host GameInput DLL.
 adapter="$build/gameinput-xinput"

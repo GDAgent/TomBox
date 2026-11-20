@@ -7,8 +7,7 @@ Raw per-DLL data: `analysis/fortnite_exe.json`, `analysis/syslib/*.json`.
 ## Evidence levels (CLAUDE.md §1)
 1 Observed · 2 Documented · 3 Inferred · 4 Hypothesized · 5 Implemented · 6 Compiles ·
 7 Unit-tested · 8 Integration-tested · 9 Verified vs target · 10 End-to-end.
-Everything in the module matrix below is **level 1 (observed)** for the dependency facts;
-no implementation exists yet.
+The dependency inventory comes from the recorded imports and exports. The module notes identify runtime checks. On the progress map, the green GameInput and XAudio2 squares count the individual factory exports exercised by Coin Run on Proton. The four other listed XAudio2 imports retain their unverified status.
 
 ## Module strategy matrix
 
@@ -30,7 +29,7 @@ no-op/offline impl to pass startup), **Translate** (reimpl that maps onto a host
 | `xg_xs.dll` | 1 | RDNA2 tiling/swizzle/DCC math | Reimpl / bypass | **MED-HIGH** | `XGCreateTextureComputer`; self-contained math, no HW dep |
 | `xmem.dll` | 10 | Memory allocator | Reimpl→VirtualAlloc2/D3D12 heaps | MED | `XMemAlloc/Virtual/PhysicalPages`; thin over ntdll |
 | `GameInput.dll` | 1 | Input (IGameInput) | Reuse PC GameInput / opt-in XInput adapter | MED | Homebrew on Proton verifies `GameInputCreate` ordinal 1, v0 polling, forward and backward history, device and reading callbacks, and two-motor `SetRumbleState` output on Linux virtual pads. Physical controllers and retail titles remain unverified. |
-| `XAudio2_9.dll` | 5 (ord #1,2,4,5,6) | Audio | Reuse PC XAudio2_9 | MED | ordinals match PC: `XAudio2Create`,`CreateAudioReverb`,`CreateFX`,`X3DAudioCalculate`,`X3DAudioInitialize` |
+| `XAudio2_9.dll` | 5 (ord #1,2,4,5,6) | Audio | Reuse PC XAudio2_9 | MED | Coin Run verifies `XAudio2Create` (#1) and two simultaneous PCM voices with stereo panning via `SetOutputMatrix`, measured by Linux loopback on Proton. Reverb (#2), effects (#4), spatial audio (#5–6) and retail playback remain unverified. |
 | `AcpHal.dll` | 6 | Xbox audio-DSP HAL | Stub/software | LOW-MED | `ApuAlloc`,`AcpHalCreate`,…; no PC ACP, route to software mix |
 | `XCRDAPI.dll` | 1 | **DirectStorage** | Reuse PC DirectStorage / Reimpl file-backed | MED | `DStorageGetFactory`; for `.ucas` IoStore streaming |
 | `dxcompiler_xs.dll` | 1 | Runtime DXIL compiler (DXC) | Reuse PC `dxcompiler.dll` | LOW-MED | `DxcCreateInstance` |
