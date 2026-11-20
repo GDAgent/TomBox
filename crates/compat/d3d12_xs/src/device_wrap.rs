@@ -621,21 +621,23 @@ unsafe extern "system" fn create_gfx_pso_x(
     let mut keep: Vec<std::sync::Arc<Vec<u8>>> = Vec::new();
     let mut failure: Option<String> = None;
     let present = |off: usize| rd(&desc, off) != 0 && rd(&desc, off + 8) != 0;
-    // The stage that feeds the pixel shader: GS, else DS, else VS. It is translated with the
-    // pixel shader's interpolation modifiers so both sides pack their signatures alike, so
-    // the pixel shader goes first.
+    // Compile the pixel shader first so its bytecode can be compared with the
+    // final producer before choosing a producer layout.
     let feeder = if present(0x48) { 0x48 } else if present(0x28) { 0x28 } else { 0x08 };
-    let mut ps_interp = None;
+    let mut pixel_shader = None;
     for (stage, off) in [("PS", 0x18usize), ("VS", 0x08), ("DS", 0x28), ("HS", 0x38), ("GS", 0x48)] {
         let (p, n) = (rd(&desc, off) as *const u8, rd(&desc, off + 8) as usize);
         if p.is_null() || n == 0 {
             continue;
         }
-        let link = if off == feeder { ps_interp.as_deref() } else { None };
-        match unsafe { crate::shader_xlat::translate_linked(p, n, link) } {
+        let result = match pixel_shader.as_ref().filter(|_| off == feeder) {
+            Some(pixel) => unsafe { crate::shader_xlat::translate_producer(p, n, pixel) },
+            None => unsafe { crate::shader_xlat::translate(p, n) },
+        };
+        match result {
             Ok(shader) => {
                 if off == 0x18 {
-                    ps_interp = Some(shader.ps_input_interp.clone());
+                    pixel_shader = Some(shader.clone());
                 }
                 let code = shader.code;
                 desc[off..off + 8].copy_from_slice(&(code.as_ptr() as u64).to_le_bytes());

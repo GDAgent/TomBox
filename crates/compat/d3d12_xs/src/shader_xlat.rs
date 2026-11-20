@@ -18,7 +18,7 @@ pub struct CompiledShader {
     pub code: Arc<Vec<u8>>,
     pub portable_compute_group: Option<[u32; 3]>,
     /// Pixel shaders: input interpolation modifiers, for translating the stage feeding it.
-    pub ps_input_interp: Arc<InputInterp>,
+    ps_input_interp: Arc<InputInterp>,
 }
 type Cached = Result<CompiledShader, Arc<String>>;
 static CACHE: OnceLock<Mutex<HashMap<u64, Cached>>> = OnceLock::new();
@@ -206,11 +206,23 @@ pub unsafe fn translate(ptr: *const u8, len: usize) -> Cached {
     translate_linked(ptr, len, None)
 }
 
-/// [`translate`] for the stage that feeds a pixel shader, given that pixel shader's
-/// [`CompiledShader::ps_input_interp`] (see `tombox_xshader::hlsl::translate_linked`). The
-/// same Xbox shader paired with pixel shaders that interpolate differently gets one
-/// translation per set of modifiers.
-pub unsafe fn translate_linked(ptr: *const u8, len: usize, feeds_ps: Option<&InputInterp>) -> Cached {
+/// Prefer the ordinary producer when its compiled outputs already line up with the
+/// pixel inputs. Reapplying modifiers can move a shared output when other outputs
+/// are unused by this pixel shader.
+pub unsafe fn translate_producer(ptr: *const u8, len: usize, pixel: &CompiledShader) -> Cached {
+    let ordinary = translate(ptr, len);
+    if pixel.ps_input_interp.0.is_empty() {
+        return ordinary;
+    }
+    if let Ok(producer) = &ordinary {
+        if !tombox_xshader::meta::has_packing_mismatch(&producer.code, &pixel.code) {
+            return ordinary;
+        }
+    }
+    translate_linked(ptr, len, Some(&pixel.ps_input_interp))
+}
+
+unsafe fn translate_linked(ptr: *const u8, len: usize, feeds_ps: Option<&InputInterp>) -> Cached {
     if ptr.is_null() || len < 32 || len > 0x40_0000 {
         return Err(Arc::new(format!("bad shader blob ({ptr:p}, {len})")));
     }

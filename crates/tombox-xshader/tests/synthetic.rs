@@ -447,43 +447,73 @@ fn stage_feeding_a_pixel_shader_gets_its_interpolation_modifiers() {
     assert!(!translate(&vs).unwrap().hlsl.contains("TB_VERTEX_INPUT"));
 }
 
-/// The property D3D12 checks when it creates the pipeline, on the DXC-compiled pair: every
-/// pixel-shader input sits in the register of the matching vertex-shader output, within its
-/// mask. Fails for the unlinked vertex shader (TEXCOORD1: r0.z in the PS, r2.x in the VS).
+#[cfg(windows)]
+fn compile_shader(shader: &tombox_xshader::hlsl::Translated) -> Vec<u8> {
+    tombox_xshader::dxc::compile(&shader.hlsl, &shader.dxc_profile()).expect("DXC compilation")
+}
+
+#[cfg(windows)]
+fn texcoord1_location(code: &[u8], chunk: &[u8; 4]) -> (u32, u8) {
+    let container = tombox_xshader::Dxbc::parse(code).expect("DXIL container");
+    let sig = container.chunk(chunk).expect("signature chunk");
+    let elements = tombox_xshader::meta::parse_signature(&code[sig.offset..sig.offset + sig.size]).unwrap();
+    let coord = elements.iter().find(|e| e.index == 1 && e.name.eq_ignore_ascii_case("TEXCOORD")).unwrap();
+    (coord.register, coord.mask)
+}
+
+/// In this pair the pixel shader reads TEXCOORD1 from r0.z. The ordinary VS
+/// puts it in r2.x. Relinking must also work with differently cased semantics.
 #[cfg(windows)]
 #[test]
 fn linked_signatures_compile_to_matching_registers() {
-    use tombox_xshader::hlsl::translate_linked;
-    use tombox_xshader::{dxc, meta, Dxbc};
+    use tombox_xshader::{dxc, hlsl::translate_linked, meta::has_packing_mismatch};
     if !dxc::available() {
         eprintln!("SKIPPED: DXC not available");
         return;
     }
-    let sig_of = |code: &[u8], cc: &[u8; 4]| {
-        let c = Dxbc::parse(code).expect("DXIL container");
-        let ch = c.chunk(cc).expect("signature chunk");
-        meta::parse_signature(&code[ch.offset..ch.offset + ch.size]).expect("signature")
-    };
-    // (semantic, PS register, PS mask, VS register, VS mask) for every linked element.
-    let link = |vs_t: &tombox_xshader::hlsl::Translated, ps_code: &[u8]| {
-        let vs_code = dxc::compile(&vs_t.hlsl, &vs_t.dxc_profile()).expect("VS compiles");
-        let outs = sig_of(&vs_code, b"OSG1");
-        sig_of(ps_code, b"ISG1")
-            .into_iter()
-            .filter_map(|i| {
-                let o = outs.iter().find(|o| o.name == i.name && o.index == i.index)?;
-                Some((format!("{}{}", i.name, i.index), i.register, i.mask, o.register, o.mask))
-            })
-            .collect::<Vec<_>>()
-    };
-    let (ps, vs) = linkage_pair();
-    let ps_t = translate(&ps).expect("PS");
-    let ps_code = dxc::compile(&ps_t.hlsl, &ps_t.dxc_profile()).expect("PS compiles");
-    let matches = |rows: &[(String, u32, u8, u32, u8)]| rows.iter().all(|(_, pr, pm, vr, vm)| pr == vr && pm & !vm == 0);
+    let (ps, mut vs) = linkage_pair();
+    let pixel = translate(&ps).expect("PS");
+    let ps_code = compile_shader(&pixel);
+    assert_eq!(texcoord1_location(&ps_code, b"ISG1"), (0, 0b0100));
+    for spelling in ["TEXCOORD", "TexCoord"] {
+        vs.output_sig[0].name = spelling.into();
+        vs.output_sig[2].name = spelling.into();
+        let ordinary = compile_shader(&translate(&vs).expect("VS"));
+        let linked = compile_shader(&translate_linked(&vs, Some(&pixel.ps_input_interp)).expect("linked VS"));
+        assert_eq!(texcoord1_location(&ordinary, b"OSG1"), (2, 1));
+        assert!(has_packing_mismatch(&ordinary, &ps_code));
+        assert_eq!(texcoord1_location(&linked, b"OSG1"), (0, 0b0100));
+        assert!(!has_packing_mismatch(&linked, &ps_code));
+    }
+}
 
-    let unlinked = link(&translate(&vs).unwrap(), &ps_code);
-    assert!(!matches(&unlinked), "the unlinked pair should reproduce the mismatch: {unlinked:?}");
-    let linked = link(&translate_linked(&vs, Some(&ps_t.ps_input_interp)).unwrap(), &ps_code);
-    assert_eq!(linked.len(), 3, "{linked:?}");
-    assert!(matches(&linked), "linked pair must agree on registers: {linked:?}");
+/// A producer-only float2 shares TEXCOORD0's register. Mirroring the pixel
+/// shader's flat modifier moves TEXCOORD1 from r1.xy to r1.zw.
+#[cfg(windows)]
+#[test]
+fn keep_matching_producer_when_pixel_shader_reads_a_subset() {
+    use tombox_xshader::{dxc, hlsl::translate_linked, meta::has_packing_mismatch};
+    if !dxc::available() {
+        eprintln!("SKIPPED: DXC not available");
+        return;
+    }
+    let (_, mut vs) = linkage_pair();
+    let flat = read_sig("TEXCOORD", 0, 3, 0, 3);
+    let smooth = SigElement { index: 1, ..read_sig("TEXCOORD", 0, 3, 1, 3) };
+    let position = sig("SV_Position", 1, 3, 2, 15);
+    let ps = shader(Stage::Pixel, &[
+        0xc80a_0002, // v_interp_mov_f32 P0, attr0.x (flat)
+        0xc800_0400, 0xc801_0401, // v_interp_p1/p2_f32 for attr1.x (smooth)
+        S_NOP, PACK_V0_V2_V2, PACK_V1_V2_V2, EXP_MRT0_COMPR[0], EXP_MRT0_COMPR[1], S_ENDPGM,
+    ], vec![flat.clone(), smooth.clone(), position.clone()], vec![sig("SV_Target", 64, 3, 0, 15)], None);
+    vs.output_sig = vec![flat, sig("EXTRA", 0, 3, 0, 12), smooth, position];
+    let pixel = translate(&ps).expect("PS");
+    let ps_code = compile_shader(&pixel);
+    let ordinary = compile_shader(&translate(&vs).expect("VS"));
+    let linked = compile_shader(&translate_linked(&vs, Some(&pixel.ps_input_interp)).expect("linked VS"));
+    assert_eq!(texcoord1_location(&ps_code, b"ISG1"), (1, 0b0011));
+    assert_eq!(texcoord1_location(&ordinary, b"OSG1"), (1, 0b0011));
+    assert!(!has_packing_mismatch(&ordinary, &ps_code));
+    assert_eq!(texcoord1_location(&linked, b"OSG1"), (1, 0b1100));
+    assert!(has_packing_mismatch(&linked, &ps_code));
 }

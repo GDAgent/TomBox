@@ -57,7 +57,7 @@ pub struct InputInterp(pub Vec<(String, String)>);
 
 impl InputInterp {
     fn get(&self, semantic: &str) -> Option<&str> {
-        self.0.iter().find(|(s, _)| s == semantic).map(|(_, m)| m.as_str())
+        self.0.iter().find(|(s, _)| s.eq_ignore_ascii_case(semantic)).map(|(_, m)| m.as_str())
     }
 }
 
