@@ -1,22 +1,8 @@
 //! Xbox D3D12.x `ID3D12GraphicsCommandList` vtable translation.
 //!
-//! Reverse-engineered from the Fortnite RHI call sites, the Xbox command-list
-//! vtable differs from PC by **4 methods inserted after PC slot 27**
-//! (ExecuteBundle). Confirmed slot mapping (Xbox slot -> PC method):
-//!   * 0..=26  identical  (IUnknown, Close=9, Reset=10, DrawInstanced=12,
-//!     DrawIndexedInstanced=13, Dispatch=14, SetPipelineState=25,
-//!     ResourceBarrier=26 — all verified unshifted at their call sites)
-//!   * 27..=31 ExecuteBundle (PC27) + 4 Xbox-specific inserted methods
-//!   * 32..    PC method (slot - 4): SetDescriptorHeaps(PC28)=Xbox32,
-//!     SetGraphicsRootSignature(PC30)=Xbox34, SetGraphicsRootDescriptorTable
-//!     (PC32)=Xbox36, OMSetRenderTargets(PC46)=Xbox50 — all verified.
-//!
-//! Fix: build an "Xbox-layout" vtable whose slot i holds the *real PC method
-//! pointer* for the mapped PC slot, then point each real command-list object at
-//! it. Because the object IS the real list, no forwarding thunk is needed — the
-//! real method is called with the real `this` directly. Slots 0..=26 stay
-//! identical so the D3D12 runtime's own calls (QueryInterface, GetType, AddRef,
-//! Release) still work when the list is handed to ExecuteCommandLists.
+//! The Xbox shim forwards slots 0–26 to the desktop slots with the same numbers.
+//! Slots 32–55 forward with an offset of four. Later slots depend on the guest
+//! interface layout. The shim keeps the real command list and its PC vtable intact.
 
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -28,27 +14,21 @@ extern "system" {
 }
 const PAGE_READWRITE: u32 = 0x04;
 
-/// Number of Xbox vtable slots we materialize. Max observed call is Xbox slot 50
-/// (OMSetRenderTargets); 128 leaves generous headroom.
+/// Current tracked Xbox command-list slots.
 const N: usize = 128;
 static XBOX_VT: [AtomicUsize; N] = [const { AtomicUsize::new(0) }; N];
 static BUILT: std::sync::Once = std::sync::Once::new();
 static mut REAL_VT_PTR: *const usize = core::ptr::null();
 static INSERTED_HITS: AtomicUsize = AtomicUsize::new(0);
 
-/// Xbox slot -> PC slot. `None` = an Xbox-inserted method with no PC equivalent.
-/// Last PC `ID3D12GraphicsCommandList` slot we forward to (List6::DispatchMesh = 79).
-/// Xbox slots that would map past it are Xbox-only extensions (e.g. slot 98, a texture-
-/// cache flush the RHI calls when an inline command-list flag is set) and must not be
-/// filled from memory beyond the real vtable.
-const PC_LAST_SLOT: usize = 79;
+/// Last method guaranteed by the base PC graphics command-list interface.
+const PC_LAST_SLOT: usize = 59;
 
 fn map_slot(i: usize) -> Option<usize> {
     match i {
-        0..=26 => Some(i),   // identical
-        27..=31 => None,     // ExecuteBundle + 4 inserted Xbox methods
-        _ if i - 4 > PC_LAST_SLOT => None, // Xbox-only extension slots
-        _ => Some(i - 4),    // shifted PC methods
+        0..=26 => Some(i),
+        32..=55 => Some(i - 4),
+        _ => None,
     }
 }
 
@@ -66,7 +46,7 @@ unsafe extern "system" fn inserted_stub() {
     )
 }
 
-// High-slot diagnostic: the +4 shift is only valid through PC slot 46 (Xbox 50).
+// High-slot diagnostic: the verified contiguous +4 mapping ends at DiscardResource.
 // Past that the Xbox command list has its own extension methods, so our naive map
 // sends calls to the wrong PC method (e.g. a texture-copy landed on DispatchMesh ->
 // device removal). Install logging no-op probes across the high range to capture,
@@ -99,45 +79,40 @@ macro_rules! make_probes {
                 );
             }
         )*
-        #[allow(dead_code)]
-        unsafe fn install_all_probes() {
-            $( XBOX_VT[$slot].store($name as usize, Ordering::Relaxed); )*
-        }
-        /// The high-slot scan showed the game only calls slot 83 (an Xbox texture-copy
-        /// command our +4 map misrouted to DispatchMesh). No-op just that slot for now.
-        unsafe fn install_probes() {
-            // The +4 shift is verified only through Xbox slot 50. Everything above is an
-            // unverified/Xbox-only method: log-and-ignore until mapped from evidence
-            // (e.g. slot 67 = FlushTextureCache-style flush, slot 83 = texture copy).
-            install_all_probes();
-            for i in 47..=49 { XBOX_VT[i].store(*REAL_VT_PTR.add(i - 4), Ordering::Relaxed); }
+        /// Install diagnostics first and replace them with the identified PC methods below.
+        fn install_probes(xbox: &[AtomicUsize; N], pc: &[usize; PC_LAST_SLOT + 1]) {
+            $( xbox[$slot].store($name as usize, Ordering::Relaxed); )*
+            for i in 47..=49 { xbox[i].store(pc[i - 4], Ordering::Relaxed); }
             // Verified from FD3D12CommandContext::RHIClearMRTImpl call sites:
             // Xbox 51 = ClearDepthStencilView (PC 47), Xbox 52 = ClearRenderTargetView (PC 48).
-            for i in 51..=52 { XBOX_VT[i].store(*REAL_VT_PTR.add(i - 4), Ordering::Relaxed); }
-            XBOX_VT[67].store(flush_texture_cache_x as usize, Ordering::Relaxed);
+            // The Scarlett FidelityFX clear job passes GPU/CPU handles, a resource, four
+            // clear values and the rect count/pointer to slots 53 (UINT) and 54 (FLOAT).
+            // Its discard job at RVA 0x6dcb calls slot 55 with the resource and null region
+            // after flushing barriers, matching PC DiscardResource (51).
+            for i in 51..=55 { xbox[i].store(pc[i - 4], Ordering::Relaxed); }
+            xbox[67].store(flush_texture_cache_x as usize, Ordering::Relaxed);
             // Xbox 68 = OMSetDepthBounds (PC ID3D12GraphicsCommandList1 slot 62): called from
             // FD3D12StateCacheBase::ApplyState (EXE+0x4e0480) with the two cached depth-bound
             // floats in xmm1/xmm2 when its depth-bounds dirty flag is set.
-            XBOX_VT[68].store(*REAL_VT_PTR.add(62), Ordering::Relaxed);
-            XBOX_VT[83].store(copy_texture_region_x as usize, Ordering::Relaxed);
-            // Xbox 59 = ExecuteIndirect, same slot and argument order as PC:
-            // FD3D12CommandContext::RHIDispatchIndirectComputeShader (EXE+0x85145b) calls it as
-            // (pCommandSignature, 1, pArgumentBuffer, ArgumentBufferOffset, null, 0). Leaving it
-            // a no-op silently dropped every indirect dispatch/draw.
-            XBOX_VT[59].store(*REAL_VT_PTR.add(59), Ordering::Relaxed);
-            XBOX_VT[2].store(release_list as usize, Ordering::Relaxed);
-            XBOX_VT[10].store(reset_list as usize, Ordering::Relaxed);
-            XBOX_VT[26].store(resource_barrier_traced as usize, Ordering::Relaxed);
+            xbox[68].store(set_depth_bounds as usize, Ordering::Relaxed);
+            xbox[83].store(copy_texture_region_x as usize, Ordering::Relaxed);
+            // The two Scarlett FidelityFX binaries use the same copy ABI at slot 85.
+            xbox[85].store(copy_texture_region_fidelityfx as usize, Ordering::Relaxed);
+            xbox[59].store(route59 as usize, Ordering::Relaxed);
+            xbox[60].store(route60 as usize, Ordering::Relaxed);
+            xbox[61].store(route61 as usize, Ordering::Relaxed);
+            xbox[2].store(release_list as usize, Ordering::Relaxed);
+            xbox[10].store(reset_list as usize, Ordering::Relaxed);
+            xbox[26].store(resource_barrier_traced as usize, Ordering::Relaxed);
             if crate::rtcap::enabled() {
-                XBOX_VT[25].store(set_pso_traced as usize, Ordering::Relaxed);
-                XBOX_VT[50].store(om_set_targets_traced as usize, Ordering::Relaxed);
-                XBOX_VT[12].store(draw_traced as usize, Ordering::Relaxed);
-                XBOX_VT[13].store(draw_indexed_traced as usize, Ordering::Relaxed);
-                XBOX_VT[14].store(dispatch_traced as usize, Ordering::Relaxed);
-                XBOX_VT[59].store(indirect_traced as usize, Ordering::Relaxed);
-                XBOX_VT[48].store(ia_set_vbs_traced as usize, Ordering::Relaxed);
-                XBOX_VT[35].store(set_compute_table_traced as usize, Ordering::Relaxed);
-                XBOX_VT[36].store(set_gfx_table_traced as usize, Ordering::Relaxed);
+                xbox[25].store(set_pso_traced as usize, Ordering::Relaxed);
+                xbox[50].store(om_set_targets_traced as usize, Ordering::Relaxed);
+                xbox[12].store(draw_traced as usize, Ordering::Relaxed);
+                xbox[13].store(draw_indexed_traced as usize, Ordering::Relaxed);
+                xbox[14].store(dispatch_traced as usize, Ordering::Relaxed);
+                xbox[48].store(ia_set_vbs_traced as usize, Ordering::Relaxed);
+                xbox[35].store(set_compute_table_traced as usize, Ordering::Relaxed);
+                xbox[36].store(set_gfx_table_traced as usize, Ordering::Relaxed);
             }
         }
     };
@@ -250,6 +225,95 @@ unsafe extern "system" fn indirect_traced(this: *mut c_void, sig: *mut c_void, n
     f(this, sig, n, buf, off, cbuf, coff)
 }
 
+// The original RHI issues ExecuteIndirect at slot 59. GXDK 260402/261000
+// callers use 59 for a PIX packet and 61 for ExecuteIndirect. Preserve all
+// arguments (including the untouched stack arguments) until the ABI is known.
+macro_rules! route_by_caller {
+    ($name:ident, $slot:literal) => {
+        #[unsafe(naked)]
+        unsafe extern "system" fn $name() {
+            core::arch::naked_asm!(
+                ".seh_proc {entry}", "sub rsp, 40", ".seh_stackalloc 40", ".seh_endprologue",
+                "mov [rsp+48], rcx", "mov [rsp+56], rdx", "mov [rsp+64], r8", "mov [rsp+72], r9",
+                "mov rcx, [rsp+40]", "mov edx, {slot}", "call {select}",
+                "mov rcx, [rsp+48]", "mov rdx, [rsp+56]", "mov r8, [rsp+64]", "mov r9, [rsp+72]",
+                // REX.W on the tail jump identifies it as a Win64 unwind epilogue.
+                "add rsp, 40", ".byte 0x48", "jmp rax", ".seh_endproc",
+                entry = sym $name, slot = const $slot, select = sym select_command,
+            );
+        }
+    };
+}
+route_by_caller!(route59, 59);
+route_by_caller!(route60, 60);
+route_by_caller!(route61, 61);
+
+unsafe extern "system" fn select_command(caller: usize, slot: u32) -> usize {
+    use crate::gxdk_edition::{at_address, Edition::*};
+    match (at_address(caller), slot) {
+        (AprilUpdate2 | October, 59) => pix_packet as usize,
+        (AprilUpdate2, 60) => pix_timing as usize,
+        (AprilUpdate2 | October, 61) | (Unknown, 59) => {
+            if crate::rtcap::enabled() { indirect_traced as usize } else { unsafe { *REAL_VT_PTR.add(59) } }
+        }
+        (_, 59) => p59 as usize,
+        (_, 60) => p60 as usize,
+        _ => p61 as usize,
+    }
+}
+
+unsafe fn host_annotation(this: *mut c_void, kind: u8, metadata: u32, data: *const u8, size: u32) {
+    let vt = unsafe { *this.cast::<*const usize>() };
+    match kind {
+        0 => {
+            let end: unsafe extern "system" fn(*mut c_void) = unsafe { core::mem::transmute(*vt.add(58)) };
+            unsafe { end(this) };
+        }
+        1 | 2 => {
+            let slot = if kind == 1 { 57 } else { 56 }; // BeginEvent / SetMarker
+            let emit: unsafe extern "system" fn(*mut c_void, u32, *const u8, u32) =
+                unsafe { core::mem::transmute(*vt.add(slot)) };
+            unsafe { emit(this, metadata, data, size) };
+        }
+        _ => record("d3d12_xs", "PIX", &format!("unsupported event type {kind}")),
+    }
+}
+
+unsafe extern "system" fn pix_packet(this: *mut c_void, kind: u8, data: *const u8, size: u32) {
+    // WinPixEventRuntime's WINPIX_EVENT_PIX3BLOB_V2 tag for the encoded packet.
+    unsafe { host_annotation(this, kind, 6345127, data, size) };
+}
+
+unsafe extern "system" fn pix_timing(this: *mut c_void, kind: u8) {
+    // This form carries only the event type. The Xbox PIX thread buffer owns
+    // the label, so keep GPU event boundaries on PC with a plain ANSI label.
+    let label = b"Xbox PIX timing event\0";
+    unsafe { host_annotation(this, kind, 1, label.as_ptr(), label.len() as u32) };
+}
+
+/// OMSetDepthBounds belongs to the PC List1 interface. Query it on the actual
+/// command list before reading past the base vtable.
+unsafe extern "system" fn set_depth_bounds(this: *mut c_void, min: f32, max: f32) {
+    use crate::device_wrap::Guid;
+    const LIST1: Guid = Guid { d1: 0x553103fb, d2: 0x1fe7, d3: 0x4557,
+                               d4: [0xbb, 0x38, 0x94, 0x6d, 0x7d, 0x0e, 0x7c, 0xa7] };
+    let vt = unsafe { *this.cast::<*const usize>() };
+    let qi: unsafe extern "system" fn(*mut c_void, *const Guid, *mut *mut c_void) -> i32 =
+        unsafe { core::mem::transmute(*vt) };
+    let mut list1 = core::ptr::null_mut();
+    if unsafe { qi(this, &LIST1, &mut list1) } < 0 || list1.is_null() {
+        record("d3d12_xs", "OMSetDepthBounds", "host List1 unavailable");
+        return;
+    }
+    unsafe {
+        let methods = *list1.cast::<*const usize>();
+        let set: unsafe extern "system" fn(*mut c_void, f32, f32) = core::mem::transmute(*methods.add(62));
+        let release: unsafe extern "system" fn(*mut c_void) -> u32 = core::mem::transmute(*methods.add(2));
+        set(list1, min, max);
+        release(list1);
+    }
+}
+
 /// Xbox slot 67: reached (by tail call) from `FD3D12CommandContext::FlushTextureCacheIfNeeded`
 /// (EXE+0x4e0718). The console GPU's texture cache has no PC counterpart, so there is
 /// nothing to do; this is a deliberate no-op, not a placeholder.
@@ -272,11 +336,10 @@ unsafe extern "system" fn copy_texture_region_x(
         return;
     }
     let q = |p: *const u8, o: usize| core::ptr::read_unaligned(p.add(o) as *const u64);
-    let d = |p: *const u8, o: usize| core::ptr::read_unaligned(p.add(o) as *const u32);
     if n < 6 || flags != 0 {
         record("d3d12_xs", "CopyTextureRegionX", &format!(
-            "#{n} dst{{res={:#x} type={} sub={}}} at ({x},{y},{z}) src{{res={:#x} type={} off={:#x} fmt={} {}x{}x{} pitch={}}} box={src_box:p} flags={flags:#x}",
-            q(dst, 0), d(dst, 8), d(dst, 16), q(src, 0), d(src, 8), q(src, 16), d(src, 24), d(src, 28), d(src, 32), d(src, 36), d(src, 40)));
+            "#{n} dst={:#x} at ({x},{y},{z}) src={:#x} box={src_box:p} flags={flags:#x}",
+            q(dst, 0), q(src, 0)));
     }
     if q(dst, 0) == 0 || q(src, 0) == 0 {
         record("d3d12_xs", "CopyTextureRegionX", "null resource in copy location - ignored");
@@ -285,6 +348,18 @@ unsafe extern "system" fn copy_texture_region_x(
     let f: unsafe extern "system" fn(*mut c_void, *const u8, u32, u32, u32, *const u8, *const c_void) =
         core::mem::transmute(*REAL_VT_PTR.add(16));
     f(this, dst, x, y, z, src, src_box);
+}
+
+/// Slot 85 receives a trailing zero in both branches of the Scarlett FFX copy job.
+unsafe extern "system" fn copy_texture_region_fidelityfx(
+    this: *mut c_void, dst: *const u8, x: u32, y: u32, z: u32, src: *const u8,
+    src_box: *const c_void, flags: u32,
+) {
+    if flags != 0 {
+        record("d3d12_xs", "CopyTextureRegionX", &format!("slot 85 unsupported flags={flags:#x}"));
+        return;
+    }
+    unsafe { copy_texture_region_x(this, dst, x, y, z, src, src_box, flags) };
 }
 
 /// Point a freshly created real command list at the Xbox-layout vtable.
@@ -305,13 +380,14 @@ pub fn apply(real_list: *mut c_void) {
             extern "system" { fn GetModuleHandleW(n: *const u16) -> *mut c_void; }
             EXE_BASE.store(GetModuleHandleW(core::ptr::null()) as usize, Ordering::Relaxed);
             REAL_VT_PTR = real_vt;
-            install_probes(); // high-slot logging no-op probes (47..95, except 50)
+            // SAFETY: a valid ID3D12GraphicsCommandList has all 60 base methods.
+            install_probes(&XBOX_VT, &*real_vt.cast::<[usize; PC_LAST_SLOT + 1]>());
             record("d3d12_xs", "cmdlist.vtable",
                 &format!("built Xbox-layout cmdlist vtable from real {real_vt:p} (+4 shift at PC28)"));
             // Diagnostic: RVAs of the real PC methods inside D3D12Core, to attribute crash frames.
             let core = GetModuleHandleW("D3D12Core.dll ".encode_utf16().collect::<Vec<u16>>().as_ptr()) as usize;
             let mut s = String::new();
-            for i in 0..86 { s.push_str(&format!("{i}:{:x} ", (*real_vt.add(i)).wrapping_sub(core))); }
+            for i in 0..=PC_LAST_SLOT { s.push_str(&format!("{i}:{:x} ", (*real_vt.add(i)).wrapping_sub(core))); }
             record("d3d12_xs", "cmdlist.vtable", &format!("XBOX_VT at {:p}, slot98={:#x} stub={:#x}", XBOX_VT.as_ptr(), XBOX_VT[98].load(Ordering::Relaxed), inserted_stub as usize));
             record("d3d12_xs", "cmdlist.vtable", &format!("PC cmdlist method RVAs in D3D12Core: {s}"));
         });
@@ -409,4 +485,55 @@ pub fn unwrap(p: *mut c_void) -> *mut c_void {
 /// means the game needs one of those 4 methods implemented.
 pub fn inserted_hits() -> usize {
     INSERTED_HITS.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pix_translates_packet_and_timing_annotations() {
+        #[repr(C)]
+        struct Sink {
+            vt: *const usize,
+            events: Vec<(u8, u32, Vec<u8>)>,
+        }
+        unsafe extern "system" fn begin(s: *mut Sink, tag: u32, p: *const u8, n: u32) {
+            unsafe { (*s).events.push((1, tag, core::slice::from_raw_parts(p, n as usize).to_vec())) };
+        }
+        unsafe extern "system" fn marker(s: *mut Sink, tag: u32, p: *const u8, n: u32) {
+            unsafe { (*s).events.push((2, tag, core::slice::from_raw_parts(p, n as usize).to_vec())) };
+        }
+        unsafe extern "system" fn end(s: *mut Sink) {
+            unsafe { (*s).events.push((0, 0, Vec::new())) };
+        }
+        let mut vt = [0; PC_LAST_SLOT + 1];
+        vt[56] = marker as usize;
+        vt[57] = begin as usize;
+        vt[58] = end as usize;
+        let mut sink = Sink { vt: vt.as_ptr(), events: Vec::new() };
+        let this = (&mut sink as *mut Sink).cast();
+        let packet = 0xf3083u64.to_le_bytes();
+        unsafe {
+            pix_packet(this, 1, packet.as_ptr(), packet.len() as u32);
+            pix_packet(this, 2, packet.as_ptr(), packet.len() as u32);
+            pix_packet(this, 0, core::ptr::null(), 0);
+            pix_timing(this, 1);
+            pix_timing(this, 0);
+        }
+        assert_eq!(sink.events, vec![
+            (1, 6345127, packet.to_vec()), (2, 6345127, packet.to_vec()), (0, 0, vec![]),
+            (1, 1, b"Xbox PIX timing event\0".to_vec()), (0, 0, vec![]),
+        ]);
+    }
+
+    #[test]
+    fn discard_resolves_to_the_host_method_after_probe_installation() {
+        // Give every host method a distinct token. Inspect the finished table
+        // without calling a driver or modifying the process-wide dispatch table.
+        let pc = std::array::from_fn(|i| i + 1);
+        let xbox = std::array::from_fn(|_| AtomicUsize::new(0));
+        install_probes(&xbox, &pc);
+        assert_eq!(xbox[55].load(Ordering::Relaxed), pc[51]);
+    }
 }

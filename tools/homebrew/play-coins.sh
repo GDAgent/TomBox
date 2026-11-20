@@ -4,6 +4,12 @@ cd "$(dirname "$0")/../.."
 : "${PROTON:?Set PROTON to the absolute path of the Proton Experimental proton executable}"
 build="$PWD/target/x86_64-pc-windows-msvc/release"
 required=(coin_window.exe)
+if [[ ${1:-} == --fidelityfx-test || ${1:-} == --fidelityfx-context ]]; then
+    required+=(fidelityfx_probe.exe d3d12_xs.dll xmem.dll)
+fi
+if [[ ${1:-} == --indirect-test ]]; then
+    required+=(scarlett_commands_{legacy,260402,261000}.dll)
+fi
 if [[ ${1:-} == --gameinput-test ]]; then
     required+=(gameinput-xinput/{GameInput.dll,gameinput_probe.exe,gameinput_callbacks.exe,gameinput_history.exe,coin_window.exe})
 fi
@@ -22,7 +28,12 @@ export TOMBOX_LOG="${TOMBOX_LOG:-coin-window.log}"
 # The Windows GUI executable has no console of its own. Capture its scripted
 # checks through cmd so Linux callers see pixel mismatches and the exit status.
 case "${1:-}" in
-    --test|--placed-test|--present-test|--tiled-test|--tiled-reference|--mip-reference|--bc1-reference|--rect-test|--array-test|--cube-test|--state-test|--stream-test|--3d-test|--controller-test|--gameinput-test|--audio-test)
+    --fidelityfx-test|--fidelityfx-context)
+        [[ $# == 1 ]] || exit 2
+        TOMBOX_LOG=fidelityfx-context.log python3 "$repo/tools/homebrew/fidelityfx_fixture.py" "$1"
+        exit $?
+        ;;
+    --test|--pso-fallback-test|--indirect-test|--scarlett-copy-test|--uav-test|--discard-test|--placed-test|--present-test|--tiled-test|--tiled-reference|--mip-reference|--bc1-reference|--rect-test|--array-test|--cube-test|--state-test|--stream-test|--3d-test|--controller-test|--gameinput-test|--audio-test)
         if [[ $# == 1 ]]; then
             scratch=$(mktemp -d coin-check.XXXXXXXX)
             trap 'rm -f -- "$scratch/result.txt" "$scratch/barriers.log" "$scratch/"*.bin; rmdir -- "$scratch"' EXIT
@@ -45,6 +56,21 @@ case "${1:-}" in
                 if [[ -f $scratch/result.txt ]]; then cat "$scratch/result.txt"; fi
                 return "$status"
             }
+            if [[ $1 == --discard-test || $1 == --indirect-test ]]; then
+                # Discards and PIX annotations can produce identical pixels through a no-op.
+                TOMBOX_LOG="$scratch/barriers.log" run_check "$1"
+                if ! grep -q ' cmdlist.shim ' "$scratch/barriers.log"; then
+                    echo 'Missing command-list shim trace' >&2
+                    exit 1
+                fi
+                slots=55
+                if [[ $1 == --indirect-test ]]; then slots='59|60|61'; fi
+                if grep -Eq " cmdlist.hi slot=($slots) " "$scratch/barriers.log"; then
+                    echo "$1 reached an unmapped command-list slot" >&2
+                    exit 1
+                fi
+                exit 0
+            fi
             if [[ $1 == --stream-test ]]; then
                 python3 "$repo/tools/homebrew/rectangle_fixture.py" "$scratch" --stream
                 TOMBOX_TRACE_UPLOAD_BARRIERS=1 TOMBOX_LOG="$scratch/barriers.log" run_check "$1 $scratch/stream.bin"
