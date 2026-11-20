@@ -35,6 +35,30 @@ pub struct Translated {
     pub required_wave_size: Option<u32>,
     /// Workgroup dimensions for the subset verified to tolerate either Scarlett wave width.
     pub portable_compute_group: Option<[u32; 3]>,
+    /// Pixel shaders: the interpolation modifier of each input. Pass it to
+    /// [`translate_linked`] when translating the stage that feeds this shader.
+    pub ps_input_interp: InputInterp,
+}
+
+/// Interpolation modifiers of a pixel shader's inputs, by semantic (`TEXCOORD0`), in input
+/// signature order. Only inputs with a modifier are listed; the text is the HLSL modifier
+/// as emitted (it may be the `TB_VERTEX_INPUT` macro).
+///
+/// DXC packs two signature elements into one register only if they have the same
+/// interpolation mode. The pixel shader picks modifiers from how its microcode reads each
+/// parameter (per-vertex, flat, centroid, integer), while the stage feeding it used to
+/// declare none, so the two sides could be packed differently: D3D12 then rejects the
+/// pipeline (`CREATEGRAPHICSPIPELINESTATE_SHADER_LINKAGE_REGISTERINDEX` /
+/// `_REGISTERMASK`). Seen in Fortnite: a geometry shader wrote TEXCOORD0.xy and
+/// SV_RenderTargetArrayIndex to r0.xy and r2.x, its pixel shader read TEXCOORD0 per vertex
+/// (`nointerpolation`) and DXC packed SV_RenderTargetArrayIndex into r0.z.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct InputInterp(pub Vec<(String, String)>);
+
+impl InputInterp {
+    fn get(&self, semantic: &str) -> Option<&str> {
+        self.0.iter().find(|(s, _)| s.eq_ignore_ascii_case(semantic)).map(|(_, m)| m.as_str())
+    }
 }
 
 #[cfg(windows)]
@@ -312,6 +336,10 @@ struct Emitter<'a> {
     flat_attrs: BTreeSet<usize>,
     /// VS parameter-export index -> output register.
     out_params: Vec<u32>,
+    /// Pixel shader: the interpolation modifier given to each input (filled by `finish`).
+    ps_in_interp: InputInterp,
+    /// Stage feeding a pixel shader: modifiers to put on the matching outputs.
+    out_interp: InputInterp,
 }
 
 /// Synthetic opcode of the wave-reduction instruction produced by `lower_wave_reductions`.
@@ -596,6 +624,14 @@ fn compute_group(ex: &ShaderExtract) -> [u32; 3] {
 }
 
 pub fn translate(ex: &ShaderExtract) -> Result<Translated, String> {
+    translate_linked(ex, None)
+}
+
+/// [`translate`] for the last stage before the rasteriser (VS or GS), given the
+/// [`Translated::ps_input_interp`] of the pixel shader it feeds: the outputs that pixel
+/// shader reads get the same interpolation modifiers, so both stages pack their signatures
+/// into the same registers. Ignored for other stages.
+pub fn translate_linked(ex: &ShaderExtract, feeds_ps: Option<&InputInterp>) -> Result<Translated, String> {
     let (profile, is_ps) = match ex.stage {
         Stage::Vertex => ("vs_5_0", false),
         Stage::Pixel => ("ps_5_0", true),
@@ -629,6 +665,9 @@ pub fn translate(ex: &ShaderExtract) -> Result<Translated, String> {
     let scan_width = scan.as_ref().map(|s| s.width);
     lower_lane_spills(&mut insns)?;
     let mut em = Emitter::new(ex, insns);
+    if matches!(ex.stage, Stage::Vertex | Stage::Geometry) {
+        em.out_interp = feeds_ps.cloned().unwrap_or_default();
+    }
     em.vreg_array = em.insns.iter().any(|i| i.mnemonic.starts_with("v_movrel"));
     // Lane-spill slots beyond the tracked range are function-scope temporaries.
     for ins in &em.insns {
@@ -672,7 +711,15 @@ pub fn translate(ex: &ShaderExtract) -> Result<Translated, String> {
     // ps_5_0 forces UAV slots to start after the render-target outputs (FXC X4509);
     // SM5.1 has no such rule, and D3D12 accepts SM5.1 bytecode.
     let profile = if is_ps && !em.uav.is_empty() { "ps_5_1" } else { profile };
-    Ok(Translated { hlsl, entry: "main", profile, needs_barycentrics: !em.pulled_attrs.is_empty(), required_wave_size, portable_compute_group })
+    Ok(Translated {
+        hlsl,
+        entry: "main",
+        profile,
+        needs_barycentrics: !em.pulled_attrs.is_empty(),
+        required_wave_size,
+        portable_compute_group,
+        ps_input_interp: std::mem::take(&mut em.ps_in_interp),
+    })
 }
 
 /// Dwords per thread in the I/O buffer of [`translate_valu_probe`]: `v0..v{n-1}`, `vcc_lo`,
@@ -928,6 +975,8 @@ impl<'a> Emitter<'a> {
             // in the same register still occupies an attribute slot; d26fd88ff8712f9e).
             pulled_attrs: BTreeSet::new(),
             flat_attrs: BTreeSet::new(),
+            ps_in_interp: InputInterp::default(),
+            out_interp: InputInterp::default(),
             ps_attrs: distinct_regs(ex.input_sig.iter().filter(|e| {
                 e.sysval == 0 && ex.input_sig.iter().any(|o| o.register == e.register && o.rw_mask != 0)
             })),
@@ -5250,7 +5299,10 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) {{");
 ");
             return Ok(h);
         }
-        if !self.pulled_attrs.is_empty() {
+        // Outputs matching per-vertex pixel-shader inputs must use the same modifier, so the
+        // producer needs the macro too (both stages are compiled for the same shader model).
+        let out_uses_macro = !is_ps && self.out_interp.0.iter().any(|(_, m)| m == "TB_VERTEX_INPUT");
+        if !self.pulled_attrs.is_empty() || out_uses_macro {
             h.push_str("#if __SHADER_TARGET_MAJOR >= 6\n#define TB_VERTEX_INPUT nointerpolation\n#else\n#define TB_VERTEX_INPUT\n#endif\n");
         }
         let _ = writeln!(h, "struct SIn {{");
@@ -5288,6 +5340,11 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) {{");
                 } else {
                     ""
                 };
+                // SV_Position is not mirrored: the producer declares it `precise` with its own
+                // rules, and it had a register of its own in every DXC listing checked.
+                if is_ps && !interp.is_empty() && e.sysval != 1 {
+                    self.ps_in_interp.0.push((semantic(e), interp.trim_end().to_string()));
+                }
                 let _ = writeln!(h, "    {interp}{ty} i{ei} : {};", semantic(e));
             }
         }
@@ -5314,7 +5371,9 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) {{");
                 // in the character where the base pass failed the depth test).
                 let _ = writeln!(h, "    precise {ty} o{ei} : {};", semantic(e));
             } else {
-                let _ = writeln!(h, "    {ty} o{ei} : {};", semantic(e));
+                let interp = if is_ps { None } else { self.out_interp.get(&semantic(e)) };
+                let interp = interp.map(|m| format!("{m} ")).unwrap_or_default();
+                let _ = writeln!(h, "    {interp}{ty} o{ei} : {};", semantic(e));
             }
         }
         let no_out = ex.output_sig.is_empty();

@@ -30,25 +30,60 @@ pub struct SigElement {
 
 /// Parse an ISG1/OSG1 chunk body (32-byte elements).
 pub fn parse_signature(body: &[u8]) -> Result<Vec<SigElement>, String> {
-    let count = u32_at(body, 0)? as usize;
+    let count = u32_at(body, 0)?;
     if count > 64 {
         return Err(format!("implausible signature element count {count}"));
     }
+    read_signature(body, 32, 4)
+}
+
+fn read_signature(body: &[u8], stride: usize, name_field: usize) -> Result<Vec<SigElement>, String> {
+    let count = u32_at(body, 0)? as usize;
+    let header = u32_at(body, 4)? as usize;
+    if header < 8 || header > body.len() || count > (body.len() - header) / stride {
+        return Err("signature elements exceed chunk bounds".into());
+    }
     let mut out = Vec::with_capacity(count);
     for i in 0..count {
-        let e = 8 + i * 32;
-        let name_off = u32_at(body, e + 4)? as usize;
+        let e = header + i * stride + name_field;
+        let name_off = u32_at(body, e)? as usize;
         out.push(SigElement {
             name: cstr_at(body, name_off),
-            index: u32_at(body, e + 8)?,
-            sysval: u32_at(body, e + 12)?,
-            comp_type: u32_at(body, e + 16)?,
-            register: u32_at(body, e + 20)?,
-            mask: *body.get(e + 24).ok_or("sig mask oob")?,
-            rw_mask: *body.get(e + 25).ok_or("sig rwmask oob")?,
+            index: u32_at(body, e + 4)?,
+            sysval: u32_at(body, e + 8)?,
+            comp_type: u32_at(body, e + 12)?,
+            register: u32_at(body, e + 16)?,
+            mask: body[e + 20],
+            rw_mask: body[e + 21],
         });
     }
     Ok(out)
+}
+
+/// Only recompile the producer when a shared semantic has different physical packing.
+/// Extra producer outputs and rasterizer-generated pixel inputs can legitimately be
+/// absent from the opposite stage. D3D12 still validates the complete PSO.
+pub fn has_packing_mismatch(producer: &[u8], pixel: &[u8]) -> bool {
+    fn signature(code: &[u8], tags: &[&[u8; 4]]) -> Option<Vec<SigElement>> {
+        let container = crate::Dxbc::parse(code).ok()?;
+        let chunk = tags.iter().find_map(|tag| container.chunk(tag))?;
+        // SM4/5 records have six words. OSG5 adds a leading stream index,
+        // and the SM6 signature format also carries a trailing minimum precision.
+        let (stride, name_field) = match &chunk.fourcc {
+            b"ISGN" | b"OSGN" => (24, 0),
+            b"OSG5" => (28, 4),
+            _ => (32, 4),
+        };
+        read_signature(&code[chunk.offset..chunk.offset + chunk.size], stride, name_field).ok()
+    }
+    let Some(outputs) = signature(producer, &[b"OSG1", b"OSG5", b"OSGN"]) else { return false };
+    let Some(inputs) = signature(pixel, &[b"ISG1", b"ISGN"]) else { return false };
+    inputs.iter().any(|input| {
+        outputs.iter().any(|out| {
+            input.index == out.index && input.name.eq_ignore_ascii_case(&out.name)
+                && (input.register != out.register || input.mask & !out.mask != 0)
+        })
+    })
 }
 
 /// A PSV0 resource binding.

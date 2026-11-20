@@ -620,13 +620,25 @@ unsafe extern "system" fn create_gfx_pso_x(
     // Keep translated bytecode alive until the PSO is created.
     let mut keep: Vec<std::sync::Arc<Vec<u8>>> = Vec::new();
     let mut failure: Option<String> = None;
-    for (stage, off) in [("VS", 0x08usize), ("PS", 0x18), ("DS", 0x28), ("HS", 0x38), ("GS", 0x48)] {
+    let present = |off: usize| rd(&desc, off) != 0 && rd(&desc, off + 8) != 0;
+    // Compile the pixel shader first so its bytecode can be compared with the
+    // final producer before choosing a producer layout.
+    let feeder = if present(0x48) { 0x48 } else if present(0x28) { 0x28 } else { 0x08 };
+    let mut pixel_shader = None;
+    for (stage, off) in [("PS", 0x18usize), ("VS", 0x08), ("DS", 0x28), ("HS", 0x38), ("GS", 0x48)] {
         let (p, n) = (rd(&desc, off) as *const u8, rd(&desc, off + 8) as usize);
         if p.is_null() || n == 0 {
             continue;
         }
-        match unsafe { crate::shader_xlat::translate(p, n) } {
+        let result = match pixel_shader.as_ref().filter(|_| off == feeder) {
+            Some(pixel) => unsafe { crate::shader_xlat::translate_producer(p, n, pixel) },
+            None => unsafe { crate::shader_xlat::translate(p, n) },
+        };
+        match result {
             Ok(shader) => {
+                if off == 0x18 {
+                    pixel_shader = Some(shader.clone());
+                }
                 let code = shader.code;
                 desc[off..off + 8].copy_from_slice(&(code.as_ptr() as u64).to_le_bytes());
                 desc[off + 8..off + 16].copy_from_slice(&(code.len() as u64).to_le_bytes());
@@ -714,6 +726,23 @@ unsafe extern "system" fn create_gfx_pso_x(
                 record("d3d12_xs", "CreateGraphicsPSO_X", &format!(
                     "real CreateGraphicsPipelineState FAILED hr={hr:#010x} (translated shaders ok) topo={} numRT={} rtv0={} dsv={} samples={} inputElems={}",
                     u32at(0x23c), u32at(0x240), u32at(0x244), u32at(0x264), u32at(0x268), u32at(0x230)));
+                // Keep the title's original stage bytecode so the failure can be reproduced
+                // offline (`xscan`), e.g. an inter-stage signature mismatch.
+                let dir = std::env::temp_dir().join("tombox_shaders");
+                let _ = std::fs::create_dir_all(&dir);
+                let mut saved = Vec::new();
+                for (stage, off) in [("vs", 0x08usize), ("ps", 0x18), ("ds", 0x28), ("hs", 0x38), ("gs", 0x48)] {
+                    let p = unsafe { core::ptr::read_unaligned(pdesc.add(off) as *const u64) } as *const u8;
+                    let len = unsafe { core::ptr::read_unaligned(pdesc.add(off + 8) as *const u64) } as usize;
+                    if p.is_null() || len == 0 || len >= 0x100_0000 {
+                        continue;
+                    }
+                    let path = dir.join(format!("psofail_{n}_{stage}.dxbc"));
+                    if std::fs::write(&path, unsafe { core::slice::from_raw_parts(p, len) }).is_ok() {
+                        saved.push(path.display().to_string());
+                    }
+                }
+                record("d3d12_xs", "CreateGraphicsPSO_X", &format!("failed PSO #{n} stages saved: {}", saved.join(", ")));
             }
         }
         if hr == 0 && !ppv.is_null() {

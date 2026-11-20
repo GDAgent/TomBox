@@ -11,11 +11,14 @@ use core::ffi::c_void;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use tombox_xshader::hlsl::InputInterp;
 
 #[derive(Clone)]
 pub struct CompiledShader {
     pub code: Arc<Vec<u8>>,
     pub portable_compute_group: Option<[u32; 3]>,
+    /// Pixel shaders: input interpolation modifiers, for translating the stage feeding it.
+    ps_input_interp: Arc<InputInterp>,
 }
 type Cached = Result<CompiledShader, Arc<String>>;
 static CACHE: OnceLock<Mutex<HashMap<u64, Cached>>> = OnceLock::new();
@@ -130,12 +133,12 @@ fn disk_cache_dir() -> Option<&'static std::path::PathBuf> {
     .as_ref()
 }
 
-fn translate_uncached(blob: &[u8], hash: u64) -> Result<CompiledShader, String> {
+fn translate_uncached(blob: &[u8], hash: u64, feeds_ps: Option<&InputInterp>) -> Result<CompiledShader, String> {
     let ex = tombox_xshader::extract(blob).map_err(|e| {
         dump_failure(hash, blob, None, &e);
         format!("extract: {e}")
     })?;
-    let mut t = tombox_xshader::hlsl::translate(&ex).map_err(|e| {
+    let mut t = tombox_xshader::hlsl::translate_linked(&ex, feeds_ps).map_err(|e| {
         dump_failure(hash, blob, None, &e);
         format!("translate: {e}")
     })?;
@@ -157,7 +160,8 @@ fn translate_uncached(blob: &[u8], hash: u64) -> Result<CompiledShader, String> 
     });
     let profile = if use_dxc { t.dxc_profile() } else { t.profile.to_string() };
     let _ = disk_cache_dir(); // creates the cache directory
-    let compiled = |code| CompiledShader { code: Arc::new(code), portable_compute_group: t.portable_compute_group };
+    let ps_input_interp = Arc::new(std::mem::take(&mut t.ps_input_interp));
+    let compiled = |code| CompiledShader { code: Arc::new(code), portable_compute_group: t.portable_compute_group, ps_input_interp: ps_input_interp.clone() };
     let cached = Some(tombox_xshader::dxc::cache_path(&t.hlsl, &profile));
     if let Some(p) = &cached {
         if let Ok(v) = std::fs::read(p) {
@@ -199,17 +203,44 @@ fn translate_uncached(blob: &[u8], hash: u64) -> Result<CompiledShader, String> 
 /// Translate an Xbox shader blob to PC bytecode (cached). `ptr/len` come from a
 /// D3D12_SHADER_BYTECODE in the title's PSO desc.
 pub unsafe fn translate(ptr: *const u8, len: usize) -> Cached {
+    translate_linked(ptr, len, None)
+}
+
+/// Prefer the ordinary producer when its compiled outputs already line up with the
+/// pixel inputs. Reapplying modifiers can move a shared output when other outputs
+/// are unused by this pixel shader.
+pub unsafe fn translate_producer(ptr: *const u8, len: usize, pixel: &CompiledShader) -> Cached {
+    let ordinary = translate(ptr, len);
+    if pixel.ps_input_interp.0.is_empty() {
+        return ordinary;
+    }
+    if let Ok(producer) = &ordinary {
+        if !tombox_xshader::meta::has_packing_mismatch(&producer.code, &pixel.code) {
+            return ordinary;
+        }
+    }
+    translate_linked(ptr, len, Some(&pixel.ps_input_interp))
+}
+
+unsafe fn translate_linked(ptr: *const u8, len: usize, feeds_ps: Option<&InputInterp>) -> Cached {
     if ptr.is_null() || len < 32 || len > 0x40_0000 {
         return Err(Arc::new(format!("bad shader blob ({ptr:p}, {len})")));
     }
     let blob = core::slice::from_raw_parts(ptr, len);
+    let feeds_ps = feeds_ps.filter(|m| !m.0.is_empty());
+    // Cache key: the blob, plus the modifiers when there are any (`hash` alone still names
+    // the original shader in logs and dumps).
     let hash = fnv1a(blob);
+    let key = match feeds_ps {
+        Some(m) => hash ^ fnv1a(format!("{:?}", m.0).as_bytes()).rotate_left(29),
+        None => hash,
+    };
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(hit) = cache.lock().unwrap().get(&hash) {
+    if let Some(hit) = cache.lock().unwrap().get(&key) {
         return hit.clone();
     }
     // Translation never unwinds across the FFI boundary: a panic becomes an error.
-    let res = std::panic::catch_unwind(|| translate_uncached(blob, hash))
+    let res = std::panic::catch_unwind(|| translate_uncached(blob, hash, feeds_ps))
         .unwrap_or_else(|_| Err("translator panicked".to_string()));
     let entry: Cached = match res {
         Ok(v) => {
@@ -231,7 +262,7 @@ pub unsafe fn translate(ptr: *const u8, len: usize) -> Cached {
             Err(Arc::new(e))
         }
     };
-    cache.lock().unwrap().insert(hash, entry.clone());
+    cache.lock().unwrap().insert(key, entry.clone());
     entry
 }
 
