@@ -13,13 +13,15 @@
 //! Titles that never call `ApuCreateHeap` (the audio middleware only imports `ApuAlloc`)
 //! get an implicit default heap on first use.
 //! Audio DSP (SHAPE) is not emulated; this only satisfies the memory contract so
-//! init proceeds. The APU address of a block is its offset inside the heap.
+//! init proceeds, and `IAcpHal` (hal.rs) acknowledges commands without executing them. The APU address of a block is its offset inside the heap.
 
 use core::ffi::c_void;
 use std::sync::Mutex;
 use compat_common::{record, S_OK};
 
-const M: &str = "acphal";
+mod hal;
+
+pub(crate) const M: &str = "acphal";
 
 extern "system" {
     fn VirtualAlloc(addr: *mut c_void, size: usize, typ: u32, protect: u32) -> *mut c_void;
@@ -168,60 +170,17 @@ pub extern "system" fn ApuIsVirtualAddressValid(va: *const c_void, align: u32) -
 // ---- IAcpHal -----------------------------------------------------------------------------
 //
 // `AcpHalCreate(IAcpHal** ppAcpHal)` (single out-param: title call site EXE+0x6df048 loads
-// only rcx). The title then drives the object through its vtable (slot 0 = Connect(0x1000,
-// 0x1000), slot 2 = SubmitCommand-style call, ...). There is no SHAPE/XMA hardware on the
-// host, so this is an *inert device*: every method is logged (first few per slot) and
-// returns S_OK, but no command is ever executed and no completion message is produced.
-// XMA audio therefore does not play — tracked in docs/TECHNICAL_DEBT.md.
-
-const HAL_SLOTS: usize = 32;
-static HAL_VTBL: [std::sync::atomic::AtomicUsize; HAL_SLOTS] =
-    [const { std::sync::atomic::AtomicUsize::new(0) }; HAL_SLOTS];
-static HAL_OBJ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-fn hal_log(slot: usize, a: u64, b: u64, c: u64) {
-    static PER: [std::sync::atomic::AtomicUsize; HAL_SLOTS] =
-        [const { std::sync::atomic::AtomicUsize::new(0) }; HAL_SLOTS];
-    if PER[slot].fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 3 {
-        record(M, "IAcpHal", &format!("slot {slot} (a={a:#x} b={b:#x} c={c:#x}) -> S_OK (inert, no SHAPE DSP)"));
-    }
-}
-
-macro_rules! hal_methods {
-    ($(($name:ident, $slot:literal)),* $(,)?) => {
-        $(
-            unsafe extern "system" fn $name(_this: *mut c_void, a: u64, b: u64, c: u64) -> i32 {
-                hal_log($slot, a, b, c);
-                S_OK
-            }
-        )*
-        fn hal_install() {
-            $( HAL_VTBL[$slot].store($name as usize, std::sync::atomic::Ordering::Relaxed); )*
-        }
-    };
-}
-hal_methods!(
-    (h0,0),(h1,1),(h2,2),(h3,3),(h4,4),(h5,5),(h6,6),(h7,7),(h8,8),(h9,9),(h10,10),(h11,11),(h12,12),
-    (h13,13),(h14,14),(h15,15),(h16,16),(h17,17),(h18,18),(h19,19),(h20,20),(h21,21),(h22,22),(h23,23),
-    (h24,24),(h25,25),(h26,26),(h27,27),(h28,28),(h29,29),(h30,30),(h31,31),
-);
+// only rcx). The object is a null device (see hal.rs): commands are validated and
+// acknowledged in order, but there is no SHAPE/XMA DSP behind it, so no audio is produced.
 
 #[no_mangle]
 pub extern "system" fn AcpHalCreate(out: *mut *mut c_void) -> i32 {
     if out.is_null() {
         return compat_common::E_FAIL;
     }
-    use std::sync::atomic::Ordering;
-    let mut obj = HAL_OBJ.load(Ordering::Relaxed);
-    if obj == 0 {
-        hal_install();
-        // Object = one pointer-sized vtable slot (leaked; process-lifetime singleton).
-        let b: &'static mut usize = Box::leak(Box::new(HAL_VTBL.as_ptr() as usize));
-        obj = b as *mut usize as usize;
-        HAL_OBJ.store(obj, Ordering::Relaxed);
-    }
-    unsafe { *out = obj as *mut c_void };
-    record(M, "AcpHalCreate", &format!("-> inert IAcpHal @ {obj:#x}"));
+    let obj = hal::object();
+    unsafe { *out = obj };
+    record(M, "AcpHalCreate", &format!("-> null-device IAcpHal @ {obj:p}"));
     S_OK
 }
 
