@@ -1360,3 +1360,45 @@ Of 611 distinct static imports across the 16 DLLs, 610 resolved and
 `xmem!XMemVirtualQuery` was missing. The audit records the distinction between
 missing exports, exported stubs and runtime-loaded service candidates.
 [Per-DLL findings](COMPATIBILITY.md#scarlett-dll-audit)
+
+## 2026-11-20 — Matching signatures between a pixel shader and the stage feeding it
+
+Fortnite (build 2.0.1461.7919, run offline on Windows with the network guard in deny mode)
+stopped at its third graphics pipeline after `39adf8e`: `CreateGraphicsPipelineStateX`
+returned `E_INVALIDARG` and the engine reported "GPU Crashed or D3D Device Removed". The
+D3D12 debug layer gave `CREATEGRAPHICSPIPELINESTATE_SHADER_LINKAGE_REGISTERINDEX` (#660) and
+`_REGISTERMASK` (#662) for `SV_RenderTargetArrayIndex` between a geometry and a pixel shader.
+On `be622e8` (before `39adf8e`) the same setup ran to the time limit (33 pipelines, 5,400
+frames, title screen).
+
+**Cause.** DXC packs two signature elements into one register only if their interpolation
+modes match. Since `39adf8e` the pixel shader declares per-vertex inputs `nointerpolation`
+(`TB_VERTEX_INPUT`, read with `SV_Barycentrics`) and flat ones `nointerpolation`, while the
+stage feeding it declares no modifiers. In the failing pair the geometry shader wrote
+TEXCOORD0.xy, SV_Position and SV_RenderTargetArrayIndex to r0.xy, r1 and r2.x, and the pixel
+shader, which reads TEXCOORD0 per vertex, had SV_RenderTargetArrayIndex in r0.z (DXC
+listings of the translated HLSL). Adding `nointerpolation` to the geometry shader's
+TEXCOORD0 output moved its SV_RenderTargetArrayIndex to r0.z as well.
+
+**Fix.** A translated pixel shader reports the modifier of each input
+(`Translated::ps_input_interp`). `hlsl::translate_linked` gives the outputs of the vertex or
+geometry shader that feeds it the same modifiers. `d3d12_xs` now translates the pixel shader
+of a pipeline first and passes its modifiers to the geometry shader, or to the vertex shader
+if there is none. The modifiers are part of the runtime cache key, so a vertex shader used
+with differently interpolating pixel shaders gets one translation per set. Without a pixel
+shader, and for other stages, translation is unchanged. SV_Position is not mirrored.
+
+**Diagnostics.** When D3D12 rejects a graphics pipeline built from translated shaders, the
+title's original stage bytecode is saved as `%TEMP%\tombox_shaders\psofail_<n>_<stage>.dxbc`
+(first ten failures), so the pair can be translated and compiled offline.
+
+**Tests.** `tests/synthetic.rs`: a hand-assembled pixel shader reading TEXCOORD0 per vertex
+with an integer TEXCOORD1, and a vertex shader exporting both. One test checks the emitted
+modifiers. The other compiles both with DXC and compares the ISG1/OSG1 registers and masks,
+the rule D3D12 applies. It requires the unlinked pair to mismatch (TEXCOORD1 in r0.z and
+r2.x) and the linked pair to match. `cargo test --release` (workspace) passes.
+
+**In game (one run, 180 s limit, AMD RX 6600 XT):** 33 graphics pipelines created, none
+failed, 6,600 frames presented, title screen reached. The vertex-to-pixel case is covered
+only by the synthetic test. A pixel shader whose inputs are a subset of the producer's
+outputs can still be packed differently. That case is not handled and was not observed.

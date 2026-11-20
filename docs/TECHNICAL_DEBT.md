@@ -94,6 +94,10 @@ Honest ledger. Updated continuously.
 * Indexed constant-buffer arrays assume a 16-byte element stride.
 * Compute thread-group id registers are assumed to follow the user-data SGPRs.
 * PS entry ABI assumes perspective-centre barycentrics in v0/v1 and position in v2..v5.
+* Inter-stage signatures: the stage feeding a pixel shader copies the pixel shader's
+  interpolation modifiers, so DXC packs both sides alike. Registers still differ if the
+  pixel shader reads only a subset of the outputs and packing shifts. That case was not
+  observed and is not handled.
 * DXC uses host wave operations for `v_readfirstlane` and `v_mbcnt`. Guest and host
   wave widths can differ. A scalar population count of EXEC still sees the invocation's
   projected mask. The SM5 fallback retains its single-lane approximations.
