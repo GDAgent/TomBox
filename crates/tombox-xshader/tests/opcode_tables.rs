@@ -40,6 +40,30 @@ fn vopc_half_float_compares_are_split_in_two_blocks() {
 }
 
 #[test]
+fn vopc_16bit_integer_compare_blocks_match_gfx1030() {
+    // Base opcodes assembled with llvm-mc -mcpu=gfx1030. Adjacent opcodes include
+    // floating-point class tests and cannot be filled from the 32-bit predicate layout.
+    for (base, prefix, ty) in [(0x89, "cmp", "i16"), (0x99, "cmpx", "i16"), (0xa9, "cmp", "u16"), (0xb9, "cmpx", "u16")] {
+        for (i, cc) in ["lt", "eq", "le", "gt", "ne", "ge"].iter().enumerate() {
+            assert_eq!(vopc(base + i as u32), format!("v_{prefix}_{cc}_{ty}"));
+        }
+    }
+    assert_eq!(vopc(0x88), "v_cmp_class_f32");
+    assert_eq!(vopc(0x98), "v_cmpx_class_f32");
+}
+
+#[test]
+fn cmpk_immediate_uses_the_predicate_signedness() {
+    for (base, expected) in [(3u32, -1i64), (9, 65535)] {
+        for op in base..base + 6 {
+            let word = 0xb010_ffff | (op << 23);
+            let ins = &disassemble(&word.to_le_bytes())[0];
+            assert_eq!(ins.aux.imm, expected, "{}", ins.mnemonic);
+        }
+    }
+}
+
+#[test]
 fn half_float_fma_forms_have_gfx10_names() {
     let vop2 = |op: u32| mnemonic(&[(op << 25) | (3 << 17) | (1 << 9) | 256, 0x3c00]);
     assert_eq!(vop2(0x36), "v_fmac_f16");

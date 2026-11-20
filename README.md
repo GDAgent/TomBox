@@ -17,7 +17,7 @@ TomBox is an experimental Xbox Series X|S compatibility runtime for x64 Windows 
 
 - **System imports** count the tested Fortnite build’s imports, including native Windows functions. Coin Run independently verifies the ordinal-1 factories for GameInput and XAudio2.
 - **Direct3D 12.x** counts covered device and command-list slots once across GXDK editions. A discovery beyond the tracked range extends the denominator. [Slot evidence](docs/COMPATIBILITY.md#d3d12x-slot-tracking)
-- **RDNA2** counts instructions observed in the retail shader scan for which every containing shader translated. Rendering correctness is tested separately.
+- **RDNA2** tracks named opcode-table entries and instructions observed in the retail scan. Green means every retail shader using that instruction translated. Amber also credits instructions verified only by GPU reference checks. Open the map and hover over a square for its mnemonic and evidence.
 - **Retail milestones** track the path from inspecting a dump through playable games. One retail title has been tested. Its latest completed milestone is reaching the main menu. [Compatibility matrix](docs/COMPATIBILITY.md) · [Known limitations](docs/TECHNICAL_DEBT.md)
 
 ## Try Coin Run on Linux
@@ -30,7 +30,7 @@ tools/homebrew/build-clear.sh
 tools/homebrew/play-coins.sh --3d
 ```
 
-Collect both coins with WASD, the D-pad or the left stick. R or Menu restarts the board. Q or Escape quits. For automated checks, use `--3d-test`, `--gameinput-test` or `--audio-test`. [Test dependencies, commands and reference fixtures](tools/homebrew/README.md)
+Collect both coins with WASD, the D-pad or the left stick. R or Menu restarts the board. Q or Escape quits. Run `tools/homebrew/play-coins.sh --rdna2-test` for shader verification. Use `--3d-test`, `--gameinput-test` or `--audio-test` for individual gameplay checks. [Test dependencies, commands and reference fixtures](tools/homebrew/README.md)
 
 ## Build on Windows
 

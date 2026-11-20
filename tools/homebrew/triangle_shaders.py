@@ -58,6 +58,10 @@ def emit(name, data):
     print("};")
 
 
+# One compute-visible UAV table at u0; group ID X follows its pointer in s5.
+compute_root = words(1, 1, 24, 0, 0, 0, 0, 0, 36, 1, 44, 1, 1, 0, 0, 0)
+
+
 if __name__ == "__main__":
     end = 0xBF810000  # s_endpgm
     emit("triangle_vs", shader(1, [
@@ -71,8 +75,6 @@ if __name__ == "__main__":
         end,
     ], signature(("SV_Position", 1, 0)), signature(("SV_Target", 64, 0))))
 
-    # One compute-visible UAV table at u0; group ID X follows its pointer in s5.
-    compute_root = words(1, 1, 24, 0, 0, 0, 0, 0, 36, 1, 44, 1, 1, 0, 0, 0)
     emit("fallback_cs", shader(5, [
         0xF4080302, 0xFA000000,         # s_load_dwordx4 s[12:15], s[4:5], 0
         0xBF8CC07F,                     # s_waitcnt lgkmcnt(0)

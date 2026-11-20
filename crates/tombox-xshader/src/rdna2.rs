@@ -262,7 +262,12 @@ fn decode_operands(enc: Enc, raw: &[u32]) -> (Vec<Opnd>, Vec<Opnd>, InsnAux) {
         }
         Enc::Sopk => {
             let sdst = (w >> 16) & 0x7f;
-            aux.imm = ((w & 0xffff) as i16) as i64; // sign-extended SIMM16
+            // The six unsigned CMPK predicates zero-extend SIMM16 (RDNA2 ISA §12.2).
+            aux.imm = if (0x09..=0x0e).contains(&((w >> 23) & 0x1f)) {
+                i64::from(w as u16)
+            } else {
+                i64::from(w as i16)
+            };
             (vec![ssrc8(sdst as u16, None)], vec![], aux)
         }
         Enc::Sopc => {

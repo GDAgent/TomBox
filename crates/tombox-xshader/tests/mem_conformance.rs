@@ -1168,21 +1168,28 @@ fn modifier_cases(c: &mut Vec<Case>) {
 
 #[test]
 fn mem_conformance() {
+    let export = std::env::var_os("TOMBOX_MEM_MNEMONICS");
+    let required = export.is_some();
     if !dxc::available() {
+        assert!(!required, "full GPU verification needs dxcompiler.dll and dxil.dll in TOMBOX_DXC_DIR");
         eprintln!("SKIPPED: DXC not available");
         return;
     }
     let gpu = match Gpu::new() {
         Ok(g) => g,
         Err(e) => {
+            assert!(!required, "full GPU verification needs a D3D12 device: {e}");
             eprintln!("SKIPPED: no D3D12 device ({e})");
             return;
         }
     };
     let only = std::env::var("TOMBOX_MEM_ONLY").ok();
+    assert!(!required || only.is_none(), "memory coverage export requires the full suite");
     let sm66 = gpu.shader_model() >= 0x66;
+    assert!(!required || sm66, "full memory verification needs shader model 6.6 for compute derivatives");
     let stride = valu_probe_stride(NV) as usize;
     let mut failed: Vec<String> = Vec::new();
+    let mut verified = std::collections::BTreeSet::new();
     let mut report = String::new();
     for mut c in cases() {
         if only.as_deref().is_some_and(|o| !c.name.contains(o)) {
@@ -1252,10 +1259,21 @@ fn mem_conformance() {
         }
         if bad > 0 || uav_err.is_some() {
             failed.push(format!("{}: {bad}/{} mismatches{}", c.name, c.inputs.len(), uav_err.map(|e| format!(", UAV: {e}")).unwrap_or_default()));
+        } else if required && !c.inputs.is_empty() {
+            use tombox_xshader::rdna2::{disassemble, Enc};
+            for ins in disassemble(&words_le(&c.words)) {
+                if matches!(ins.enc, Enc::Mimg | Enc::Mubuf) {
+                    verified.insert(ins.mnemonic);
+                }
+            }
         }
     }
     eprintln!("{report}");
     assert!(failed.is_empty(), "{} case(s) failed:\n{}", failed.len(), failed.join("\n"));
+    if let Some(path) = export {
+        assert!(!verified.is_empty(), "no vector memory probes ran");
+        std::fs::write(path, verified.into_iter().collect::<Vec<_>>().join("\n") + "\n").expect("write memory coverage");
+    }
 }
 
 /// Instruction forms whose semantics the translator does not model must be refused, not

@@ -19,14 +19,17 @@
 //! * multiply-add instructions accept both the fused and the unfused result: HLSL has no
 //!   single-precision fused multiply-add, so `a * b + c` may compile to either.
 //!
-//! Needs Windows, a Direct3D 12 GPU and DXC (`dxcompiler.dll` + `dxil.dll`, see `dxc.rs`).
-//! When those are missing the test reports that and returns without checking anything.
-#![cfg(windows)]
+//! The standalone GPU test needs Windows, Direct3D 12 and DXC. Coin Run's Linux launcher
+//! also runs the same vectors and reference through Xbox PSO creation under Proton.
 
+#[cfg(windows)]
 use tombox_xshader::gpu::Gpu;
+#[cfg(windows)]
 use tombox_xshader::hlsl::{translate_valu_probe, valu_probe_stride};
+#[cfg(windows)]
 use tombox_xshader::dxc;
 
+#[cfg(windows)]
 const NV: u32 = 4; // v0..v2 = sources, v3 = destination (also loaded: MAC-style ops read it)
 const V: u32 = 256; // VGPR operand code base
 const VCC_LO: u32 = 106;
@@ -454,6 +457,18 @@ fn cases() -> Vec<Case> {
     // V_CVT_I32_F32 (inferred: the guide states it only for that instruction).
     c.push(case("v_cvt_rpi_i32_f32", v3(0x18c, 1), [F, I, I], |a, _, _, _| Want::U((f(a) + 0.5).floor() as i32 as u32)));
     c.push(case("v_cvt_flr_i32_f32", v3(0x18d, 1), [F, I, I], |a, _, _, _| Want::U(f(a).floor() as i32 as u32)));
+    let offset = |a: u32| {
+        let nibble = (a & 15) as i32;
+        let signed = if nibble >= 8 { nibble - 16 } else { nibble };
+        signed as f32 / 16.0
+    };
+    c.push(case("v_cvt_off_f32_i4 e32", vec![0x7e06_1d00, S_ENDPGM], [I, I, I], move |a, _, _, _| {
+        Want::U(offset(a).to_bits())
+    }));
+    let scaled = vop3(0x18e, 1, Mods { omod: 2, clamp: true, ..m0 }, 3, None);
+    c.push(case("v_cvt_off_f32_i4 e64 x4 clamp", scaled, [I, I, I], move |a, _, _, _| {
+        Want::U((4.0 * offset(a)).clamp(0.0, 1.0).to_bits())
+    }));
     for k in 0..4u32 {
         c.push(case(&format!("v_cvt_f32_ubyte{k}"), v3(0x191 + k, 1), [I, I, I], move |a, _, _, _| fl(((a >> (8 * k)) & 0xff) as f32)));
     }
@@ -521,7 +536,7 @@ fn cases() -> Vec<Case> {
         let doms = if n.contains("sh") || n == "v_bfm_b32" { [Small, I, I] } else { [I, I, I] };
         c.push(case(n, v3(op, 2), doms, move |a, b2, _, _| Want::U(fun(a, b2))));
     }
-    let int3: [(&str, u32, fn(u32, u32, u32) -> u32, [Dom; 3]); 20] = [
+    let int3: [(&str, u32, fn(u32, u32, u32) -> u32, [Dom; 3]); 21] = [
         ("v_mad_i32_i24", 0x142, |a, b, c| sext24(a).wrapping_mul(sext24(b)).wrapping_add(c as i32) as u32, [I, I, I]),
         ("v_mad_u32_u24", 0x143, |a, b, c| (a & 0xff_ffff).wrapping_mul(b & 0xff_ffff).wrapping_add(c), [I, I, I]),
         ("v_bfe_u32", 0x148, |a, b, c| {
@@ -542,6 +557,13 @@ fn cases() -> Vec<Case> {
             }
         }, [I, Small, Small]),
         ("v_bfi_b32", 0x14a, |a, b, c| (a & b) | (!a & c), [I, I, I]),
+        ("v_lerp_u8", 0x14d, |a, b, c| {
+            let bytes = std::array::from_fn(|i| {
+                let sum = u16::from(a.to_le_bytes()[i]) + u16::from(b.to_le_bytes()[i]);
+                ((sum + u16::from(c.to_le_bytes()[i] & 1)) / 2) as u8
+            });
+            u32::from_le_bytes(bytes)
+        }, [I, I, I]),
         ("v_alignbit_b32", 0x14e, |a, b, c| ((((a as u64) << 32) | b as u64) >> (c & 31)) as u32, [I, I, Small]),
         ("v_alignbyte_b32", 0x14f, |a, b, c| ((((a as u64) << 32) | b as u64) >> (8 * (c & 3))) as u32, [I, I, Small]),
         ("v_min3_i32", 0x152, |a, b, c| (a as i32).min(b as i32).min(c as i32) as u32, [I, I, I]),
@@ -647,10 +669,11 @@ fn cases() -> Vec<Case> {
     for (k, (cc, fun)) in fcmp.iter().enumerate() {
         let fun = *fun;
         c.push(Case { out: Out::Vcc, ..case(&format!("v_cmp_{cc}_f32"), vopc(k as u32), [F, F, I], move |a, b2, _, _| Want::U(fun(f(a), f(b2)) as u32)) });
-        c.push(Case { out: Out::Exec, ..case(&format!("v_cmpx_{cc}_f32"), vopc(0x10 + k as u32), [F, F, I], move |a, b2, _, _| Want::U(fun(f(a), f(b2)) as u32)) });
+        c.push(Case { out: Out::Exec, vcc_in: true, ..case(&format!("v_cmpx_{cc}_f32"), vopc(0x10 + k as u32), [F, F, I], move |a, b2, _, _| Want::U(fun(f(a), f(b2)) as u32)) });
         let hfun = move |a: u32, b2: u32| fun(f16_to(a & 0xffff), f16_to(b2 & 0xffff));
         let hop = if k < 8 { 0xc8 + k as u32 } else { 0xe8 + k as u32 - 8 };
         c.push(Case { out: Out::Vcc, ..case(&format!("v_cmp_{cc}_f16"), vopc(hop), [H, H, I], move |a, b2, _, _| Want::U(hfun(a, b2) as u32)) });
+        c.push(Case { out: Out::Exec, vcc_in: true, ..case(&format!("v_cmpx_{cc}_f16"), vopc(hop + 0x10), [H, H, I], move |a, b2, _, _| Want::U(hfun(a, b2) as u32)) });
     }
     let icmp: [(&str, fn(i64, i64) -> bool); 8] = [
         ("f", |_, _| false),
@@ -666,11 +689,39 @@ fn cases() -> Vec<Case> {
         let fun = *fun;
         c.push(Case { out: Out::Vcc, ..case(&format!("v_cmp_{cc}_i32"), vop3(0x80 + k as u32, 2, m0, VCC_LO, None), [I, I, I], move |a, b2, _, _| Want::U(fun(a as i32 as i64, b2 as i32 as i64) as u32)) });
         c.push(Case { out: Out::Vcc, ..case(&format!("v_cmp_{cc}_u32"), vopc(0xc0 + k as u32), [I, I, I], move |a, b2, _, _| Want::U(fun(a as i64, b2 as i64) as u32)) });
-        c.push(Case { out: Out::Exec, ..case(&format!("v_cmpx_{cc}_u32"), vopc(0xd0 + k as u32), [I, I, I], move |a, b2, _, _| Want::U(fun(a as i64, b2 as i64) as u32)) });
+        c.push(Case { out: Out::Exec, vcc_in: true, ..case(&format!("v_cmpx_{cc}_u32"), vopc(0xd0 + k as u32), [I, I, I], move |a, b2, _, _| Want::U(fun(a as i64, b2 as i64) as u32)) });
+        c.push(Case { out: Out::Exec, vcc_in: true, ..case(&format!("v_cmpx_{cc}_i32"), vopc(0x90 + k as u32), [I, I, I], move |a, b2, _, _| Want::U(fun(a as i32 as i64, b2 as i32 as i64) as u32)) });
+        // The 16-bit integer blocks encode the six relational predicates.
+        if (1..=6).contains(&k) {
+            for (ty, base, signed) in [("i16", 0x88, true), ("u16", 0xa8, false)] {
+                let widen = move |x: u32| if signed { i64::from(x as i16) } else { i64::from(x as u16) };
+                for (prefix, op, out) in [("v_cmp", base, Out::Vcc), ("v_cmpx", base + 0x10, Out::Exec)] {
+                    let name = format!("{prefix}_{cc}_{ty}");
+                    c.push(Case { out, vcc_in: true, ..case(&name, vopc(op + k as u32), [I, I, I], move |a, b, _, _| {
+                        Want::U(fun(widen(a), widen(b)) as u32)
+                    }) });
+                }
+            }
+        }
     }
-    c.push(Case {
-        out: Out::Vcc,
-        ..case("v_cmp_class_f32", vopc(0x88), [F, I, I], |a, b2, _, _| {
+    // LLVM gfx1030 encodings: e64 scalar mask destination and SDWA word selection.
+    c.push(Case { out: Out::Vcc, ..case("v_cmp_ge_u16 e64", vop3(0xae, 2, m0, VCC_LO, None), [I, I, I], |a, b, _, _| {
+        Want::U((a as u16 >= b as u16) as u32)
+    }) });
+    // Complementary CMPX instructions must leave all lanes inactive, including the
+    // lanes where the second predicate is true but the first already cleared EXEC.
+    let mut masked = vopc(0x99);
+    masked.pop();
+    masked.extend(vop3(0x9e, 2, m0, 126, None)); // v_cmpx_ge_i16_e64 (EXEC_LO)
+    c.push(Case { out: Out::Exec, vcc_in: true, ..case("v_cmpx_lt_i16 then ge", masked, [I, I, I], |_, _, _, _| Want::U(0)) });
+    for (name, word, out) in [("v_cmp_lt_i16", 0x7d12_02f9, Out::Vcc), ("v_cmpx_lt_i16", 0x7d32_02f9, Out::Exec)] {
+        c.push(Case { out, vcc_in: true, ..case(&format!("{name} sdwa"), vec![word, 0x0405_0000, S_ENDPGM], [I, I, I], |a, b, _, _| {
+            Want::U((((a >> 16) as i16) < b as i16) as u32)
+        }) });
+    }
+    for (name, op, out) in [("v_cmp_class_f32", 0x88, Out::Vcc), ("v_cmpx_class_f32", 0x98, Out::Exec)] {
+        // Classification inspects register bits, including subnormals.
+        c.push(Case { out, vcc_in: true, float_in: false, ..case(name, vopc(op), [F, I, I], |a, b2, _, _| {
             // Class bits: 0 sNaN, 1 qNaN, 2 -inf, 3 -normal, 4 -denorm, 5 -0, 6 +0, 7 +denorm,
             // 8 +normal, 9 +inf.
             let x = f(a);
@@ -688,8 +739,8 @@ fn cases() -> Vec<Case> {
                 8
             };
             Want::U((b2 >> cls) & 1)
-        })
-    });
+        }) });
+    }
     // --- half-float arithmetic (low halves; results rounded to nearest even)
     let h2: [(&str, u32, fn(f32, f32) -> f32); 6] = [
         ("v_add_f16", 0x132, |a, b| a + b),
@@ -752,15 +803,160 @@ fn cases() -> Vec<Case> {
     c
 }
 
+fn case_vectors(c: &Case, index: usize) -> Vec<[u32; 4]> {
+    vectors(&c.doms, c.vcc_in, 0x9e37_79b9_7f4a_7c15 ^ index as u64)
+        .into_iter()
+        .filter(|v| !(c.float_in && v[..3].iter().any(|&x| is_denorm(x))))
+        .collect()
+}
+
+fn check_result(c: &Case, v: &[u32; 4], result: u32, vcc: u32, exec: u32) -> (bool, Want, u32) {
+    let (want, carry) = (c.want)(v[0], v[1], v[2], v[3]);
+    let ok = match c.out {
+        Out::V3 => matches(result, &want),
+        Out::Vcc => matches(vcc & 1, &want) && exec == 1,
+        Out::Exec => matches(exec & 1, &want) && vcc == v[3],
+        Out::V3Carry => matches(result, &want) && (vcc & 1) == carry,
+    };
+    (ok, want, carry)
+}
+
+/// A one-thread Xbox workgroup has a single active lane. Move the per-group inputs to
+/// SGPRs, execute the comparison, and expose SCC through v3 for independent readback.
+fn coin_scalar_compares() -> Vec<Case> {
+    let predicates: [(&str, fn(i64, i64) -> bool); 6] = [
+        ("eq", |a, b| a == b), ("lg", |a, b| a != b), ("gt", |a, b| a > b),
+        ("ge", |a, b| a >= b), ("lt", |a, b| a < b), ("le", |a, b| a <= b),
+    ];
+    let mut cases = Vec::new();
+    for (ty, signed, base) in [("i32", true, 0), ("u32", false, 6)] {
+        let widen = move |v: u32| if signed { i64::from(v as i32) } else { i64::from(v) };
+        for (index, (cc, compare)) in predicates.iter().copied().enumerate() {
+            let op = base + index as u32;
+            // v_readfirstlane s16,v0; v_readfirstlane s17,v1; s_cmp s16,s17; v_mov v3,SCC.
+            let regs = vec![0x7e20_0500, 0x7e22_0501, 0xbf00_1110 | (op << 16), 0x7e06_02fd, S_ENDPGM];
+            cases.push(case(&format!("s_cmp_{cc}_{ty}"), regs, [Dom::I; 3], move |a, b, _, _| {
+                Want::U(compare(widen(a), widen(b)) as u32)
+            }));
+            // SIMM16=0xffff represents -1 for a signed comparison and 65535 for unsigned.
+            let immediate = vec![0x7e20_0500, 0xb010_ffff | ((3 + op) << 23), 0x7e06_02fd, S_ENDPGM];
+            cases.push(case(&format!("s_cmpk_{cc}_{ty}"), immediate, [Dom::I; 3], move |a, _, _, _| {
+                Want::U(compare(widen(a), if signed { -1 } else { 65535 }) as u32)
+            }));
+        }
+    }
+    cases
+}
+
+// The launcher supplies an isolated directory. The Python wrapper packages the ISA into
+// Xbox shader containers and Coin Run returns four words per input through GPU readback.
+#[test]
+#[ignore = "run with tools/homebrew/play-coins.sh --rdna2-test"]
+fn coin_run_valu_conformance() {
+    use std::collections::BTreeSet;
+    use std::io::{BufReader, BufWriter, Read, Write};
+    use std::{env, fs::File, path::PathBuf, process::Command};
+
+    let dir = PathBuf::from(env::var_os("TOMBOX_COIN_PROBE_DIR").expect("homebrew scratch directory"));
+    let mut cases = cases();
+    cases.extend(coin_scalar_compares());
+    let mut exercised = BTreeSet::new();
+    let mut inputs = BufWriter::new(File::create(dir.join("cases.bin")).unwrap());
+    inputs.write_all(&(cases.len() as u32).to_le_bytes()).unwrap();
+    let mut all_vectors = Vec::with_capacity(cases.len());
+    for (index, c) in cases.iter().enumerate() {
+        let isa: Vec<_> = c.words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let name = c.name.split_whitespace().next().unwrap();
+        assert!(tombox_xshader::rdna2::disassemble(&isa).iter().any(|ins| ins.mnemonic == name), "{}", c.name);
+        exercised.insert(name.to_owned());
+        let vecs = case_vectors(c, index);
+        assert!(!vecs.is_empty(), "{}", c.name);
+        for word in [c.words.len() as u32, vecs.len() as u32].iter().chain(&c.words) {
+            inputs.write_all(&word.to_le_bytes()).unwrap();
+        }
+        for v in &vecs {
+            for word in v {
+                inputs.write_all(&word.to_le_bytes()).unwrap();
+            }
+        }
+        all_vectors.push(vecs);
+    }
+    inputs.flush().unwrap();
+    drop(inputs);
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/homebrew/rdna2_fixture.py");
+    let status = Command::new("python3").arg(script).arg(&dir).status().expect("run Coin Run");
+    assert!(status.success(), "Coin Run failed ({status})");
+
+    let mut results = BufReader::new(File::open(dir.join("results.bin")).expect("Coin Run readback"));
+    let mut failures = 0;
+    let mut total = 0;
+    for (c, vecs) in cases.iter().zip(all_vectors) {
+        let mut bad = 0;
+        for v in &vecs {
+            let mut row = [0u8; 16];
+            results.read_exact(&mut row).unwrap_or_else(|e| panic!("{}: missing GPU readback: {e}", c.name));
+            let [value, vcc, exec, marker] = std::array::from_fn(|i| u32::from_le_bytes(row[i*4..i*4+4].try_into().unwrap()));
+            let (ok, want, carry) = check_result(c, v, value, vcc, exec);
+            if !ok || marker != 0x5244_4e41 {
+                if bad == 0 {
+                    eprintln!("{}: input {v:08x?}, got {value:08x}, VCC {vcc}, EXEC {exec}, marker {marker:08x}, expected {want:?} (carry {carry})", c.name);
+                }
+                bad += 1;
+            }
+        }
+        total += vecs.len();
+        if bad > 0 {
+            eprintln!("{}: {bad}/{} mismatches", c.name, vecs.len());
+            failures += 1;
+        }
+    }
+    assert_eq!(results.read(&mut [0; 1]).unwrap(), 0, "unexpected extra GPU readback");
+    assert_eq!(failures, 0, "Coin Run ALU cases failed");
+    let tracked = include_str!("../../../tools/progress/valu-mnemonics.txt");
+    for name in tracked.lines() {
+        assert!(exercised.contains(name), "missing Coin Run coverage for tracked mnemonic {name}");
+    }
+    println!("Coin Run verified {} Xbox shader cases ({} ALU mnemonics) over {total} input vectors",
+             cases.len(), exercised.len());
+    let memory = std::fs::read_to_string(dir.join("memory-mnemonics.txt")).expect("companion memory suite results");
+    let memory: BTreeSet<_> = memory.lines().collect();
+    for row in include_str!("../../../tools/progress/coin-rdna2-coverage.tsv").lines().skip(1) {
+        let fields: Vec<_> = row.split('\t').collect();
+        let [name, _, game_checked, memory_checked] = fields[..] else { panic!("invalid coverage row: {row}") };
+        if game_checked == "true" {
+            assert!(exercised.contains(name), "lost Coin Run ALU coverage for {name}");
+        }
+        if memory_checked == "true" {
+            assert!(memory.contains(name), "lost memory probe coverage for {name}");
+        }
+    }
+    let retail: BTreeSet<_> = include_str!("../../../tools/progress/mnemonics.txt")
+        .lines().map(|line| line.split_whitespace().next().unwrap()).collect();
+    let names: BTreeSet<_> = exercised.iter().map(String::as_str).chain(memory.iter().copied()).chain(retail.iter().copied()).collect();
+    let mut coverage = BufWriter::new(File::create(dir.join("coverage.tsv")).unwrap());
+    writeln!(coverage, "mnemonic\tretail_observed\tcoin_run_alu\tmemory_probe").unwrap();
+    for name in names {
+        writeln!(coverage, "{name}\t{}\t{}\t{}", retail.contains(name), exercised.contains(name), memory.contains(name)).unwrap();
+    }
+    coverage.flush().unwrap();
+    let directly_checked = retail.iter().filter(|name| exercised.contains(**name) || memory.contains(**name)).count();
+    println!("Direct ALU and memory checks cover {directly_checked}/{} retail-observed instructions; {} still lack an instruction-level reference case.",
+             retail.len(), retail.len() - directly_checked);
+}
+
+#[cfg(windows)]
 #[test]
 fn valu_conformance() {
+    let export = std::env::var_os("TOMBOX_VALU_MNEMONICS");
     if !dxc::available() {
+        assert!(export.is_none(), "GPU coverage export requires DXC");
         eprintln!("SKIPPED: DXC not available");
         return;
     }
     let gpu = match Gpu::new() {
         Ok(g) => g,
         Err(e) => {
+            assert!(export.is_none(), "GPU coverage export requires a D3D12 device: {e}");
             eprintln!("SKIPPED: no D3D12 device ({e})");
             return;
         }
@@ -769,6 +965,7 @@ fn valu_conformance() {
     let stride = valu_probe_stride(NV) as usize;
     let mut failed: Vec<String> = Vec::new();
     let mut report = String::new();
+    let mut verified = std::collections::BTreeSet::new();
     for (ci, c) in cases().into_iter().enumerate() {
         if only.as_deref().is_some_and(|o| !c.name.contains(o)) {
             continue;
@@ -788,10 +985,7 @@ fn valu_conformance() {
                 continue;
             }
         };
-        let vecs: Vec<[u32; 4]> = vectors(&c.doms, c.vcc_in, 0x9e37_79b9_7f4a_7c15 ^ ci as u64)
-            .into_iter()
-            .filter(|v| !(c.float_in && v[..3].iter().any(|&x| is_denorm(x))))
-            .collect();
+        let vecs = case_vectors(&c, ci);
         // The probe runs 64-thread groups and its buffer is not bounds-checked: size it for
         // every thread launched (the padding threads compute on zeros and are ignored).
         let groups = vecs.len().div_ceil(64) as u32;
@@ -807,14 +1001,8 @@ fn valu_conformance() {
         let mut examples = Vec::new();
         for (i, v) in vecs.iter().enumerate() {
             let o = i * stride;
-            let (want, carry) = (c.want)(v[0], v[1], v[2], v[3]);
             let (vres, vcc, exec) = (data[o + 3], data[o + NV as usize], data[o + NV as usize + 1]);
-            let ok = match c.out {
-                Out::V3 => matches(vres, &want),
-                Out::Vcc => matches(vcc & 1, &want),
-                Out::Exec => matches(exec & 1, &want),
-                Out::V3Carry => matches(vres, &want) && (vcc & 1) == carry,
-            };
+            let (ok, want, carry) = check_result(&c, v, vres, vcc, exec);
             if !ok {
                 bad += 1;
                 if examples.len() < 4 {
@@ -832,6 +1020,12 @@ fn valu_conformance() {
             }
         }
         report.push_str(&format!("{:28} {:5} vectors, {:5} mismatches\n", c.name, vecs.len(), bad));
+        if bad == 0 && !vecs.is_empty() {
+            let isa: Vec<u8> = c.words.iter().flat_map(|w| w.to_le_bytes()).collect();
+            let name = tombox_xshader::rdna2::disassemble(&isa)[0].mnemonic.clone();
+            assert_eq!(Some(name.as_str()), c.name.split_whitespace().next(), "case {}", c.name);
+            verified.insert(name);
+        }
         if bad > 0 {
             for e in &examples {
                 report.push_str(&format!("      {e}\n"));
@@ -844,4 +1038,9 @@ fn valu_conformance() {
         let _ = std::fs::write(p, &report);
     }
     assert!(failed.is_empty(), "{} case(s) failed:\n{}", failed.len(), failed.join("\n"));
+    if let Some(path) = export {
+        assert!(only.is_none() && !verified.is_empty(), "coverage export requires the full GPU suite");
+        let lines = verified.into_iter().collect::<Vec<_>>().join("\n");
+        std::fs::write(path, format!("{lines}\n")).expect("write VALU coverage");
+    }
 }

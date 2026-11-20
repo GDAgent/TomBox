@@ -169,10 +169,13 @@ Honest ledger. Updated continuously.
 
 ## Vector-ALU semantics (2026-11-20)
 
-- **Covered by the GPU conformance test** (`tests/valu_conformance.rs`, 207 cases): only
-  single instructions on one host GPU. Not covered: SDWA/DPP forms, `v_readlane` /
-  `v_writelane`, 64-bit ops, `v_movrel*`, interpolation, scalar ALU, and interactions
-  inside larger shaders. Image and buffer ops: see below.
+- **Covered by the GPU conformance test** (`tests/valu_conformance.rs`, 263 cases):
+  per-instruction behavior on one host GPU, including two SDWA word-select comparisons
+  and a pair of CMPX instructions that successively mask lanes. Gaps include other SDWA
+  forms, DPP, `v_readlane` / `v_writelane`, 64-bit ops, `v_movrel*`, interpolation and
+  interactions inside larger shaders. Coin Run also checks the 24 signed and unsigned
+  32-bit scalar register and immediate comparison mnemonics through Xbox compute PSOs.
+  The remaining scalar ALU families need dedicated probes. [Coverage report](../tools/progress/coin-rdna2-coverage.tsv)
 - **Fused vs. unfused multiply-add is not controlled.** HLSL has no single-precision FMA;
   `a * b + c` may or may not be fused by DXC/the driver, while the console fuses `v_fma*` /
   `v_fmac*` and does not fuse `v_mad*` / `v_mac*`. The test accepts either.

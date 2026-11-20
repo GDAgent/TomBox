@@ -33,7 +33,7 @@ struct Frame {
     UINT width, height, pitch;
     UINT64 frame = 0, presents = 0;
 
-    int init(UINT w, UINT h, bool with_depth = false) {
+    int init(UINT w, UINT h, bool with_depth = false, UINT64 readback_bytes = 0) {
         width = w;
         height = h;
         pitch = (width * 4 + 255) & ~255u;
@@ -80,7 +80,8 @@ struct Frame {
 
         heap.Type = D3D12_HEAP_TYPE_READBACK;
         desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        desc.Width = height * pitch;
+        desc.Width = UINT64(height) * pitch;
+        if (readback_bytes > desc.Width) desc.Width = readback_bytes;
         desc.Height = 1;
         desc.Format = DXGI_FORMAT_UNKNOWN;
         desc.Flags = D3D12_RESOURCE_FLAG_NONE;

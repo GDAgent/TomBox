@@ -1094,3 +1094,43 @@ again at every game start (6 of 43 fixtures differed between two runs). The loop
 now sorted. `tests/fixtures.rs::fixtures_translate_deterministically` translates every
 fixture nine times and requires identical output; it fails without the fix. Not measured
 in game: how many of the title's shaders were affected, and the start-up time saved.
+
+## 2026-11-20 — RDNA2 interpolation instructions
+
+TomBox now translates `v_cvt_off_f32_i4`, which converts a signed four-bit offset to
+sixteenths, and `v_lerp_u8`, which averages four pairs of bytes with independent rounding
+bits. Both operations follow the [AMD RDNA 2 ISA reference, §§12.8 and 12.12](https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/instruction-set-architectures/rdna2-shader-instruction-set-architecture.pdf).
+
+The GPU conformance suite exercised the compact offset conversion, the extended form with
+4× scaling and clamping, and packed byte averaging. All three matched the reference
+bit-for-bit on 4,156 inputs each under Proton. The full vector ALU suite passed all 210
+cases. Neither instruction appears in the tracked retail shader scan.
+
+## 2026-11-20 — 16-bit integer vector comparisons and RDNA2 coverage
+
+TomBox now decodes and translates all six relational predicates for signed and unsigned
+16-bit integers, in both the VCC-writing and EXEC-writing forms. All 24 compact opcodes
+were checked against LLVM's `gfx1030` assembler. Each passed 4,156 input pairs on the
+host GPU, including signed boundaries and values with unrelated upper bits. The suite
+also checks the extended encoding, SDWA word selection, VCC preservation, and consecutive
+CMPX instructions on inactive lanes. The translator now applies SDWA selection before
+evaluating a vector comparison. [AMD RDNA 2 ISA reference, §12.9](https://docs.amd.com/api/khub/documents/Et~wpu9g~Ffl7d9q0QZ~Og/content)
+
+Under Proton, 263 vector ALU cases and 71 memory cases passed. The map now includes
+83 previously omitted opcode-table entries and the 24 new comparisons. The existing
+retail scan accounts for 272 of 528 entries. Of 251 distinct mnemonics verified by the
+vector ALU suite, 129 have no retail observation and appear in amber. Each instruction's
+tooltip lists its evidence. The retail scan was not rerun for this update.
+
+## 2026-11-20 — Coin Run shader verification
+
+`play-coins.sh --rdna2-test` executed 287 original Xbox compute shaders through
+Coin Run's normal pipeline creation and dispatch on Proton. The GPU matched the CPU
+reference for 1,130,005 input vectors across 251 vector and 24 scalar ALU mnemonics.
+All 71 companion memory cases passed, as did the 2D, 3D, array, cube and thread-dispatch
+readbacks. The ALU and memory suites directly checked 152 of the 272 entries in the
+existing retail scan. [Per-instruction results](../tools/progress/coin-rdna2-coverage.tsv)
+
+All six unsigned `s_cmpk_*` predicates initially failed inputs with the high immediate
+bit set. The decoder now zero-extends the 16-bit immediate for unsigned comparisons
+and sign-extends it for signed comparisons. [AMD RDNA 2 ISA reference, §12.2](https://docs.amd.com/api/khub/documents/Et~wpu9g~Ffl7d9q0QZ~Og/content)

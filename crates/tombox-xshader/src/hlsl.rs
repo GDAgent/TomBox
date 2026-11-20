@@ -2005,6 +2005,20 @@ impl<'a> Emitter<'a> {
                 };
                 (h(a)?, h(b)?)
             }
+            "i16" | "u16" => {
+                let half = |o: &Opnd| -> Result<String, String> {
+                    if matches!(o, Opnd::ConstF32(_)) {
+                        return Err("inline float constant in a 16-bit integer compare".into());
+                    }
+                    let bits = r(o)?;
+                    Ok(if ty == "i16" {
+                        format!("(asint({bits} << 16) >> 16)")
+                    } else {
+                        format!("({bits} & 0xffffu)")
+                    })
+                };
+                (half(a)?, half(b)?)
+            }
             "i32" => (format!("asint({})", r(a)?), format!("asint({})", r(b)?)),
             "u32" => (r(a)?, r(b)?),
             other => return Err(format!("compare type {other} unsupported")),
@@ -2955,35 +2969,6 @@ impl<'a> Emitter<'a> {
                 }
             };
         }
-        // V_CMPX_*: the comparison result replaces EXEC (inactive lanes give 0). On GFX10 the
-        // CMPX forms write only EXEC, not VCC/SDST (LLVM's GFX10 encodings have no SDST for
-        // them; the ISA reference says "write exec"). Lane model: this lane's EXEC bit.
-        if let Some(rest) = m.strip_prefix("v_cmpx_") {
-            let cm = format!("v_cmp_{rest}");
-            let c = if cm == "v_cmp_class_f32" {
-                format!("tb_cmp_class({}, {})", r(&s[0])?, r(&s[1])?)
-            } else {
-                Self::cmp_expr(&cm, &s[0], &s[1])?
-            };
-            self.line(&format!("exec_lo = (((exec_lo & 1u) != 0u) && {c}) ? 1u : 0u; exec_hi = 0u;"));
-            return Ok(());
-        }
-        // Compares (VOPC, and VOP3 with a scalar mask destination).
-        if m.starts_with("v_cmp_") {
-            let c = if m == "v_cmp_class_f32" {
-                // Floating-point class test against a 10-bit class mask (see tb_cmp_class).
-                format!("tb_cmp_class({}, {})", r(&s[0])?, r(&s[1])?)
-            } else {
-                Self::cmp_expr(&m, &s[0], &s[1])?
-            };
-            self.ws(&d, &format!("(((exec_lo & 1u) != 0u) && {c}) ? 1u : 0u"))?;
-            let dh = hi(&d);
-            if !matches!(dh, Opnd::Null | Opnd::ConstInt(_)) {
-                self.touch(&dh);
-                self.ws(&dh, "0u")?;
-            }
-            return Ok(());
-        }
         if matches!(
             m.as_str(),
             "v_add_co_u32" | "v_sub_co_u32" | "v_subrev_co_u32" | "v_add_co_ci_u32" | "v_sub_co_ci_u32" | "v_subrev_co_ci_u32"
@@ -3087,6 +3072,35 @@ impl<'a> Emitter<'a> {
             };
             return self.wv(&d, &e);
         }
+        // V_CMPX_*: the comparison result replaces EXEC (inactive lanes give 0). On GFX10 the
+        // CMPX forms write only EXEC, not VCC/SDST (LLVM's GFX10 encodings have no SDST for
+        // them; the ISA reference says "write exec"). Lane model: this lane's EXEC bit.
+        if let Some(rest) = m.strip_prefix("v_cmpx_") {
+            let cm = format!("v_cmp_{rest}");
+            let c = if cm == "v_cmp_class_f32" {
+                format!("tb_cmp_class({}, {})", r(&s[0])?, r(&s[1])?)
+            } else {
+                Self::cmp_expr(&cm, &s[0], &s[1])?
+            };
+            self.line(&format!("exec_lo = (((exec_lo & 1u) != 0u) && {c}) ? 1u : 0u; exec_hi = 0u;"));
+            return Ok(());
+        }
+        // Compares (VOPC, and VOP3 with a scalar mask destination).
+        if m.starts_with("v_cmp_") {
+            let c = if m == "v_cmp_class_f32" {
+                // Floating-point class test against a 10-bit class mask (see tb_cmp_class).
+                format!("tb_cmp_class({}, {})", r(&s[0])?, r(&s[1])?)
+            } else {
+                Self::cmp_expr(&m, &s[0], &s[1])?
+            };
+            self.ws(&d, &format!("(((exec_lo & 1u) != 0u) && {c}) ? 1u : 0u"))?;
+            let dh = hi(&d);
+            if !matches!(dh, Opnd::Null | Opnd::ConstInt(_)) {
+                self.touch(&dh);
+                self.ws(&dh, "0u")?;
+            }
+            return Ok(());
+        }
         if matches!(m.as_str(), "v_lshlrev_b64" | "v_lshrrev_b64" | "v_ashrrev_i64") {
             // 64-bit vector shifts: value and result are register pairs (lo, hi).
             let pair_hi = |o: &Opnd| match o {
@@ -3164,6 +3178,7 @@ impl<'a> Emitter<'a> {
             "v_ldexp_f32" => Some(format!("tb_ldexp({}, asint({b}))", fa()?)),
             "v_cvt_f32_i32" => Some(format!("(float)asint({a})")),
             "v_cvt_f32_u32" => Some(format!("(float)({a})")),
+            "v_cvt_off_f32_i4" => Some(format!("((float)(asint({a} << 28) >> 28) * 0.0625f)")),
             "v_cvt_f32_ubyte0" => Some(format!("(float)({a} & 0xffu)")),
             "v_cvt_f32_ubyte1" => Some(format!("(float)(({a} >> 8) & 0xffu)")),
             "v_cvt_f32_ubyte2" => Some(format!("(float)(({a} >> 16) & 0xffu)")),
@@ -3234,6 +3249,15 @@ impl<'a> Emitter<'a> {
             "v_mad_i32_i24" => format!("asuint((asint({a} << 8) >> 8) * (asint({b} << 8) >> 8) + asint({c}))"),
             "v_bfe_u32" => format!("(({a} >> ({b} & 31u)) & ((1u << ({c} & 31u)) - 1u))"),
             "v_bfi_b32" => format!("(({a} & {b}) | (~{a} & {c}))"),
+            "v_lerp_u8" => {
+                let t = self.tmp;
+                self.tmp += 1;
+                self.line(&format!("uint diff{t} = {a} ^ {b};"));
+                // Mask each byte before shifting so bits cannot spill into its neighbour.
+                // Only an odd sum rounds up when the corresponding low bit of src2 is set.
+                let floor_avg = format!("(({a} & {b}) + ((diff{t} & 0xfefefefeu) >> 1))");
+                format!("({floor_avg} + (diff{t} & {c} & 0x01010101u))")
+            }
             "v_lshl_add_u32" => format!("(({a} << ({b} & 31u)) + {c})"),
             "v_add_lshl_u32" => format!("(({a} + {b}) << ({c} & 31u))"),
             "v_add3_u32" => format!("({a} + {b} + {c})"),

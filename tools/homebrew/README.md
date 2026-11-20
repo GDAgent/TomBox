@@ -111,6 +111,7 @@ atlas. Restarting restores the original pixels using the same GPU resources.
 
 | Command from the repo root | What it exercises |
 |---|---|
+| `tools/homebrew/play-coins.sh --rdna2-test` | Verifies ALU results through the game's Xbox compute pipeline, runs the memory conformance suite, and checks rendering and dispatch. [Requirements and coverage report](#rdna2-verification) |
 | `tools/homebrew/play-coins.sh --3d` | Play on a perspective board with raised walls, octagonal coins and a camera that follows the player. Uses the same controls and rules. |
 | `tools/homebrew/play-coins.sh --3d-test` | Runs the 20-frame route in 3D, checking textured top and side faces, camera movement and depth occlusion by GPU readback. Requires a display. |
 | `tools/homebrew/play-coins.sh --audio-test` | Plays the board twice, checks which stereo channel carries each pickup, and measures both voices playing together on a private Linux audio monitor. |
@@ -210,6 +211,32 @@ state stays available while it is idle. A tap or reconnection entirely between
 scans can still be missed. Mouse input, adapter-wide focus policy and advanced haptics remain outside
 its coverage. [GameInput reading model](https://learn.microsoft.com/en-us/gaming/gdk/docs/features/common/input/overviews/input-readings)
 Retail compatibility still needs a title test.
+
+### RDNA2 verification
+
+Set `PROTON` as above. Place the Windows x64 DXC pair (`dxcompiler.dll` and
+`dxil.dll`) in `target/x86_64-pc-windows-msvc/release`, or point
+`TOMBOX_DXC_DIR` at their directory using a Proton path such as `Z:/opt/dxc/bin/x64`.
+The full memory suite needs a D3D12 device with shader model 6.6. For a machine
+without a display, run:
+
+```sh
+xvfb-run -a tools/homebrew/play-coins.sh --rdna2-test
+```
+
+The launcher rebuilds Coin Run and the runtime. The game creates an Xbox compute
+pipeline for each generated ALU shader, dispatches one workgroup per input and reads
+back the result, VCC, EXEC and a completion marker. The Rust reference evaluates the
+same inputs independently and checks the outputs relevant to each instruction.
+The companion memory suite runs translated texture and buffer probes on D3D12.
+The final game runs check the 2D and 3D scenes, texture arrays, cube faces and thread dispatch.
+A missing compiler, insufficient shader model or an incorrect result fails the command.
+
+A successful run writes `coin-rdna2-coverage.tsv` beside `coin_window.exe`.
+The three columns after the mnemonic record retail observation, an in-game ALU reference
+check and a companion memory reference check. Filter for `true / false / false` to find
+retail instructions that still need dedicated reference cases. Whole-scene checks exercise
+combinations of instructions. [Recorded results](../progress/coin-rdna2-coverage.tsv)
 
 ### Graphics readback
 

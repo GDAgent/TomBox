@@ -4,6 +4,11 @@ cd "$(dirname "$0")/../.."
 : "${PROTON:?Set PROTON to the absolute path of the Proton Experimental proton executable}"
 build="$PWD/target/x86_64-pc-windows-msvc/release"
 required=(coin_window.exe)
+if [[ ${1:-} == --rdna2-test ]]; then
+    [[ $# == 1 ]] || exit 2
+    # Verify the translator in the working tree even when an older game build exists.
+    tools/homebrew/build-clear.sh
+fi
 if [[ ${1:-} == --fidelityfx-test || ${1:-} == --fidelityfx-context ]]; then
     required+=(fidelityfx_probe.exe d3d12_xs.dll xmem.dll)
 fi
@@ -31,6 +36,21 @@ export TOMBOX_LOG="${TOMBOX_LOG:-coin-window.log}"
 # The Windows GUI executable has no console of its own. Capture its scripted
 # checks through cmd so Linux callers see pixel mismatches and the exit status.
 case "${1:-}" in
+    --rdna2-test)
+        scratch=$(mktemp -d rdna2-check.XXXXXXXX)
+        trap 'rm -f -- "$scratch"/{cases.bin,suite.bin,results.bin,game.log,memory.log,memory.exe,memory-mnemonics.txt,coverage.tsv}; rmdir -- "$scratch"' EXIT
+        export TOMBOX_COIN_PROBE_DIR="$PWD/$scratch" PYTHONDONTWRITEBYTECODE=1
+        export TOMBOX_DXC_DIR="${TOMBOX_DXC_DIR:-Z:$PWD}"
+        python3 "$repo/tools/homebrew/rdna2_fixture.py" --memory "$scratch"
+        cargo test --manifest-path "$repo/Cargo.toml" --locked --release -p tombox-xshader \
+            --test valu_conformance -- --ignored --exact coin_run_valu_conformance --nocapture
+        for mode in --test --3d-test --array-test --cube-test --thread-dispatch-test; do
+            "$repo/tools/homebrew/play-coins.sh" "$mode"
+        done
+        mv -- "$scratch/coverage.tsv" coin-rdna2-coverage.tsv
+        echo "Verified shader coverage written to $PWD/coin-rdna2-coverage.tsv"
+        exit 0
+        ;;
     --fidelityfx-test|--fidelityfx-context)
         [[ $# == 1 ]] || exit 2
         TOMBOX_LOG=fidelityfx-context.log python3 "$repo/tools/homebrew/fidelityfx_fixture.py" "$1"

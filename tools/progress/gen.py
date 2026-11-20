@@ -4,12 +4,16 @@ docs/img/progress.svg is a map with one square per item (green = done, amber = p
 grey = not done), grouped the way the data is grouped:
   * functions the test title imports (analysis/fortnite_exe.json + progress.json overrides)
   * Direct3D 12.x interface methods (slot ranges in progress.json)
-  * RDNA2 instructions: every mnemonic the decoder knows (rdna2/mnem.rs); done when the test
-    title's shaders use it and every shader using it translates (tools/progress/mnemonics.txt,
-    written by `xscan <pak> --mnemonics 1`)
+  * RDNA2 instructions: named opcode table entries plus retail scan observations. Green
+    requires every retail shader using the instruction to translate (mnemonics.txt, from
+    `xscan <pak> --mnemonics 1`). A passing GPU reference case also earns amber.
+    Set TOMBOX_VALU_MNEMONICS to the output path when running the full valu_conformance
+    test to refresh valu-mnemonics.txt. Coin Run writes coin-rdna2-coverage.tsv after
+    --rdna2-test passes; copy that report here to refresh the homebrew evidence.
 Badges (docs/img/badge-*.svg) carry the headline numbers.
 """
-import json, os, re, math
+import csv, json, os, re, math
+from html import escape
 here = os.path.dirname(os.path.abspath(__file__))
 root = os.path.join(here, "..", "..")
 cfg = json.load(open(os.path.join(here, "progress.json"), encoding="utf-8"))
@@ -63,23 +67,45 @@ def instructions():
     for line in open(os.path.join(here, "mnemonics.txt"), encoding="utf-8"):
         n, u, ok = line.split()
         used[n] = (int(u), int(ok))
-    groups, cur, seen = {}, None, set()
+    with open(os.path.join(here, "valu-mnemonics.txt"), encoding="utf-8") as f:
+        vector = set(f.read().splitlines())
+    with open(os.path.join(here, "coin-rdna2-coverage.tsv"), encoding="utf-8") as f:
+        results = list(csv.DictReader(f, delimiter="\t"))
+    game = {r["mnemonic"] for r in results if r["coin_run_alu"] == "true"}
+    memory = {r["mnemonic"] for r in results if r["memory_probe"] == "true"}
+    probed = vector | game | memory
+    families, cur = {}, None
     for line in src.split("\n"):
+        line = line.partition("//")[0]
         m = re.match(r"pub fn (\w+)\(", line)
         if m:
-            cur = {"lookup": "VINTRP"}.get(m.group(1), m.group(1).upper())
-        for n in re.findall(r'=> "([a-z0-9_]+)"', line):
-            if n in seen:
-                continue
-            seen.add(n)
-            u, ok = used.get(n, (0, 0))
-            groups.setdefault(cur, []).append("done" if u and u == ok else "partial" if u else "none")
-    # mnemonics the decoder produces outside the tables (exports, DS ops, ...)
-    for n, (u, ok) in used.items():
-        if n not in seen:
-            g = "EXP" if n == "exp" else "DS" if n.startswith("ds_") else "OTHER"
-            groups.setdefault(g, []).append("done" if u == ok else "partial")
-    return groups
+            cur = m.group(1).upper()
+        enc = re.match(r"\s*Enc::(\w+) =>", line)
+        if enc:
+            cur = enc.group(1).upper()
+        # Includes compare predicate arrays and Some("mnemonic") entries in lookup().
+        for n in re.findall(r'"([a-z0-9_]+)"', line):
+            families.setdefault(n, cur)
+    for n in used:
+        families.setdefault(n, "MIMG" if n.startswith("image_") else "OTHER")
+    if probed - families.keys():
+        raise ValueError(f"GPU results outside tracked instructions: {sorted(probed - families.keys())}")
+    groups, labels = {}, {}
+    for n, family in families.items():
+        u, ok = used.get(n, (0, 0))
+        state = "done" if u and ok == u else "partial" if u or n in probed else "none"
+        groups.setdefault(family, []).append(state)
+        evidence = []
+        if u:
+            evidence.append(f"{ok}/{u} retail shaders translated")
+        if n in vector:
+            evidence.append("vector ALU GPU probe passed")
+        if n in game:
+            evidence.append("Coin Run Xbox shader readback passed")
+        if n in memory:
+            evidence.append("vector memory GPU probe passed")
+        labels.setdefault(family, []).append(f"{n}: {', '.join(evidence) or 'no retail or GPU probe evidence'}")
+    return groups, labels, len(probed - used.keys())
 
 # ---- drawing ------------------------------------------------------------------------
 def squarify(items, x, y, w, h):
@@ -113,23 +139,24 @@ def text(x, y, s, size=12):
     return (f'<text x="{x:.2f}" y="{y:.2f}" font-family="sans-serif" font-size="{size}" fill="#ffffff" stroke="{BG}" '
             f'stroke-width="3" paint-order="stroke">{s}</text>')
 
-def section(o, y, title, groups, height):
+def section(o, y, title, groups, height, detail="", labels=None):
     n = sum(len(v) for v in groups.values())
     done = sum(v.count("done") for v in groups.values())
-    o.append(text(4, y + 21, f"{title}: {100 * done / n:.2f}% ({done}/{n})", 16))
+    o.append(text(4, y + 21, f"{title}: {100 * done / n:.2f}% ({done}/{n}){detail}", 16))
     y += 30
     order = sorted(groups.items(), key=lambda kv: -len(kv[1]))
     for key, cx, cy, cw, ch in squarify([(k, len(v)) for k, v in order], 0, y, 1000, height):
-        st = sorted(groups[key], key=["done", "partial", "none"].index)
+        st = groups[key]
         cnt = len(st)
         ix, iy, iw, ih = cx + 1, cy + 1, cw - 2, ch - 2
         cols = max(1, min(cnt, math.ceil(math.sqrt(cnt * iw / ih))))
         rows = math.ceil(cnt / cols)
         sw, sh = iw / cols, ih / rows
         o.append(f'<g><title>{key}: {st.count("done")}/{cnt} ({100 * st.count("done") // cnt}%)</title>')
-        for i, s in enumerate(st):
+        for i, j in enumerate(sorted(range(cnt), key=lambda j: ["done", "partial", "none"].index(st[j]))):
+            end = f'><title>{escape(labels[key][j])}</title></rect>' if labels else '/>'
             o.append(f'<rect x="{ix + (i % cols) * sw:.2f}" y="{iy + (i // cols) * sh:.2f}" width="{sw:.2f}" height="{sh:.2f}" '
-                     f'fill="{COL[s]}" stroke="{BG}" stroke-width="0.5"/>')
+                     f'fill="{COL[st[j]]}" stroke="{BG}" stroke-width="0.5"{end}')
         o.append(f'<rect x="{cx:.2f}" y="{cy:.2f}" width="{cw:.2f}" height="{ch:.2f}" fill="none" stroke="{BG}" stroke-width="2"/>')
         label = key[: max(0, int((cw - 6) / 7))]
         if label and ch >= 18:
@@ -151,7 +178,9 @@ def pct_colour(p):
 o, y = [], 0
 y, a_done, a_n = section(o, y, "Imported system functions*", imports(), 300)
 y, b_done, b_n = section(o, y, "Direct3D 12.x interface methods", d3d12x(), 170)
-y, c_done, c_n = section(o, y, "RDNA2 shader instructions translated", instructions(), 260)
+isa_groups, isa_labels, gpu_only = instructions()
+y, c_done, c_n = section(o, y, "RDNA2 instructions in translated retail shaders", isa_groups, 260,
+                         f" · {gpu_only} additional instructions verified in GPU probes", isa_labels)
 svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 {y:.0f}" width="1000" height="{y:.0f}">\n'
        f'<rect x="0" y="0" width="1000" height="{y:.0f}" fill="{BG}"/>\n' + "\n".join(o) + "\n</svg>\n")
 open(os.path.join(root, "docs", "img", "progress.svg"), "w", encoding="utf-8").write(svg)
