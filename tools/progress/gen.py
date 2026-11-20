@@ -2,12 +2,13 @@
 
 docs/img/progress.svg is a map with one square per item (green = done, amber = partial,
 grey = not done), grouped the way the data is grouped:
-  * functions the test title imports (analysis/fortnite_exe.json + progress.json overrides)
+  * imports from the test title and the Scarlett DLL audit, keyed by (module, symbol).
+    Refresh scarlett-dll-imports.tsv from the per-import audit report after auditing a new build.
   * Direct3D 12.x interface methods (slot ranges in progress.json)
   * RDNA2 instructions: named opcode table entries plus retail scan observations. Green
     requires every scanned retail shader using the instruction to translate. Each source
     snapshot contains the MNEM rows from `xscan <file> --mnemonics 1` without the prefix.
-    A passing GPU reference case also earns amber.
+    A passing GPU reference case also earns amber. Unidentified opcode tags have a separate row.
     Set TOMBOX_VALU_MNEMONICS to the output path when running the full valu_conformance
     test to refresh valu-mnemonics.txt. Coin Run writes coin-rdna2-coverage.tsv after
     --rdna2-test passes; copy that report here to refresh the homebrew evidence.
@@ -32,21 +33,63 @@ def ranges(s):
 def imports():
     exe = json.load(open(os.path.join(root, "analysis", "fortnite_exe.json"), encoding="utf-8"))
     ov = cfg["import_overrides"]
-    groups = {}
-    mods = [(m["module"], m["functions"]) for m in exe["imports"]] + [(m, ["(delay-loaded)"]) for m in exe.get("delay_imports", [])]
+    module_states = {k.lower(): v for k, v in ov.items() if k.lower().endswith(".dll")}
+    pair_states = {}
+    for override, state in ov.items():
+        mod, sep, symbol = override.partition("!")
+        if sep:
+            pair_states[mod.lower(), symbol] = state
+    sources, names = {}, {}
+    mods = [(m["module"], m["functions"]) for m in exe["imports"]]
+    mods.extend((mod, ["(delay-loaded)"]) for mod in exe.get("delay_imports", []))
     for mod, funcs in mods:
         low = mod.lower()
-        if low.startswith("api-ms-win-crt") or low.startswith("vcruntime") or low.startswith("msvcp"):
-            g = "C/C++ runtime"
-        elif low.startswith("api-ms-") or low.startswith("ext-ms-"):
-            g = "Windows API sets"
+        names[low] = mod
+        for symbol in funcs:
+            sources.setdefault((low, symbol), set()).add("Fortnite")
+
+    audited, dlls = {}, set()
+    with open(os.path.join(here, "scarlett-dll-imports.tsv"), encoding="utf-8") as f:
+        for row in csv.DictReader(f, delimiter="\t"):
+            mod = row["dependency"].lower()
+            key = (mod, row["symbol"])
+            source = row["importer"].lower()
+            finding = (row["provider"], row["resolution"])
+            if finding[1] not in {"resolved", "missing"} or audited.setdefault(key, finding) != finding:
+                raise ValueError(f"Inconsistent audit resolution for {key}: {finding}")
+            dlls.add(source)
+            names.setdefault(mod, row["dependency"])
+            sources.setdefault(key, set()).add(source)
+
+    groups, labels = {}, {}
+    for key, callers in sorted(sources.items()):
+        mod, symbol = key
+        if mod.startswith(("api-ms-win-crt", "vcruntime", "msvcp")):
+            group = "C/C++ runtime"
+        elif mod.startswith(("api-ms-", "ext-ms-")):
+            group = "Windows API sets"
         else:
-            g = mod.rsplit(".", 1)[0]
-        for f in funcs:
-            # Ordinals repeat across DLLs. Prefer a verified module/function pair.
-            state = ov.get(f"{mod}!{f}", ov.get(f, ov.get(mod, "done")))
-            groups.setdefault(g, []).append(state)
-    return groups
+            group = names[mod].rsplit(".", 1)[0]
+        # Preserve the title's statuses. A successful export lookup alone
+        # establishes an unverified binding for a newly observed DLL import.
+        state = "done" if "Fortnite" in callers else "partial"
+        state = pair_states.get(key, ov.get(symbol, module_states.get(mod, state)))
+        evidence = []
+        if key in audited:
+            provider, resolution = audited[key]
+            evidence.append(f"{provider} export {resolution}")
+            if resolution == "missing":
+                state = "none"
+        evidence.append({"done": "covered", "partial": "partial or unverified", "none": "unavailable"}[state])
+        note = cfg["import_notes"].get(f"{mod}!{symbol}")
+        if note:
+            evidence.append(note)
+        evidence.append("imported by " + ", ".join(sorted(callers)))
+        groups.setdefault(group, []).append(state)
+        labels.setdefault(group, []).append(f"{names[mod]}!{symbol}: " + "; ".join(evidence))
+    resolved = sum(result == "resolved" for _, result in audited.values())
+    detail = f" · {len(dlls)} audited DLLs · {resolved}/{len(audited)} audited imports resolve"
+    return groups, labels, detail
 
 def d3d12x():
     groups = {}
@@ -69,13 +112,12 @@ def instructions():
         with open(os.path.join(here, filename), encoding="utf-8") as f:
             for line in f:
                 name, seen, passed = line.split()
-                if "<" in name:  # Preserve unresolved opcode tags in the snapshot pending identification.
-                    continue
                 seen, passed = int(seen), int(passed)
                 counts = used.setdefault(name, {})
                 if source in counts or not 0 <= passed <= seen or not seen:
                     raise ValueError(f"Invalid {source} scan row: {line}")
                 counts[source] = (seen, passed)
+    unknown = {n: used.pop(n) for n in list(used) if "<" in n}
     with open(os.path.join(here, "valu-mnemonics.txt"), encoding="utf-8") as f:
         vector = set(f.read().splitlines())
     with open(os.path.join(here, "coin-rdna2-coverage.tsv"), encoding="utf-8") as f:
@@ -121,7 +163,13 @@ def instructions():
         labels.setdefault(family, []).append(f"{n}: {', '.join(evidence) or 'no retail or GPU probe evidence'}")
     detail = (f" · GPU checks {len(probed & used.keys())}/{len(used)} retail"
               f" · {len(cache)} cache probes · {len(probed - used.keys())} others checked")
-    return groups, labels, detail
+    tag_groups, tag_labels = {}, {}
+    for tag, counts in sorted(unknown.items()):
+        family = tag.split("<", 1)[0].upper()
+        evidence = ", ".join(f"{ok}/{seen} {source} shaders translated" for source, (seen, ok) in counts.items())
+        tag_groups.setdefault(family, []).append("none")
+        tag_labels.setdefault(family, []).append(f"{tag}: unidentified; {evidence}")
+    return groups, labels, detail, tag_groups, tag_labels
 
 # ---- drawing ------------------------------------------------------------------------
 def squarify(items, x, y, w, h):
@@ -153,13 +201,17 @@ def squarify(items, x, y, w, h):
 
 def text(x, y, s, size=12):
     return (f'<text x="{x:.2f}" y="{y:.2f}" font-family="sans-serif" font-size="{size}" fill="#ffffff" stroke="{BG}" '
-            f'stroke-width="3" paint-order="stroke">{s}</text>')
+            f'stroke-width="3" paint-order="stroke" pointer-events="none">{escape(s)}</text>')
 
-def section(o, y, title, groups, height, detail="", labels=None):
+def section(o, y, title, groups, height, detail="", labels=None, show_progress=True, subtitle=""):
     n = sum(len(v) for v in groups.values())
     done = sum(v.count("done") for v in groups.values())
-    o.append(text(4, y + 21, f"{title}: {100 * done / n:.2f}% ({done}/{n}){detail}", 16))
+    count = f"{100 * done / n:.2f}% ({done}/{n})" if show_progress else str(n)
+    o.append(text(4, y + 21, f"{title}: {count}{detail}", 16))
     y += 30
+    if subtitle:
+        o.append(text(4, y + 12, subtitle, 13))
+        y += 20
     order = sorted(groups.items(), key=lambda kv: -len(kv[1]))
     for key, cx, cy, cw, ch in squarify([(k, len(v)) for k, v in order], 0, y, 1000, height):
         st = groups[key]
@@ -168,7 +220,8 @@ def section(o, y, title, groups, height, detail="", labels=None):
         cols = max(1, min(cnt, math.ceil(math.sqrt(cnt * iw / ih))))
         rows = math.ceil(cnt / cols)
         sw, sh = iw / cols, ih / rows
-        o.append(f'<g><title>{key}: {st.count("done")}/{cnt} ({100 * st.count("done") // cnt}%)</title>')
+        summary = f'{st.count("done")}/{cnt} ({100 * st.count("done") // cnt}%)' if show_progress else str(cnt)
+        o.append(f'<g><title>{escape(key)}: {summary}</title>')
         for i, j in enumerate(sorted(range(cnt), key=lambda j: ["done", "partial", "none"].index(st[j]))):
             end = f'><title>{escape(labels[key][j])}</title></rect>' if labels else '/>'
             o.append(f'<rect x="{ix + (i % cols) * sw:.2f}" y="{iy + (i // cols) * sh:.2f}" width="{sw:.2f}" height="{sh:.2f}" '
@@ -192,16 +245,25 @@ def pct_colour(p):
     return "#4c1" if p >= 90 else "#97ca00" if p >= 70 else "#dfb317" if p >= 40 else "#fe7d37"
 
 o, y = [], 0
-y, a_done, a_n = section(o, y, "Imported system functions*", imports(), 300)
+import_groups, import_labels, import_detail = imports()
+y, a_done, a_n = section(o, y, "Fortnite and Scarlett DLL imports", import_groups, 300, import_detail, import_labels)
 y, b_done, b_n = section(o, y, "Direct3D 12.x interface methods", d3d12x(), 170)
-isa_groups, isa_labels, isa_detail = instructions()
+isa_groups, isa_labels, isa_detail, tag_groups, tag_labels = instructions()
+kernel_results = []
+for library, counts in cfg["audited_compute_shaders"].items():
+    passed, total = counts["readback"], counts["observed"]
+    if not 0 <= passed <= total or not total:
+        raise ValueError(f"Invalid compute shader counts for {library}")
+    kernel_results.append(f"{library} {passed}/{total}")
 y, c_done, c_n = section(o, y, "RDNA2 in translated retail shaders", isa_groups, 260,
-                         isa_detail, isa_labels)
+                         isa_detail, isa_labels, subtitle="Retail compute shaders passing GPU readback · " + " · ".join(kernel_results))
+if tag_groups:
+    y, _, _ = section(o, y, "Unidentified retail opcode tags", tag_groups, 55, labels=tag_labels, show_progress=False)
 svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 {y:.0f}" width="1000" height="{y:.0f}">\n'
        f'<rect x="0" y="0" width="1000" height="{y:.0f}" fill="{BG}"/>\n' + "\n".join(o) + "\n</svg>\n")
 open(os.path.join(root, "docs", "img", "progress.svg"), "w", encoding="utf-8").write(svg)
 m, s = cfg["milestones"], cfg["shaders"]
-badge("imports", "system functions*", f"{100 * a_done / a_n:.2f}%", pct_colour(100 * a_done / a_n))
+badge("imports", "import coverage", f"{100 * a_done / a_n:.2f}%", pct_colour(100 * a_done / a_n))
 badge("d3d12x", "Direct3D 12.x methods", f"{100 * b_done / b_n:.2f}%", pct_colour(100 * b_done / b_n))
 badge("instructions", "RDNA2 instructions", f"{100 * c_done / c_n:.2f}%", pct_colour(100 * c_done / c_n))
 badge("shaders", "Fortnite shaders translated", f'{s["translated"]:,}/{s["total"]:,}', "#4c1")

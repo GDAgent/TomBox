@@ -72,7 +72,7 @@ entries. The supplied sibling DLLs and the built TomBox shims were checked by
 export name or ordinal. A Windows probe resolved all 492 distinct host imports
 across 61 modules with `LoadLibraryExA` and `GetProcAddress` under Proton
 Experimental `experimental-11.0-20261027b`. This checks symbol availability.
-The GPU results below come from dispatching the embedded shaders separately.
+The GPU results below come from dispatching the embedded shaders separately. The progress map merges these imports with Fortnite’s by dependency DLL and exact symbol name or ordinal. [Audit snapshot](../tools/progress/scarlett-dll-imports.tsv) · [Progress map](img/progress.svg)
 
 **One static import is missing.** The BVH builder asks for `xmem!XMemVirtualQuery`.
 Its caller reads Xbox-specific memory information beyond the desktop query
