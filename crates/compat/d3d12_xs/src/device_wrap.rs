@@ -451,7 +451,8 @@ unsafe extern "system" fn create_committed_resource(
     let desc_ptr = if pdesc.is_null() {
         pdesc
     } else {
-        unsafe { core::ptr::copy_nonoverlapping(pdesc as *const u8, desc_copy.as_mut_ptr(), 0x40) };
+        // D3D12_RESOURCE_DESC occupies 0x38 bytes on x64, including tail padding.
+        unsafe { core::ptr::copy_nonoverlapping(pdesc as *const u8, desc_copy.as_mut_ptr(), 0x38) };
         let flags = u32::from_le_bytes(desc_copy[0x30..0x34].try_into().unwrap());
         const PC_RESOURCE_FLAGS: u32 = 0xFF; // RT|DSV|UAV|DENY_SRV|CROSS_ADAPTER|SIMUL|VIDEO*
         desc_copy[0x30..0x34].copy_from_slice(&(flags & PC_RESOURCE_FLAGS).to_le_bytes());
@@ -474,7 +475,10 @@ unsafe extern "system" fn create_committed_resource(
     }
     if N.fetch_add(1, Ordering::Relaxed) < 10 {
         let htype = if pheap.is_null() { 0xffff_ffff } else { unsafe { *pheap } };
-        let (dim, w) = if pdesc.is_null() { (0xffff_ffff, 0) } else { unsafe { (*pdesc, *(pdesc.add(2) as *const u64)) } };
+        let (dim, w) = if pdesc.is_null() { (0xffff_ffff, 0) } else {
+            (u32::from_le_bytes(desc_copy[..4].try_into().unwrap()),
+             u64::from_le_bytes(desc_copy[16..24].try_into().unwrap()))
+        };
         let orig_riid = if riid.is_null() { String::from("null") } else { guid_str(unsafe { &*riid }) };
         let out = if ppv.is_null() { core::ptr::null_mut() } else { unsafe { *ppv } };
         record("d3d12_xs", "CreateCommittedResource",
@@ -593,9 +597,9 @@ unsafe extern "system" fn create_gfx_pso_x(
             let n = (u32::from_le_bytes(desc[0x230..0x234].try_into().unwrap()) as usize).min(8);
             let mut s = format!("inputLayout ptr={ptr:p} n={n} rootSig={:#x} riid={:p}", rd(&desc, 0), riid);
             if !ptr.is_null() {
-                let raw = unsafe { core::slice::from_raw_parts(ptr, n * 40) };
+                let raw = unsafe { core::slice::from_raw_parts(ptr, n * 32) };
                 for (i, c) in raw.chunks(8).enumerate() {
-                    if i % 5 == 0 { s.push_str("\n   "); }
+                    if i % 4 == 0 { s.push_str("\n   "); }
                     s.push_str(&format!(" {:016x}", u64::from_le_bytes(c.try_into().unwrap())));
                 }
             }

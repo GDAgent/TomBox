@@ -175,6 +175,17 @@ pub extern "system" fn D3D12SerializeRootSignature(
 }
 
 #[no_mangle]
+pub extern "system" fn D3D12CreateRootSignatureDeserializer(
+    data: *const c_void, size: usize, riid: *const c_void, out: *mut *mut c_void,
+) -> i32 {
+    let p = host_proc(b"D3D12CreateRootSignatureDeserializer\0");
+    if p == 0 { return E_FAIL; }
+    let f: extern "system" fn(*const c_void, usize, *const c_void, *mut *mut c_void) -> i32 =
+        unsafe { core::mem::transmute(p) };
+    f(data, size, riid, out)
+}
+
+#[no_mangle]
 pub extern "system" fn D3D12SerializeVersionedRootSignature(
     desc: *const c_void, ppblob: *mut *mut c_void, pperror: *mut *mut c_void,
 ) -> i32 {

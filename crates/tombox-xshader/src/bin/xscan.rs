@@ -380,6 +380,7 @@ fn process(blob: &[u8], compile: bool) -> (String, Result<(), String>, bool) {
                         Err(e) => (st, Err(e), true),
                     }
                 }
+                #[cfg(windows)]
                 Ok(t) => {
                     // Default: DXC (shader model 6.0), in process.
                     let profile = tombox_xshader::dxc::profile_for(t.profile);
@@ -400,6 +401,8 @@ fn process(blob: &[u8], compile: bool) -> (String, Result<(), String>, bool) {
                         Err(e) => (st, Err(e), true),
                     }
                 }
+                #[cfg(not(windows))]
+                Ok(_) => (st, Err("DXC compilation requires Windows".into()), false),
             }
         }
     });
@@ -429,6 +432,11 @@ fn main() -> ExitCode {
             other => eprintln!("warning: ignoring {other}"),
         }
         i += 2;
+    }
+    #[cfg(not(windows))]
+    if compile && USE_FXC.load(Ordering::Relaxed) == 0 {
+        eprintln!("DXC compilation requires Windows. Omit --compile 1 to scan and translate shaders.");
+        return ExitCode::FAILURE;
     }
     let data = match std::fs::read(&args[1]) {
         Ok(d) => d,

@@ -90,11 +90,27 @@ Windows implements. Candidate for binding to the real OS (verify per symbol).
 | `EOSSDK-XboxOneGDK-Shipping.dll` | 48 | Epic Online Services (bundled w/ game) | stub for offline first-frame |
 | `GameChat2.dll` | delay-load | GDK game chat (bundled) | stub |
 
-**`xgameruntime.dll` is NOT a static import.** It exports only `InitializeApiImpl`,
-`QueryApiImplEx`, `QueryApiImpl`, `UninitializeApiImpl`, `XErrorReport` — the GDK's
-runtime dispatcher. The game's statically-linked `XGameRuntime.lib` resolves GDK services
-(XTaskQueue/XUser/XGameSave/…) through `QueryApiImpl` after a **dynamic `LoadLibrary`**.
-⇒ the loader must intercept dynamic loads of `xgameruntime.dll` and provide our impl.
+The game loads `xgameruntime.dll` dynamically. The console DLL has five named exports:
+`InitializeApiImpl`, `InitializeApiImplEx`, `QueryApiImpl`, `UninitializeApiImpl` and
+`XErrorReport`. The title's statically linked GDK wrappers request service interfaces
+through `QueryApiImpl`. TomBox's observed Windows run uses Microsoft's PC runtime,
+with local user and store implementations for this build. [PE export inventory](../analysis/syslib/xgameruntime.dll.json) · [Windows findings](DEVELOPMENT_LOG.md#2026-11-17-late--local-xbox-user-and-store-login-reaches-the-backend)
+
+### Linux research with Xodus
+
+Xodus's Wine fork pins a specific revision of its replacement DLL. At Wine revision
+`eab6973`, the DLL lists all five console export names and dispatches requests for
+threading, user and store interfaces. In that revision, `XTaskQueueCreate` and
+`XAsyncBegin` return `E_NOTIMPL`. A successful initialization alone would therefore
+say little about this title's ability to complete an async operation.
+[Wine dependency](https://github.com/xodus-gaming/wine/tree/eab69739f15180b96797645ccade44c1c4414980/dlls/xgameruntime) · [Export list](https://github.com/xodus-gaming/xgameruntime/blob/64aebcabb8c66121eae25d3bf0ace4b582ebb0da/xgameruntime.spec) · [Dispatcher](https://github.com/xodus-gaming/xgameruntime/blob/64aebcabb8c66121eae25d3bf0ace4b582ebb0da/main.c) · [Threading implementation](https://github.com/xodus-gaming/xgameruntime/blob/64aebcabb8c66121eae25d3bf0ace4b582ebb0da/xthreading.c)
+
+The standalone runtime at `642e41c` dispatches only the threading class and includes
+async and queue tests. Its `VerifySimpleAsyncCall` test is a candidate first Wine
+experiment because TomBox's local user implementation relies on the title's own async
+wrappers to deliver results. Passing that test would establish a PC-runtime baseline.
+The interface IDs and method order requested by the console build still need verification.
+[Standalone dispatcher](https://github.com/xodus-gaming/xgameruntime/blob/642e41c7617310c5d1b39d4e525b01ecae261f9e/src/main.cpp) · [Upstream threading tests](https://github.com/xodus-gaming/xgameruntime/blob/642e41c7617310c5d1b39d4e525b01ecae261f9e/tests/System/test_xthreading.cpp)
 
 ## Shaders (risk downgraded)
 

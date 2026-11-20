@@ -64,3 +64,18 @@ enumerated by (a) tracing `QueryApiImpl` call sites in the EXE using the symbol 
 - No game API is implemented. No loader yet. No game runs.
 - GDK (`QueryApiImpl`) service list not yet enumerated.
 - Divergence of Xbox `api-ms-win-*` from desktop not yet validated per symbol.
+
+## Additional x64 middleware observed in PE imports
+
+These findings come from the import and export tables of six user-supplied
+DLLs. Runtime behavior of the six binaries is untested. The synthetic
+graphics example exercises the platform functions independently.
+
+| DLL | Evidence from this build | TomBox coverage or open question |
+|---|---|---|
+| `amd_fidelityfx_loader_xbox.dll` | Exports five FidelityFX entry points including `ffxCreateContext` and `ffxDispatch`. Imports Windows library-loader APIs. | Static imports do not identify which provider will be loaded at runtime. |
+| `amd_fidelityfx_upscaler_xbox.dll` | Imports `D3D12CreateRootSignatureDeserializer`, `XMemAlloc`, `XMemFree` and `XMemGetWorkingSetStatistics`. | A synthetic descriptor-table round trip exercises the deserializer. The statistics function returns `E_NOTIMPL`. Upscaling needs its own output test. |
+| `Bink2Scarlett.dll` | Exports video frame operations. Imports `XMemAlloc`, `XMemFree` and ordinal 1 from `XAudio2_9.dll`. | The coin game exercises allocation and release. Audio and frame decoding remain unverified. |
+| `libHttpClient.GDK.dll` | Exports HTTP and WebSocket operations and imports WinHTTP and Crypt32. | A local request with a known response would test the host HTTP path. |
+| `XboxBvhBuilder.dll` | Imports `D3D12SerializeVersionedRootSignature` and `XMemVirtualQuery`. Exports ray-tracing acceleration structure operations. | TomBox forwards the serializer. `XMemVirtualQuery` is missing. The caller examines additional memory information beyond the desktop memory-query fields, so the Xbox output layout needs verification. |
+| `XCurl.dll` | Exports curl easy/multi functions and imports WinHTTP, Crypt32 and Windows API sets. | HTTP behavior and availability of the imported API sets need checking on the target host. |

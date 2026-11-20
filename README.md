@@ -114,6 +114,90 @@ set RUSTFLAGS=-C target-feature=+crt-static
 cargo build --release -p d3d12_xs -p xmem -p xcrdapi -p acphal -p dxcompiler_xs -p mfplat
 ```
 
+### Research tools on Linux
+
+On x86-64 Linux you can inspect PE files and ZIP archives, disassemble x86-64 code,
+and translate Xbox shaders to HLSL. The checked-in fixtures let you start without a
+game dump. From the repository root, run the tests and scan a sample pixel shader:
+
+```sh
+cargo test --locked -p tombox-pe -p tombox-cli -p tombox-archive -p tombox-disasm -p tombox-xshader
+cargo run --locked -p tombox-xshader --bin xscan -- analysis/shaders/fortnite_ps_sample.dxbc
+```
+
+The scan should report one translated pixel shader and zero failures. To read the
+generated HLSL, run:
+
+```sh
+cargo run --locked -p tombox-xshader --bin xshader -- analysis/shaders/fortnite_ps_sample.dxbc --hlsl-out sample.hlsl
+```
+
+TomBox's DXC integration and game runtime target Windows. Running a retail Xbox title on Linux
+through Wine or Proton is unverified.
+
+### Synthetic test game
+
+`coin_run` is a terminal game that imports `XMemAlloc` and `XMemFree` from
+TomBox's `xmem.dll`. Its board lives in that allocation. A scripted win exercises
+DLL loading, allocation, reads, writes and release without a game dump or console SDK.
+Input and output use the host terminal. Graphics, Xbox input and platform services
+need their own tests.
+
+On Linux with Wine, cargo-xwin and the Rust `x86_64-pc-windows-msvc` target:
+
+```sh
+RUSTFLAGS='-C target-feature=+crt-static' cargo xwin build --locked --release \
+  --target x86_64-pc-windows-msvc -p xmem --lib --example coin_run
+cd target/x86_64-pc-windows-msvc/release
+cp examples/coin_run.exe .
+printf 'dddaaass\n' | TOMBOX_LOG=coin_run.log wine ./coin_run.exe
+```
+
+A win prints `Both coins collected!` and exits with status 0. The log records
+allocation and release of the same address. Run `wine ./coin_run.exe` interactively
+to play. On Windows, build with Cargo for the same target and run the example EXE
+beside the freshly built DLL.
+
+### Headless graphics test
+
+`clear_pixel.exe` uses TomBox's `d3d12_xs.dll` to create a device and an Xbox
+command queue and list. It clears a one-pixel RGBA8 render target to magenta,
+copies it to a readback buffer and checks all four bytes after the GPU fence
+completes. It also serializes and deserializes a synthetic root signature.
+The test requires no game assets, middleware or shader compiler.
+
+On Linux, build from the repo root with cargo-xwin, the x64 MSVC Rust target,
+Python 3, clang-cl and lld-link. The script uses cargo-xwin's SDK and CRT cache. Set
+`XWIN_SDK_ROOT` to the directory containing `sdk/` and `crt/` for a custom cache.
+Set `PROTON` to the absolute path of the Proton Experimental `proton` executable.
+
+```sh
+tools/homebrew/build-clear.sh
+cd target/x86_64-pc-windows-msvc/release
+export STEAM_COMPAT_DATA_PATH="$PWD/clear-pixel-prefix"
+export STEAM_COMPAT_CLIENT_INSTALL_PATH="$HOME/.steam/root"
+mkdir -p "$STEAM_COMPAT_DATA_PATH"
+TOMBOX_LOG=clear_pixel.log "$PROTON" run cmd.exe /d /c 'clear_pixel.exe > clear-result.txt 2>&1'
+cat clear-result.txt
+```
+
+The verified result under Proton Experimental on an RTX 4070 Ti SUPER was
+`RGBA readback: 255 0 255 255` with exit code 0. The stock Wine backend on
+the same machine rejected D3D feature level 12.0 at device creation.
+
+Run the same executable with `--triangle` to exercise the shader translator and
+draw path. The build script generates original vertex and pixel shader containers
+from short RDNA2 programs. At runtime TomBox translates both during Xbox graphics
+pipeline creation. This mode needs DXC or the D3DCompile fallback provided by Proton.
+The vertex shader passes through three clip-space positions. The pixel shader writes
+opaque green. Readback checks all 256 pixels against the triangle on a magenta
+background, returning a failure exit code on any mismatch.
+
+```sh
+TOMBOX_LOG=triangle.log "$PROTON" run cmd.exe /d /c 'clear_pixel.exe --triangle > triangle-result.txt 2>&1'
+cat triangle-result.txt
+```
+
 ## Running a title
 
 There is no launcher yet. This is the manual procedure, shown for the tested title; the
