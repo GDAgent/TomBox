@@ -446,7 +446,7 @@ impl Gpu {
             copy(self.list, rb.0, 0, gpu_buf.0, 0, bytes);
 
             // UAV contents back to staging buffers.
-            let mut readbacks: Vec<(usize, Owned, Vec<Footprint>)> = Vec::new();
+            let mut readbacks = Vec::new();
             for &(k, r) in &uav_res {
                 self.barrier(r, STATE_UAV, STATE_COPY_SOURCE);
                 match &uav[k] {
@@ -458,12 +458,13 @@ impl Gpu {
                             let src = CopyLoc::subresource(r, i as u32);
                             self.copy_texture(&dst, &src);
                         }
-                        readbacks.push((k, st, fp));
+                        readbacks.push((k, st, fp, total));
                     }
                     Binding::Buffer(b) => {
-                        let st = self.buffer(HEAP_READBACK, b.data.len() as u64, STATE_COPY_DEST, false)?;
-                        copy(self.list, st.0, 0, r, 0, b.data.len() as u64);
-                        readbacks.push((k, st, Vec::new()));
+                        let total = b.data.len() as u64;
+                        let st = self.buffer(HEAP_READBACK, total, STATE_COPY_DEST, false)?;
+                        copy(self.list, st.0, 0, r, 0, total);
+                        readbacks.push((k, st, Vec::new(), total));
                     }
                     Binding::Null => {}
                 }
@@ -471,10 +472,10 @@ impl Gpu {
             self.submit_and_wait()?;
 
             Self::read_mapped(rb.0, std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, data.len() * 4))?;
-            for (k, st, fp) in readbacks {
+            for (k, st, fp, total) in readbacks {
                 match &mut uav[k] {
                     Binding::Texture(t) => {
-                        let total = fp.last().map(|p| p.offset + p.row_pitch as u64 * p.height as u64 * p.depth as u64).unwrap_or(0);
+                        // GetCopyableFootprints can omit padding after the last row.
                         let mut staged = vec![0u8; total as usize];
                         Self::read_mapped(st.0, &mut staged)?;
                         t.data = t.unpack(&fp, &staged);

@@ -88,6 +88,21 @@ float tb_med3(float a, float b, float c) { if (tb_isnan(a) || tb_isnan(b) || tb_
 float tb_ldexp(float x, int n) { n = clamp(n, -320, 320); int k1 = clamp(n, -126, 127); n -= k1; int k2 = clamp(n, -126, 127); n -= k2; int k3 = clamp(n, -126, 127); precise float r = x * asfloat((uint)(k1 + 127) << 23); r = r * asfloat((uint)(k2 + 127) << 23); r = r * asfloat((uint)(k3 + 127) << 23); return r; }
 "#;
 
+/// Number of VGPRs occupied by the MIMG data operand. Gather selects a channel
+/// with DMASK but returns four texels. D16 packs two components per register.
+fn image_data_registers(ins: &Insn) -> u8 {
+    let components = if ins.mnemonic.starts_with("image_gather4") {
+        4
+    } else {
+        (ins.aux.mask & 0xf).count_ones() as u8
+    };
+    if ins.raw.get(1).is_some_and(|word| word >> 31 != 0) {
+        components.div_ceil(2)
+    } else {
+        components
+    }
+}
+
 fn name(o: &Opnd) -> Result<String, String> {
     Ok(match o {
         Opnd::Sgpr(n) => format!("s{n}"),
@@ -1010,8 +1025,7 @@ impl<'a> Emitter<'a> {
                         Res::Uav(s, _) => (s, true),
                         _ => unreachable!(),
                     };
-                    let comps = (ins.aux.mask & 0xf).count_ones() as u8;
-                    let regs = (0..comps).map(|k| vd.wrapping_add(k)).collect();
+                    let regs = (0..image_data_registers(ins)).map(|k| vd.wrapping_add(k)).collect();
                     let load = matches!(ins.mnemonic.as_str(), "image_load" | "image_load_mip");
                     Some(((true, is_uav, slot), regs, load, ins.mnemonic == "image_store"))
                 }
@@ -1624,10 +1638,20 @@ impl<'a> Emitter<'a> {
                     }
                 }
             }
+            if ins.mnemonic == "image_store" {
+                if let Some(Opnd::Vgpr(base)) = ins.dst.first() {
+                    for reg in u32::from(*base)..u32::from(*base) + u32::from(image_data_registers(ins)) {
+                        if !written.contains(&format!("v{reg}")) {
+                            live.insert((1, reg));
+                        }
+                    }
+                }
+                continue;
+            }
             // Multi-register destinations: SMEM loads, MIMG results, 64-bit scalar ops.
             let extra = match ins.enc {
                 Enc::Smem => (1u32 << (ins.op & 7)) - 1,
-                Enc::Mimg => (ins.aux.mask.count_ones()).saturating_sub(1),
+                Enc::Mimg => u32::from(image_data_registers(ins)).saturating_sub(1),
                 _ if ins.mnemonic.ends_with("_b64") => 1,
                 _ => 0,
             };

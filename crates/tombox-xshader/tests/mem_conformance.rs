@@ -1066,6 +1066,29 @@ fn modifier_cases(c: &mut Vec<Case>) {
     }
     {
         let tt = t.clone();
+        let mut words = prologue(Some(0), None, None);
+        words.extend(mimg(IMAGE_LOAD, D2, 0xf, 0, DATA as u32, T_SGPR, 0, Flags { unorm: true, d16: true, ..Default::default() }));
+        // RGBA16 fills v4:v5. v6 remains an independent integer register.
+        words.push((0x13 << 25) | (6 << 17) | (6 << 9) | 129); // v_min_u32 v6, 1, v6
+        words.push(S_ENDPGM);
+        c.push(Case {
+            name: "image_load d16 + neighbor uint".into(),
+            words,
+            srv: vec![Binding::Texture(tt.clone())],
+            samplers: vec![],
+            uav: vec![],
+            inputs: grid(8, 4, 1).into_iter().map(|a| (a, [0; 4])).collect(),
+            want: Box::new(move |a, _| {
+                let mut out = pack16(tex_value(&tt, a[0], a[1], 0, 0, 0).unwrap(), 0xf);
+                out[2] = Some((1, !0));
+                out
+            }),
+            uav_check: None,
+            sm66: false,
+        });
+    }
+    {
+        let tt = t.clone();
         let mut words = prologue(Some(0), Some(0), None);
         words.extend(mimg(SAMPLE_LZ, D2, 0xf, 0, DATA as u32, T_SGPR, S_SGPR, Flags { d16: true, ..Default::default() }));
         words.push(S_ENDPGM);

@@ -194,7 +194,7 @@ Honest ledger. Updated continuously.
 
 ## Vector-memory semantics (2026-11-20)
 
-- **Covered by `tests/mem_conformance.rs`** (70 cases, one instruction each, one host GPU).
+- **Covered by `tests/mem_conformance.rs`** (71 cases, including a packed load followed by integer arithmetic).
   Not covered: image atomics, `image_get_resinfo` / `image_get_lod`, MSAA loads, 3D / array
   / cube gathers, `_c` gathers, depth-compare with LOD or bias, filtering other than point,
   border colours, sRGB / normalised / compressed formats (all cases use 32-bit float
