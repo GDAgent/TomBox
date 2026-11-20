@@ -7,6 +7,9 @@ required=(coin_window.exe)
 if [[ ${1:-} == --fidelityfx-test || ${1:-} == --fidelityfx-context ]]; then
     required+=(fidelityfx_probe.exe d3d12_xs.dll xmem.dll)
 fi
+if [[ ${1:-} == --compute-barrier-test ]]; then
+    required+=(bvh_commands.dll)
+fi
 if [[ ${1:-} == --indirect-test ]]; then
     required+=(scarlett_commands_{legacy,260402,261000}.dll)
 fi
@@ -33,7 +36,7 @@ case "${1:-}" in
         TOMBOX_LOG=fidelityfx-context.log python3 "$repo/tools/homebrew/fidelityfx_fixture.py" "$1"
         exit $?
         ;;
-    --test|--pso-fallback-test|--indirect-test|--scarlett-copy-test|--uav-test|--discard-test|--placed-test|--present-test|--tiled-test|--tiled-reference|--mip-reference|--bc1-reference|--rect-test|--array-test|--cube-test|--state-test|--stream-test|--3d-test|--controller-test|--gameinput-test|--audio-test)
+    --test|--compute-barrier-test|--pso-fallback-test|--indirect-test|--scarlett-copy-test|--uav-test|--discard-test|--placed-test|--present-test|--tiled-test|--tiled-reference|--mip-reference|--bc1-reference|--rect-test|--array-test|--cube-test|--state-test|--stream-test|--3d-test|--controller-test|--gameinput-test|--audio-test)
         if [[ $# == 1 ]]; then
             scratch=$(mktemp -d coin-check.XXXXXXXX)
             trap 'rm -f -- "$scratch/result.txt" "$scratch/barriers.log" "$scratch/"*.bin; rmdir -- "$scratch"' EXIT
@@ -56,6 +59,15 @@ case "${1:-}" in
                 if [[ -f $scratch/result.txt ]]; then cat "$scratch/result.txt"; fi
                 return "$status"
             }
+            if [[ $1 == --compute-barrier-test ]]; then
+                # GPU scheduling can happen to serialize both passes even through a no-op.
+                TOMBOX_LOG="$scratch/barriers.log" run_check "$1"
+                if ! grep -q ' BarrierX slot=146 global compute UAV barrier recorded' "$scratch/barriers.log"; then
+                    echo 'Missing translated compute UAV barrier' >&2
+                    exit 1
+                fi
+                exit 0
+            fi
             if [[ $1 == --discard-test || $1 == --indirect-test ]]; then
                 # Discards and PIX annotations can produce identical pixels through a no-op.
                 TOMBOX_LOG="$scratch/barriers.log" run_check "$1"

@@ -80,6 +80,17 @@ if __name__ == "__main__":
         end,
     ], signature(), signature(), compute_root))
 
+    emit("increment_cs", shader(5, [
+        0xF4080302, 0xFA000000,         # s_load_dwordx4 s[12:15], s[4:5], 0
+        0xBF8CC07F,                     # s_waitcnt lgkmcnt(0)
+        0x7E020205,                     # v_mov_b32 v1, s5 (group ID)
+        0xE0302000, 0x80030201,         # buffer_load_dword v2, v1, s[12:15], 0 idxen
+        0xBF8C3F70,                     # s_waitcnt vmcnt(0)
+        0x4A040481,                     # v_add_nc_u32 v2, 1, v2
+        0xE0702000, 0x80030201,         # buffer_store_dword v2, v1, s[12:15], 0 idxen
+        end,
+    ], signature(), signature(), compute_root))
+
     # Pass the second vertex attribute (v8..v11) to the pixel stage as TEXCOORD0.
     emit("board_vs", shader(1, [
         0xF80000CF, 0x07060504,  # exp pos0 v4, v5, v6, v7

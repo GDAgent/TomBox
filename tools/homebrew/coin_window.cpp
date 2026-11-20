@@ -778,7 +778,8 @@ static HWND game_window() {
 }
 
 int main(int argc, char** argv) {
-    if (argc == 2 && !std::strcmp(argv[1], "--pso-fallback-test")) return check_compute_fallback();
+    if (argc == 2 && !std::strcmp(argv[1], "--compute-barrier-test")) return check_compute(ComputeProbe::UavBarrier);
+    if (argc == 2 && !std::strcmp(argv[1], "--pso-fallback-test")) return check_compute(ComputeProbe::OfflineFallback);
     if (argc == 2 && !std::strcmp(argv[1], "--indirect-test")) return check_indirect();
     if (argc == 2 && !std::strcmp(argv[1], "--scarlett-copy-test")) return check_scarlett_copy();
     if (argc == 2 && !std::strcmp(argv[1], "--discard-test")) return check_discard();
@@ -802,7 +803,7 @@ int main(int argc, char** argv) {
     const bool headless = audio_test || placed || (argc == 2 && !std::strcmp(argv[1], "--test"));
     const bool present_test = argc == 2 && !std::strcmp(argv[1], "--present-test");
     if (argc != 1 && !headless && !present_test && !cpu_tiled && !reference && !state_test && !stream_test && !scene_3d) {
-        std::fputs("usage: coin_window.exe [--pso-fallback-test | --indirect-test | --scarlett-copy-test | --discard-test | --uav-test | --audio-test | --test | --placed-test | --present-test | --tiled | --tiled-test | --tiled-reference FILE | --mip-reference FILE | --bc1-reference FILE | --rect-{rgba,bc1}-{wide,tall} FILE | --array-{rgba-tall,bc1-wide} FILE | --cube-test FILE | --state-test | --stream-test FILE | --3d | --3d-test | --controller-test | --gameinput-test]\n", stderr);
+        std::fputs("usage: coin_window.exe [--compute-barrier-test | --pso-fallback-test | --indirect-test | --scarlett-copy-test | --discard-test | --uav-test | --audio-test | --test | --placed-test | --present-test | --tiled | --tiled-test | --tiled-reference FILE | --mip-reference FILE | --bc1-reference FILE | --rect-{rgba,bc1}-{wide,tall} FILE | --array-{rgba-tall,bc1-wide} FILE | --cube-test FILE | --state-test | --stream-test FILE | --3d | --3d-test | --controller-test | --gameinput-test]\n", stderr);
         return 1;
     }
     HWND window = headless ? nullptr : game_window();

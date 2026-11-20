@@ -5,6 +5,7 @@ use core::ffi::c_void;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Edition {
+    Gxdk250405,
     AprilUpdate2,
     October,
     Unknown,
@@ -35,6 +36,7 @@ fn from_xbld(size: usize, mut read: impl FnMut(usize, &mut [u8]) -> bool) -> Edi
             }
             if length >= PREFIX.len() && field.starts_with(PREFIX) {
                 let tag = match field.get(PREFIX.len()..length) {
+                    Some(b"250405") => Edition::Gxdk250405,
                     Some(b"260402") => Edition::AprilUpdate2,
                     Some(b"261000") => Edition::October,
                     _ => Edition::Unknown,
@@ -133,6 +135,7 @@ mod tests {
 
     #[test]
     fn only_exact_observed_edition_fields_select_a_layout() {
+        assert!(parse(b"_xbld_edition_sdktype=GXDK,250405\0") == Edition::Gxdk250405);
         assert!(parse(b"tag\0_xbld_edition_sdktype=GXDK,260402\0") == Edition::AprilUpdate2);
         assert!(parse(b"_xbld_edition_sdktype=GXDK,261000\0") == Edition::October);
         assert!(parse(b"_xbld_edition_sdktype=GXDK,2610001\0") == Edition::Unknown);

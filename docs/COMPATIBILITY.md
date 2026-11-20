@@ -60,7 +60,7 @@ enumerated by (a) tracing `QueryApiImpl` call sites in the EXE using the symbol 
 | ZIP64 inventory + extraction safety vetting | 7 | tests; vetted the real 25.5 GB archive (safe) |
 
 ## Known limitations
-- No game API is implemented. No loader yet. No game runs.
+- The tested Fortnite build reaches the lobby with rendering defects. Retail gameplay remains unverified. [Retail test results](DEVELOPMENT_LOG.md)
 - GDK (`QueryApiImpl`) service list not yet enumerated.
 - Divergence of Xbox `api-ms-win-*` from desktop not yet validated per symbol.
 
@@ -129,6 +129,26 @@ The homebrew copy, indirect and compute-fallback tests use original shaders and 
 
 The optional public-binary test loads the pinned Xbox loader and upscaler with Microsoft's x64 WinPixEventRuntime 1.0.240308001 supplying the PIX import. Four render-resolution queries pass under Proton. Creating an FSR 3.1.6 context exercises the private texture layout (`0x101`, assigned at April RVA `0x3732`) and reaches device slot 67. Its first offline compute description contains a root signature followed by four pointer/size pairs. The observed lengths in bytes are 28 for the packet, 20 for packet metadata, 7,296 for GPU instructions and 504 for shader metadata. This April provider returns a runtime error with a null context after deserialization fails. The default FSR 4 path separately requests a UAV texture with format `R9G9B9E5_SHAREDEXP`, which the tested host rejects. Upscaled output remains unverified. [Public sample setup](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Samples/Graphics/AMD_FSR/readme.md) · [Offline pipeline components](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Samples/Graphics/HlslCompile/AcoPipelineState.cpp#L54-L86)
 
+### GXDK 250405 compute UAV barrier
+
+The supplied BVH builder calls command-list slot 146 at RVAs `0xd7b4` and `0xd80a`. Both pass one global barrier group containing one barrier. The four 32-bit fields at RVA `0xcdf60` specify compute shading (`0x80`) before and after the barrier and unordered access (`0x10`) on both sides. TomBox recognizes that form for callers tagged GXDK 250405 and records a desktop UAV barrier with a null resource. This orders UAV accesses across resources on the command list and works with the base D3D12 interface. Other barrier groups and access masks are unverified. [Enhanced barrier layout](https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#d3d12_global_barrier) · [Desktop UAV ordering](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_resource_uav_barrier)
+
+The homebrew test records two dependent compute dispatches, checks the host barrier trace and reads back 32 incremented values. The tracker marks slot 146 partial because the translation handles this single global compute UAV barrier form. [Run the fixture](../tools/homebrew/README.md#graphical-coin-run)
+
 ### Open GPU synchronization calls
 
-The supplied `XboxBvhBuilder.dll` (GXDK 250405, SHA-256 `99f803ac22c01ef329dddb1d40be67238d2a812d01e8d040b3cb5135bc23707e`) uses a table of four-byte counters. At RVAs `0xd679` and `0xd6de`, command-list slots 73 and 71 receive the same counter address. Slot 73 receives a comparison value and a 32-bit mask. Slot 71 receives an incremented value and either zero or `0x1000`. Slot 90 receives a counter address and zero at RVA `0xe836`. Microsoft's pipelined postprocessing sample demonstrates GPU-side waits and bottom-of-pipe writes with *64-bit* counters. Mapping these three slots requires establishing the 32-bit flags, address ownership and ordering between queues. All three remain uncounted. [Microsoft synchronization sample](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Samples/Graphics/PipelinedPostprocess/PipelinedPostprocess.cpp#L278-L300)
+The supplied `XboxBvhBuilder.dll` (GXDK 250405, SHA-256 `99f803ac22c01ef329dddb1d40be67238d2a812d01e8d040b3cb5135bc23707e`) uses a table of four-byte counters. At RVAs `0xd679` and `0xd6de`, command-list slots 73 and 71 receive the same counter address. Slot 73 receives a comparison value and a 32-bit mask. Slot 71 receives an incremented value and either zero or `0x1000`. Slot 90 receives a counter address and zero at RVA `0xe836`. Microsoft's pipelined postprocessing sample demonstrates GPU-side waits and bottom-of-pipe writes with *64-bit* counters. The 32-bit flags and ordering between queues remain open. [Microsoft synchronization sample](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Samples/Graphics/PipelinedPostprocess/PipelinedPostprocess.cpp#L278-L300)
+
+The exported `BuildRaytracingAccelerationStructure` at RVA `0x21610` copies the 48-byte build description into a batch entry. At `0xd069` the builder copies the field at byte 40 into the job. That field matches `ScratchAccelerationStructureData`, a GPU virtual address. Slots 71, 73 and 90 address four-byte words within this scratch buffer. A desktop immediate write requires the destination buffer in `COPY_DEST`; translating it also requires knowing the backing resource and its state at that point in the command list. [Build description](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_build_raytracing_acceleration_structure_desc) · [Desktop immediate-write requirements](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12graphicscommandlist2-writebufferimmediate)
+
+### D3D12.x slot tracking
+
+The map covers device slots 0–159 and command-list slots 0–148. Each interface keeps its original baseline and grows through the highest recorded slot, including the intervening positions. Grey covers both unidentified positions and observed calls that still need a translation. [Tracker data](../tools/progress/progress.json)
+
+| Command-list slot | Caller and call RVA | Evidence | Status |
+|---|---|---|---|
+| 71, 73, 90 | BVH builder 250405 · `0xd6de`, `0xd679`, `0xe836` respectively | The three calls address counters in the build scratch buffer. | Unmapped |
+| 80 | BVH builder 250405 · `0x149ba`, `0x1525d` | Dispatch slow paths pass three dimensions and a control word of `0x8020` or `0x20`. | Unmapped |
+| 141 | FidelityFX 260402 · `0x68a5`, 261000 · `0x65f8` | Both callers pass a buffer GPU address and size before setting pipeline state. | Unmapped |
+| 146 | BVH builder 250405 · `0xd7b4`, `0xd80a` | The single global compute UAV barrier form passes GPU readback under Proton. | Partial |
+| 148 | BVH builder 250405 · `0x114af`, `0x14afb` | Callers pass a byte size and 8 or 16. The second caller writes records through the returned pointer. | Unmapped |

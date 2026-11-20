@@ -25,6 +25,8 @@ build_pe "$build/clear_pixel.exe" tools/homebrew/clear_pixel.cpp "$build/d3d12_x
 build_pe "$build/coin_window.exe" tools/homebrew/coin_window.cpp "$build/d3d12_xs.dll.lib" "$build/examples/coin_rules.lib" "$build/xmem.dll.lib" \
     /subsystem:windows /entry:mainCRTStartup user32.lib ole32.lib xinput.lib ntdll.lib advapi32.lib userenv.lib ws2_32.lib bcrypt.lib
 
+build_pe "$build/bvh_commands.dll" tools/homebrew/bvh_commands.cpp /dll
+
 # Compile the same indirect draw under each observed caller ABI.
 for edition in legacy 260402 261000; do
     compile_flags=()

@@ -14,8 +14,8 @@ extern "system" {
 }
 const PAGE_READWRITE: u32 = 0x04;
 
-/// Current tracked Xbox command-list slots.
-const N: usize = 128;
+/// Include the enhanced barrier entry observed in GXDK 250405.
+const N: usize = 147;
 static XBOX_VT: [AtomicUsize; N] = [const { AtomicUsize::new(0) }; N];
 static BUILT: std::sync::Once = std::sync::Once::new();
 static mut REAL_VT_PTR: *const usize = core::ptr::null();
@@ -57,9 +57,9 @@ static PROBE_HITS: AtomicUsize = AtomicUsize::new(0);
 
 unsafe extern "system" fn probe_impl(_this: *mut c_void, a: u64, caller: usize, slot: u64) {
     let h = PROBE_HITS.fetch_add(1, Ordering::Relaxed);
-    static PER: [AtomicUsize; 128] = [const { AtomicUsize::new(0) }; 128];
+    static PER: [AtomicUsize; N] = [const { AtomicUsize::new(0) }; N];
     let _ = h;
-    if PER[(slot as usize).min(127)].fetch_add(1, Ordering::Relaxed) < 4 {
+    if PER[slot as usize].fetch_add(1, Ordering::Relaxed) < 4 {
         let base = EXE_BASE.load(Ordering::Relaxed);
         record("d3d12_xs", "cmdlist.hi",
             &format!("slot={slot} arg1={a:#x} caller={:#x}", caller.wrapping_sub(base)));
@@ -98,6 +98,7 @@ macro_rules! make_probes {
             xbox[83].store(copy_texture_region_x as usize, Ordering::Relaxed);
             // The two Scarlett FidelityFX binaries use the same copy ABI at slot 85.
             xbox[85].store(copy_texture_region_fidelityfx as usize, Ordering::Relaxed);
+            xbox[146].store(route146 as usize, Ordering::Relaxed);
             xbox[59].store(route59 as usize, Ordering::Relaxed);
             xbox[60].store(route60 as usize, Ordering::Relaxed);
             xbox[61].store(route61 as usize, Ordering::Relaxed);
@@ -126,7 +127,7 @@ make_probes!(
     (p98,98),(p99,99),(p100,100),(p101,101),(p102,102),(p103,103),(p104,104),(p105,105),(p106,106),
     (p107,107),(p108,108),(p109,109),(p110,110),(p111,111),(p112,112),(p113,113),(p114,114),(p115,115),
     (p116,116),(p117,117),(p118,118),(p119,119),(p120,120),(p121,121),(p122,122),(p123,123),(p124,124),
-    (p125,125),(p126,126),(p127,127),
+    (p125,125),(p126,126),(p127,127),(p146,146),
 );
 
 unsafe extern "system" fn reset_list(this: *mut c_void, alloc: *mut c_void, pso: *mut c_void) -> i32 {
@@ -247,19 +248,63 @@ macro_rules! route_by_caller {
 route_by_caller!(route59, 59);
 route_by_caller!(route60, 60);
 route_by_caller!(route61, 61);
+route_by_caller!(route146, 146);
 
 unsafe extern "system" fn select_command(caller: usize, slot: u32) -> usize {
     use crate::gxdk_edition::{at_address, Edition::*};
     match (at_address(caller), slot) {
         (AprilUpdate2 | October, 59) => pix_packet as usize,
         (AprilUpdate2, 60) => pix_timing as usize,
-        (AprilUpdate2 | October, 61) | (Unknown, 59) => {
+        (AprilUpdate2 | October, 61) | (Unknown | Gxdk250405, 59) => {
             if crate::rtcap::enabled() { indirect_traced as usize } else { unsafe { *REAL_VT_PTR.add(59) } }
         }
         (_, 59) => p59 as usize,
         (_, 60) => p60 as usize,
+        (Gxdk250405, 146) => compute_uav_barrier as usize,
+        (_, 146) => p146 as usize,
         _ => p61 as usize,
     }
+}
+
+#[repr(C)]
+struct BarrierGroup {
+    kind: u32,
+    count: u32,
+    barriers: *const [u32; 4],
+}
+
+// All observed 250405 calls carry one global barrier with compute sync and UAV
+// access on both sides. A legacy UAV barrier with a null resource orders all
+// UAV accesses and works on hosts without enhanced-barrier support.
+unsafe extern "system" fn compute_uav_barrier(this: *mut c_void, count: u32, groups: *const BarrierGroup) {
+    const COMPUTE_SHADING: u32 = 0x80;
+    const UNORDERED_ACCESS: u32 = 0x10;
+    if count != 1 || groups.is_null() {
+        record("d3d12_xs", "BarrierX", "unsupported barrier group count or null group");
+        return;
+    }
+    let group = unsafe { &*groups };
+    if group.kind != 0 || group.count != 1 || group.barriers.is_null()
+        || unsafe { *group.barriers } != [COMPUTE_SHADING, COMPUTE_SHADING, UNORDERED_ACCESS, UNORDERED_ACCESS]
+    {
+        record("d3d12_xs", "BarrierX", "unsupported barrier group or access masks");
+        return;
+    }
+    #[repr(C)]
+    struct UavBarrier {
+        kind: u32,
+        flags: u32,
+        resource: *mut c_void,
+        union_padding: [u64; 2],
+    }
+    const _: () = assert!(size_of::<UavBarrier>() == 32);
+    let barrier = UavBarrier { kind: 2, flags: 0, resource: core::ptr::null_mut(), union_padding: [0; 2] };
+    let methods = unsafe { *this.cast::<*const usize>() };
+    let record_barrier: unsafe extern "system" fn(*mut c_void, u32, *const UavBarrier) =
+        unsafe { core::mem::transmute(*methods.add(26)) };
+    unsafe { record_barrier(this, 1, &barrier) };
+    static FIRST: std::sync::Once = std::sync::Once::new();
+    FIRST.call_once(|| record("d3d12_xs", "BarrierX", "slot=146 global compute UAV barrier recorded"));
 }
 
 unsafe fn host_annotation(this: *mut c_void, kind: u8, metadata: u32, data: *const u8, size: u32) {
@@ -525,6 +570,37 @@ mod tests {
             (1, 6345127, packet.to_vec()), (2, 6345127, packet.to_vec()), (0, 0, vec![]),
             (1, 1, b"Xbox PIX timing event\0".to_vec()), (0, 0, vec![]),
         ]);
+    }
+
+    #[test]
+    fn slot146_records_only_the_verified_global_uav_barrier() {
+        #[repr(C)]
+        struct Sink {
+            methods: *const usize,
+            calls: Vec<(u32, [u64; 4])>,
+        }
+        unsafe extern "system" fn capture(this: *mut Sink, count: u32, barrier: *const [u64; 4]) {
+            unsafe { (*this).calls.push((count, *barrier)) };
+        }
+        let mut methods = [0; PC_LAST_SLOT + 1];
+        methods[26] = capture as usize;
+        let mut sink = Sink { methods: methods.as_ptr(), calls: Vec::new() };
+        let list = (&mut sink as *mut Sink).cast();
+        let mut group = BarrierGroup { kind: 0, count: 1, barriers: &[0x80, 0x80, 0x10, 0x10] };
+        unsafe {
+            compute_uav_barrier(list, 1, &group);
+            compute_uav_barrier(list, 0, core::ptr::null());
+            compute_uav_barrier(list, 2, &group);
+            group.kind = 1;
+            compute_uav_barrier(list, 1, &group);
+            group.kind = 0;
+            group.barriers = &[0x80, 0x80, 0x10, 0x20];
+            compute_uav_barrier(list, 1, &group);
+        }
+        // This test executable has no GXDK edition tag.
+        assert_eq!(unsafe { select_command(capture as *const () as usize, 146) }, p146 as *const () as usize);
+        // Type UAV, flags NONE, resource NULL, zeroed union padding.
+        assert_eq!(sink.calls, [(1, [2, 0, 0, 0])]);
     }
 
     #[test]

@@ -48,7 +48,13 @@ def d3d12x():
     for name in ("Device", "CommandList"):
         d = cfg["d3d12x"][name]
         done, part = ranges(d["done"]), ranges(d["partial"])
-        groups[name] = ["done" if i in done else "partial" if i in part else "none" for i in range(d["total"])]
+        unmapped = ranges(d["observed_unmapped"])
+        conflicts = (done & part) | (done & unmapped) | (part & unmapped)
+        if conflicts:
+            raise ValueError(f"{name} slots with conflicting statuses: {sorted(conflicts)}")
+        highest = max(done | part | unmapped, default=-1)
+        count = max(d["baseline_slots"], highest + 1)
+        groups[name] = ["done" if i in done else "partial" if i in part else "none" for i in range(count)]
     return groups
 
 def instructions():

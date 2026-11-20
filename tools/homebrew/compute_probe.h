@@ -1,7 +1,9 @@
 #pragma once
 
-// Reproduce the ACO failure -> ordinary compute PSO path used by the upscaler.
-static int check_compute_fallback() {
+enum class ComputeProbe { OfflineFallback, UavBarrier };
+
+static int check_compute(ComputeProbe probe) {
+    const bool test_barrier = probe == ComputeProbe::UavBarrier;
     Frame frame;
     if (frame.init(8, 4)) return 1;
     auto* dev = frame.dev.Get();
@@ -14,13 +16,15 @@ static int check_compute_fallback() {
     ComPtr<ID3D12RootSignature> root;
     CHECK(dev->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&root)));
 
-    using Deserialize = HRESULT (WINAPI*)(ID3D12Device*, const void*, REFIID, void**);
-    const void* offline[9] = {root.Get()};
-    void* result = root.Get(); // Failure must clear a previously populated out parameter.
-    HRESULT hr = xbox_method<Deserialize>(dev, 67)(dev, offline, __uuidof(ID3D12PipelineState), &result);
-    if (hr != E_NOTIMPL || result != nullptr) {
-        std::fprintf(stderr, "Offline compute PSO returned %#lx, output %p\n", hr, result);
-        return 1;
+    if (probe == ComputeProbe::OfflineFallback) {
+        using Deserialize = HRESULT (WINAPI*)(ID3D12Device*, const void*, REFIID, void**);
+        const void* offline[9] = {root.Get()};
+        void* result = root.Get(); // Failure must clear a previously populated out parameter.
+        HRESULT hr = xbox_method<Deserialize>(dev, 67)(dev, offline, __uuidof(ID3D12PipelineState), &result);
+        if (hr != E_NOTIMPL || result != nullptr) {
+            std::fprintf(stderr, "Offline compute PSO returned %#lx, output %p\n", hr, result);
+            return 1;
+        }
     }
     using Create = HRESULT (WINAPI*)(ID3D12Device*, const D3D12_COMPUTE_PIPELINE_STATE_DESC*,
                                      UINT, const void*, REFIID, void**);
@@ -63,6 +67,24 @@ static int check_compute_fallback() {
     xbox_method<Table>(list, 35)(list, 0, gpu);
     list->SetPipelineState(pso.Get());
     list->Dispatch(groups, 1, 1);
+    ComPtr<ID3D12PipelineState> increment;
+    // Keep both passes in UAV state. The second shader consumes the first one's writes.
+    if (test_barrier) {
+        HMODULE module = LoadLibraryW(L"bvh_commands.dll");
+        using Order = void (*)(ID3D12GraphicsCommandList*);
+        auto order = module ? reinterpret_cast<Order>(GetProcAddress(module, "order_compute_writes")) : nullptr;
+        if (!order) {
+            std::fputs("Could not load the 250405 barrier fixture\n", stderr);
+            if (module) FreeLibrary(module);
+            return 1;
+        }
+        order(list);
+        FreeLibrary(module);
+        desc.CS = {increment_cs, sizeof(increment_cs)};
+        CHECK(xbox_method<Create>(dev, 62)(dev, &desc, 0, nullptr, IID_PPV_ARGS(&increment)));
+        list->SetPipelineState(increment.Get());
+        list->Dispatch(groups, 1, 1);
+    }
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Transition = {output.Get(), 0, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE};
     list->ResourceBarrier(1, &barrier);
@@ -76,8 +98,8 @@ static int check_compute_fallback() {
     D3D12_RANGE read{0, size_t(buffer.Width)}, no_writes{};
     CHECK(frame.readback->Map(0, &read, reinterpret_cast<void**>(&data)));
     UINT matched = 0;
-    for (UINT i = 0; i < groups; ++i) matched += data[i] == 0x57ac71a9;
+    for (UINT i = 0; i < groups; ++i) matched += data[i] == (test_barrier ? 0x57ac71aau : 0x57ac71a9u);
     frame.readback->Unmap(0, &no_writes);
-    std::printf("Compute PSO fallback: %u/%u group writes match\n", matched, groups);
+    std::printf("%s: %u/%u group writes match\n", test_barrier ? "Compute UAV barrier" : "Compute PSO fallback", matched, groups);
     return matched != groups;
 }
