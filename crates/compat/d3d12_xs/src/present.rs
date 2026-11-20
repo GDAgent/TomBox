@@ -430,7 +430,7 @@ const PC_QUEUE_SLOTS: usize = 19;
 static QUEUE_VT: [AtomicUsize; QN] = [const { AtomicUsize::new(0) }; QN];
 static REAL_QVT: [AtomicUsize; QN] = [const { AtomicUsize::new(0) }; QN];
 static XBOX_QVT: [AtomicUsize; QN] = [const { AtomicUsize::new(0) }; QN];
-static QUEUE_BUILT: AtomicBool = AtomicBool::new(false);
+static QUEUE_BUILT: std::sync::Once = std::sync::Once::new();
 static EXE_BASE: AtomicUsize = AtomicUsize::new(0);
 static EXE_SIZE: AtomicUsize = AtomicUsize::new(0);
 
@@ -555,25 +555,20 @@ unsafe extern "system" fn exec_lists_x(queue: *mut c_void, n: u32, lists: *const
     if lists.is_null() || n == 0 {
         return f(queue, n, lists);
     }
-    let real: Vec<*mut c_void> =
-        (0..n as usize).map(|i| crate::cmdlist_wrap::unwrap(*lists.add(i))).collect();
-    f(queue, n, real.as_ptr())
-}
-
-/// Vtable entry for slot 10: title callers get `exec_lists_x`, everyone else the real method.
-#[unsafe(naked)]
-unsafe extern "system" fn q_exec_dispatch() {
-    core::arch::naked_asm!(
-        "mov rax, [rsp]",
-        "sub rax, [rip + {base}]",
-        "cmp rax, [rip + {size}]",
-        "jb 2f",
-        "lea rax, [rip + {real}]",
-        "jmp qword ptr [rax + 80]",
-        "2:",
-        "jmp {x}",
-        base = sym EXE_BASE, size = sym EXE_SIZE, real = sym REAL_QVT, x = sym exec_lists_x,
-    );
+    // Identify shims by their vtable so game DLLs and the EXE take the same path.
+    // Native submissions (including the uploader's own list) bypass the tracker.
+    let input = core::slice::from_raw_parts(lists, n as usize);
+    if input.iter().all(|&p| crate::cmdlist_wrap::unwrap(p) == p) {
+        return f(queue, n, lists);
+    }
+    let real: Vec<_> = input.iter().copied().map(crate::cmdlist_wrap::unwrap).collect();
+    // Hold the same lock through the host submission and its state update.
+    // PresentX cannot insert its upload between these two operations.
+    let mut tracker = crate::texture_state::TRACKER.lock().unwrap();
+    f(queue, n, real.as_ptr());
+    for list in real {
+        tracker.submit(queue as usize, list as usize);
+    }
 }
 
 /// Repoint a freshly created real command queue at the extended (Xbox-sized) vtable.
@@ -583,7 +578,7 @@ pub fn apply_queue_vtable(queue: *mut c_void) {
     }
     unsafe {
         let real_vt = *(queue as *const *const usize);
-        if !QUEUE_BUILT.swap(true, Ordering::SeqCst) {
+        QUEUE_BUILT.call_once(|| {
             for i in 0..QN {
                 // Entries past the real table's end are only reachable by non-title callers,
                 // which would have read the same memory through the original vtable anyway.
@@ -594,7 +589,7 @@ pub fn apply_queue_vtable(queue: *mut c_void) {
             }
             install_qthunks();
             install_qlow();
-            QUEUE_VT[10].store(q_exec_dispatch as usize, Ordering::Relaxed);
+            QUEUE_VT[10].store(exec_lists_x as usize, Ordering::Relaxed);
             XBOX_QVT[30].store(present_x as usize, Ordering::Relaxed);
             XBOX_QVT[23].store(signal_x as usize, Ordering::Relaxed);
             let base = GetModuleHandleW(core::ptr::null()) as usize;
@@ -603,7 +598,7 @@ pub fn apply_queue_vtable(queue: *mut c_void) {
             EXE_BASE.store(base, Ordering::Relaxed);
             EXE_SIZE.store(size, Ordering::Relaxed);
             record("d3d12_xs", "queue.vtable", "built extended queue vtable (title slot 30 = PresentX; caller-dispatched)");
-        }
+        });
         let slot0 = queue as *mut usize;
         let mut old: u32 = 0;
         if VirtualProtect(slot0 as *mut c_void, 8, 0x04, &mut old) != 0 {

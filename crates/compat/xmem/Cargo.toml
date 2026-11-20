@@ -12,3 +12,8 @@ path = "src/lib.rs"
 
 [dependencies]
 compat-common = { path = "../compat-common" }
+
+[[example]]
+name = "coin_rules"
+path = "examples/coin/exports.rs"
+crate-type = ["staticlib"]

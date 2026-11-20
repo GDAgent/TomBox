@@ -101,17 +101,22 @@ Honest ledger. Updated continuously.
 
 ## Placed textures / texel mirroring (2026-11-17)
 
-- **State assumption.** Uploads transition the PC texture from its *creation* state to
-  COPY_DEST and back; the title's own barriers are not tracked. Wrong if the title has moved
-  the texture to another state when the upload list runs.
+- **Resource states.** The mirror follows explicit legacy transition barriers on wrapped
+  command lists in submission order. It transitions each changed subresource to COPY_DEST
+  and restores its previous state. A pending split barrier defers that subresource.
+  Cross-queue fence handoffs and implicit promotions from command usage remain untracked.
+  The mirror defers a mip last transitioned on another queue until it observes a transition
+  on the presenting queue. Coin Run exercises two mips on one direct queue with `--state-test`.
 - **No write notification.** Changes are found by hashing title memory each frame under a
   byte budget (96 MiB new, 8 MiB re-check). A changed texture can lag by several frames, and
   the scan costs CPU every frame. Write-watch (`MEM_WRITE_WATCH`) would be the proper fix.
 - **Racy reads.** Title threads write while we read (repaired on a later frame); a decommit
   racing the read would fault.
-- **Streamed mips.** Subresources whose memory is not committed are skipped; the PC texture's
-  corresponding mips hold undefined data until the title maps them. Whether the title limits
-  sampling to resident mips has not been checked.
+- **Streamed mips.** Coin Run’s `--stream-test` verifies that an interior hole in the
+  CPU placement defers a mip upload. Mapping the remaining pages makes that mip available
+  on the next tested present. Eviction and reload with different data at the same address
+  are covered. The test selects the resident mip explicitly. A retail title’s mip selection
+  during streaming and concurrent page removal during an upload remain unverified.
 - **Not mirrored:** Texture3D, multi-plane formats, render-target/depth placed textures.
 - **Layout source.** Element offsets come from the dump's real `xg_xs.dll` (vtable slots
   verified by probe for layout 261 only; other tile modes untested).

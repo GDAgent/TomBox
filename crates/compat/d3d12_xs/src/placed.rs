@@ -34,6 +34,8 @@ impl Placed {
     pub fn depth_or_array(&self) -> u16 { u16::from_le_bytes(self.desc[0x1c..0x1e].try_into().unwrap()) }
     pub fn mips(&self) -> u16 { u16::from_le_bytes(self.desc[0x1e..0x20].try_into().unwrap()) }
     pub fn format(&self) -> u32 { self.u32at(0x20) }
+    pub fn sample_count(&self) -> u32 { self.u32at(0x24) }
+    pub fn sample_quality(&self) -> u32 { self.u32at(0x28) }
     pub fn layout(&self) -> u32 { self.u32at(0x2c) }
     pub fn flags(&self) -> u32 { self.u32at(0x30) }
 }
@@ -48,6 +50,12 @@ static NEW: Mutex<Vec<(usize, Placed)>> = Mutex::new(Vec::new());
 /// registry; it is released by the uploader when the title drops the resource (or when the
 /// resource is not mirrored).
 pub fn register(res: *mut c_void, p: Placed) {
+    let count = usize::from(p.mips()) * usize::from(p.depth_or_array());
+    if p.dim() == 3 && p.flags() & 3 == 0 && (1..=4096).contains(&count) {
+        crate::texture_state::TRACKER.lock().unwrap().register(
+            res as usize, count, p.init_state, p.flags() & 0x20 != 0,
+        );
+    }
     REG.lock().unwrap().get_or_insert_with(HashMap::new).insert(res as usize, p.clone());
     NEW.lock().unwrap().push((res as usize, p));
 }
@@ -57,6 +65,7 @@ pub fn drain_new() -> Vec<(usize, Placed)> {
 }
 
 pub fn forget(res: *mut c_void) {
+    crate::texture_state::TRACKER.lock().unwrap().forget(res as usize);
     if let Some(m) = REG.lock().unwrap().as_mut() {
         m.remove(&(res as usize));
     }

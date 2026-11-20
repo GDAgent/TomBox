@@ -19,7 +19,7 @@
 //! Release) still work when the list is handed to ExecuteCommandLists.
 
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 #[allow(unused_imports)] use core::sync::atomic::AtomicU64;
 use compat_common::record;
 
@@ -32,7 +32,7 @@ const PAGE_READWRITE: u32 = 0x04;
 /// (OMSetRenderTargets); 128 leaves generous headroom.
 const N: usize = 128;
 static XBOX_VT: [AtomicUsize; N] = [const { AtomicUsize::new(0) }; N];
-static BUILT: AtomicBool = AtomicBool::new(false);
+static BUILT: std::sync::Once = std::sync::Once::new();
 static mut REAL_VT_PTR: *const usize = core::ptr::null();
 static INSERTED_HITS: AtomicUsize = AtomicUsize::new(0);
 
@@ -125,8 +125,10 @@ macro_rules! make_probes {
             // (pCommandSignature, 1, pArgumentBuffer, ArgumentBufferOffset, null, 0). Leaving it
             // a no-op silently dropped every indirect dispatch/draw.
             XBOX_VT[59].store(*REAL_VT_PTR.add(59), Ordering::Relaxed);
+            XBOX_VT[2].store(release_list as usize, Ordering::Relaxed);
+            XBOX_VT[10].store(reset_list as usize, Ordering::Relaxed);
+            XBOX_VT[26].store(resource_barrier_traced as usize, Ordering::Relaxed);
             if crate::rtcap::enabled() {
-                XBOX_VT[26].store(resource_barrier_traced as usize, Ordering::Relaxed);
                 XBOX_VT[25].store(set_pso_traced as usize, Ordering::Relaxed);
                 XBOX_VT[50].store(om_set_targets_traced as usize, Ordering::Relaxed);
                 XBOX_VT[12].store(draw_traced as usize, Ordering::Relaxed);
@@ -152,10 +154,37 @@ make_probes!(
     (p125,125),(p126,126),(p127,127),
 );
 
-/// ResourceBarrier (slot 26, identical on Xbox and PC) with state tracking for the
-/// diagnostic render-target capture; installed only when the capture is enabled.
+unsafe extern "system" fn reset_list(this: *mut c_void, alloc: *mut c_void, pso: *mut c_void) -> i32 {
+    let f: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void) -> i32 =
+        core::mem::transmute(*REAL_VT_PTR.add(10));
+    let hr = f(this, alloc, pso);
+    if hr >= 0 { crate::texture_state::TRACKER.lock().unwrap().reset(this as usize); }
+    hr
+}
+
+unsafe extern "system" fn release_list(this: *mut c_void) -> u32 {
+    let f: unsafe extern "system" fn(*mut c_void) -> u32 = core::mem::transmute(*REAL_VT_PTR.add(2));
+    let mut tracker = crate::texture_state::TRACKER.lock().unwrap();
+    let refs = f(this);
+    if refs == 0 { tracker.reset(this as usize); }
+    refs
+}
+
 unsafe extern "system" fn resource_barrier_traced(this: *mut c_void, n: u32, barriers: *const u8) {
     crate::rtcap::note_barriers(n, barriers);
+    if !barriers.is_null() {
+        let mut tracker = crate::texture_state::TRACKER.lock().unwrap();
+        // The x64 D3D12_RESOURCE_BARRIER ABI has a 32-byte stride.
+        for i in 0..n as usize {
+            let b = barriers.add(i * 32);
+            let word = |offset| b.add(offset).cast::<u32>().read_unaligned();
+            if word(0) == 0 {
+                let resource = b.add(8).cast::<usize>().read_unaligned();
+                let after = (word(4) != 1).then(|| word(24));
+                tracker.record(this as usize, resource, word(16), after);
+            }
+        }
+    }
     let f: unsafe extern "system" fn(*mut c_void, u32, *const u8) = core::mem::transmute(*REAL_VT_PTR.add(26));
     f(this, n, barriers)
 }
@@ -265,7 +294,7 @@ pub fn apply(real_list: *mut c_void) {
     }
     unsafe {
         let real_vt = *(real_list as *const *const usize);
-        if !BUILT.swap(true, Ordering::SeqCst) {
+        BUILT.call_once(|| {
             for i in 0..N {
                 let p = match map_slot(i) {
                     Some(src) => *real_vt.add(src),
@@ -285,7 +314,7 @@ pub fn apply(real_list: *mut c_void) {
             for i in 0..86 { s.push_str(&format!("{i}:{:x} ", (*real_vt.add(i)).wrapping_sub(core))); }
             record("d3d12_xs", "cmdlist.vtable", &format!("XBOX_VT at {:p}, slot98={:#x} stub={:#x}", XBOX_VT.as_ptr(), XBOX_VT[98].load(Ordering::Relaxed), inserted_stub as usize));
             record("d3d12_xs", "cmdlist.vtable", &format!("PC cmdlist method RVAs in D3D12Core: {s}"));
-        }
+        });
         // The real object keeps its PC vtable; the title only ever sees a shim (below).
         let _ = (VirtualProtect as usize, PAGE_READWRITE);
     }
@@ -345,6 +374,7 @@ pub fn wrap(real_list: *mut c_void) -> *mut c_void {
     if real_list.is_null() {
         return real_list;
     }
+    crate::texture_state::TRACKER.lock().unwrap().reset(real_list as usize);
     apply(real_list); // builds the Xbox-layout table on first use
     unsafe {
         SHIM_BUILT.call_once(|| build_shim_thunks());

@@ -20,6 +20,7 @@ mod present;
 mod frame;
 mod placed;
 mod upload;
+mod texture_state;
 mod rtcap;
 mod bindtrace;
 
