@@ -374,12 +374,24 @@ fn amd_med3(a: f32, b: f32, c: f32) -> f32 {
 /// Fused and unfused results of a*b+c; when the product is an f32 denormal, also the result
 /// with the product flushed to zero (denormal flushing is the implementation's choice).
 fn mad_any(a: f32, b: f32, c: f32) -> Want {
-    let mut v = vec![a.mul_add(b, c), a * b + c];
+    let mut v = vec![libm::fmaf(a, b, c), a * b + c];
     if is_denorm(b_(a * b)) || is_denorm(b_((a as f64 * b as f64) as f32)) {
         v.push(c);
     }
     Want::F(v)
 }
+
+#[test]
+fn mad_reference_accepts_both_roundings() {
+    // This input from the conformance suite rounds one ULP higher when fused.
+    let bits = std::hint::black_box([0x3fc00000, 0x3effffff, 0xb873abfd]);
+    let [a, b, c] = bits.map(f32::from_bits);
+    let want = mad_any(a, b, c);
+    assert!(matches(0x3f3ffc30, &want)); // unfused
+    assert!(matches(0x3f3ffc31, &want)); // fused
+    assert!(!matches(0x3f3ffc32, &want));
+}
+
 fn b_(x: f32) -> u32 {
     x.to_bits()
 }
@@ -406,7 +418,7 @@ fn cases() -> Vec<Case> {
     // GFX10.1 V_MAD_LEGACY_F32 (0x140; GFX10.3 renames it V_FMA_LEGACY_F32): DX9 multiply.
     c.push(case("v_mad_legacy_f32", v3(0x140, 3), [F, F, F], |a, b2, c2, _| {
         let p = legacy_mul(f(a), f(b2));
-        let fused = if f(a) == 0.0 || f(b2) == 0.0 { f(c2) } else { f(a).mul_add(f(b2), f(c2)) };
+        let fused = if f(a) == 0.0 || f(b2) == 0.0 { f(c2) } else { libm::fmaf(f(a), f(b2), f(c2)) };
         let mut v = vec![p + f(c2), fused];
         if is_denorm(b(p)) {
             v.push(f(c2)); // denormal product flushed

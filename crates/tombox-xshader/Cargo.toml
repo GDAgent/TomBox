@@ -20,6 +20,10 @@ path = "src/bin/xscan.rs"
 [dependencies]
 miniz_oxide = "0.8"
 
+[target.'cfg(windows)'.dev-dependencies]
+# Use the software FMA reference even when the host CPU supports FMA.
+libm = { version = "0.2.16", default-features = false }
+
 [[bin]]
 name = "xpso"
 path = "src/bin/xpso.rs"
