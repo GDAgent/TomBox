@@ -171,8 +171,8 @@ Honest ledger. Updated continuously.
 
 - **Covered by the GPU conformance test** (`tests/valu_conformance.rs`, 207 cases): only
   single instructions on one host GPU. Not covered: SDWA/DPP forms, `v_readlane` /
-  `v_writelane`, 64-bit ops, `v_movrel*`, interpolation, scalar ALU, memory and image ops,
-  and interactions inside larger shaders.
+  `v_writelane`, 64-bit ops, `v_movrel*`, interpolation, scalar ALU, and interactions
+  inside larger shaders. Image and buffer ops: see below.
 - **Fused vs. unfused multiply-add is not controlled.** HLSL has no single-precision FMA;
   `a * b + c` may or may not be fused by DXC/the driver, while the console fuses `v_fma*` /
   `v_fmac*` and does not fuse `v_mad*` / `v_mac*`. The test accepts either.
@@ -192,3 +192,26 @@ Honest ledger. Updated continuously.
   D3D minimum precision, not bit-exactly; `sin`/`cos` only for |x| ≤ 64 turns (the console's
   results for large arguments are not reproduced).
 
+## Vector-memory semantics (2026-11-20)
+
+- **Covered by `tests/mem_conformance.rs`** (70 cases, one instruction each, one host GPU).
+  Not covered: image atomics, `image_get_resinfo` / `image_get_lod`, MSAA loads, 3D / array
+  / cube gathers, `_c` gathers, depth-compare with LOD or bias, filtering other than point,
+  border colours, sRGB / normalised / compressed formats (all cases use 32-bit float
+  texels), buffer atomics, byte / short buffer ops, MUBUF with OFFEN, constant-buffer
+  MUBUF.
+- **Cube arrays are not handled.** Sampled cube images address a face as `slice * 8 + face`
+  (ISA §8.2.4); the translation declares `TextureCube` and `tb_cube_dir` reads faces 0..5.
+- **D16 integer formats and TFE/LWE/LDS are refused**, not translated. A shader using them
+  fails translation with a message naming the bit.
+- **D16 rounding** of float results is round-to-nearest-even of the D3D f32 result. For
+  formats with more precision than f16 this matches a direct hardware conversion only if
+  the hardware also rounds to nearest even (not documented). The high half of the last
+  VGPR with an odd component count is written as 0; the hardware's value is unspecified.
+- **UNORM sampling** normalises by mip 0 of the view; the console's behaviour for
+  unnormalised coordinates on mipped views, and samplers that force unnormalised
+  coordinates through the S#, are not modelled.
+- **Translation output is not deterministic.** Loop-flag declarations in `emit_body` come
+  from a `HashMap` iteration, so the same shader can translate to differently ordered HLSL
+  in different runs, and the compiled-shader cache (keyed by HLSL text) misses. Observed on
+  6 of 43 fixtures. Fix: emit in a sorted order.

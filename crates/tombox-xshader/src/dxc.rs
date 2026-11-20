@@ -151,9 +151,13 @@ pub fn compile(hlsl: &str, profile: &str) -> Result<Vec<u8>, String> {
             let b = get_blob(5);
             let text = String::from_utf8_lossy(&blob_bytes(b)).into_owned();
             release(b);
-            let line = text.lines().find(|l| l.contains("error")).unwrap_or(text.lines().next().unwrap_or("")).to_string();
-            // "hlsl.hlsl:12:5: error: message" -> "message"
-            Err(format!("dxc: {}", line.split("error: ").nth(1).unwrap_or(&line)))
+            // "hlsl.hlsl:12:5: error: message" -> "message". Validation failures report a
+            // generic "validation errors" line followed by one "error:" line per reason, so
+            // every error line is kept.
+            let errors: Vec<&str> =
+                text.lines().filter(|l| l.contains("error")).map(|l| l.split("error: ").nth(1).unwrap_or(l)).collect();
+            let msg = if errors.is_empty() { text.lines().next().unwrap_or("").to_string() } else { errors.join("; ") };
+            Err(format!("dxc: {msg}"))
         };
         release(result);
         out
