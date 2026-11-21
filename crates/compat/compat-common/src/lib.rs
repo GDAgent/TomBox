@@ -26,6 +26,7 @@ fn log_path() -> &'static std::path::PathBuf {
 pub mod net_guard;
 pub mod gdk_user;
 pub mod gdk_store;
+pub mod locale;
 
 /// Read the title's configuration, allowing older installs to keep their original file.
 pub fn cfg(key: &str) -> Option<String> {
