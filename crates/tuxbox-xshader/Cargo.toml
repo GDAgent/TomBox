@@ -1,0 +1,33 @@
+[package]
+name = "tuxbox-xshader"
+version = "0.1.0"
+edition = "2021"
+description = "Extract and (eventually) translate Xbox Series shaders: DXBC -> DXIL/XDAT -> zlib -> FSSM -> RDNA2 ISA."
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "tuxbox_xshader"
+path = "src/lib.rs"
+
+[[bin]]
+name = "xshader"
+path = "src/bin/xshader.rs"
+
+[[bin]]
+name = "xscan"
+path = "src/bin/xscan.rs"
+
+[dependencies]
+miniz_oxide = "0.8"
+
+[dev-dependencies]
+# Use the software FMA reference even when the host CPU supports FMA.
+libm = { version = "0.2.16", default-features = false }
+
+[[bin]]
+name = "xpso"
+path = "src/bin/xpso.rs"
+
+[[bin]]
+name = "xpair"
+path = "src/bin/xpair.rs"

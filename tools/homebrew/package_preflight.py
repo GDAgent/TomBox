@@ -1,4 +1,4 @@
-"""Inventory an extracted Scarlett package and compare PE imports with TomBox's audit."""
+"""Inventory an extracted Scarlett package and compare PE imports with TuxBox's audit."""
 import argparse
 import csv
 import hashlib
@@ -39,7 +39,7 @@ def inspect(tool, path):
         raise ValueError(f"{path.name}: {result.stderr.strip()}")
     pe = json.loads(result.stdout)
     if "delay_import_details" not in pe:
-        raise ValueError("Rebuild pe-inspect with cargo build --release -p tombox-cli")
+        raise ValueError("Rebuild pe-inspect with cargo build --release -p tuxbox-cli")
     return pe
 
 

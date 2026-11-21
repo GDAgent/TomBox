@@ -132,42 +132,43 @@ unsafe extern "system" fn enqueue_shim(this: *mut c_void, preq: *const u8) {
     let n = ENQUEUE_DUMPS.fetch_add(1, Ordering::Relaxed);
     match os {
         Some(h) if dst_buf > 0x10000 && src_size > 0 => {
-            let mut ov = [0u8; 32];
-            ov[16..20].copy_from_slice(&(src_off as u32).to_le_bytes());       // Offset
-            ov[20..24].copy_from_slice(&(((src_off >> 32) as u32)).to_le_bytes()); // OffsetHigh
-            if compression == 0 {
-                // Uncompressed: read straight into the destination.
-                let mut got: u32 = 0;
-                let ok = unsafe { ReadFile(h, dst_buf as *mut u8, src_size as u32, &mut got, ov.as_mut_ptr()) };
-                if ok == 0 || got != src_size as u32 {
-                    record(M, "EnqueueRequest", &format!("BAD read off={src_off:#x} size={src_size:#x} got={got:#x}"));
-                }
+            let (Ok(read_size), Ok(capacity)) = (u32::try_from(src_size), u32::try_from(dst_size)) else {
+                record(M, "EnqueueRequest", "unsupported file or destination size");
+                return;
+            };
+            if capacity == 0 || (compression == 0 && read_size > capacity) {
+                record(M, "EnqueueRequest", "file request exceeds destination capacity");
+                return;
+            }
+            let mut ov = [0usize; 4]; // x64 OVERLAPPED, including aligned Offset/OffsetHigh.
+            ov[2] = src_off as usize;
+            let mut compressed = Vec::new();
+            let output = if compression == 0 {
+                dst_buf as *mut u8
             } else {
-                // Compressed: Xbox DirectStorage decompresses in hardware. Read the
-                // compressed bytes and zlib-inflate into the destination buffer.
-                let mut cbuf = vec![0u8; src_size as usize];
-                let mut got: u32 = 0;
-                let ok = unsafe { ReadFile(h, cbuf.as_mut_ptr(), src_size as u32, &mut got, ov.as_mut_ptr()) };
-                if ok != 0 && got > 0 {
-                    match miniz_oxide::inflate::decompress_to_vec_zlib(&cbuf[..got as usize]) {
-                        Ok(data) => {
-                            let cap = (dst_size as usize).max(data.len());
-                            let ncopy = data.len().min(cap);
-                            unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), dst_buf as *mut u8, ncopy) };
-                            if n < 6 {
-                                record(M, "EnqueueRequest", &format!("INFLATE comp={compression} off={src_off:#x} csize={src_size:#x} -> {:#x} (dstSize={dst_size:#x})", data.len()));
-                            }
-                        }
-                        Err(e) => {
-                            // Partial output is still copied so a trailing-garbage stream yields usable data.
-                            let data = e.output;
-                            let ncopy = data.len().min(dst_size as usize);
-                            unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), dst_buf as *mut u8, ncopy) };
-                            record(M, "EnqueueRequest", &format!("INFLATE-partial comp={compression} off={src_off:#x} csize={src_size:#x} status={:?} out={:#x}", e.status, data.len()));
+                if compressed.try_reserve_exact(read_size as usize).is_err() {
+                    record(M, "EnqueueRequest", "compressed input allocation failed");
+                    return;
+                }
+                compressed.resize(read_size as usize, 0u8);
+                compressed.as_mut_ptr()
+            };
+            let mut got = 0;
+            // SAFETY: the handle belongs to the synchronous file map. For a raw read,
+            // read_size fits the caller's destination. Compressed input uses its own buffer.
+            let ok = unsafe { ReadFile(h, output, read_size, &mut got, ov.as_mut_ptr().cast()) };
+            if ok == 0 || got != read_size {
+                record(M, "EnqueueRequest", &format!("BAD read off={src_off:#x} size={read_size:#x} got={got:#x}"));
+            } else if compression != 0 {
+                match miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&compressed, capacity as usize) {
+                    Ok(data) => {
+                        // SAFETY: the decoder caps output at capacity and owns a separate buffer.
+                        unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), dst_buf as *mut u8, data.len()) };
+                        if n < 6 {
+                            record(M, "EnqueueRequest", &format!("INFLATE comp={compression} off={src_off:#x} size={:#x}", data.len()));
                         }
                     }
-                } else {
-                    record(M, "EnqueueRequest", &format!("BAD compressed read off={src_off:#x} size={src_size:#x} got={got:#x}"));
+                    Err(e) => record(M, "EnqueueRequest", &format!("zlib decode failed comp={compression} status={:?}", e.status)),
                 }
             }
         }
@@ -309,4 +310,44 @@ pub extern "system" fn DStorageGetFactory(_riid: *const c_void, ppv: *mut *mut c
     }
     record(M, "DStorageGetFactory", &format!("forwarded (PC IID) -> hr={hr:#010x} factory={out:p}"));
     hr
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use std::os::windows::io::AsRawHandle;
+
+    #[test]
+    fn positioned_file_reads_match_plain_and_zlib_payloads() {
+        let plain = b"TuxBox storage fixture";
+        let compressed = miniz_oxide::deflate::compress_to_vec_zlib(plain, 6);
+        let path = std::env::temp_dir().join(format!("tuxbox-storage-{}.bin", std::process::id()));
+        std::fs::write(&path, [plain.as_slice(), &compressed].concat()).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let token = file.as_raw_handle() as usize;
+        map_file(token, token as isize);
+        for (format, offset, length) in [(0, 0, plain.len()), (1, plain.len(), compressed.len())] {
+            let mut result = [0xa5u8; 32];
+            let mut request = [0u64; 8];
+            request[0] = format;
+            request[1] = result.as_mut_ptr() as u64;
+            request[3] = plain.len() as u64;
+            request[4] = token as u64;
+            request[5] = offset as u64;
+            request[6] = length as u64;
+            // SAFETY: all request storage and the mapped file live through the synchronous call.
+            unsafe { enqueue_shim(core::ptr::null_mut(), request.as_ptr().cast()) };
+            assert_eq!(&result[..plain.len()], plain);
+            assert!(result[plain.len()..].iter().all(|&value| value == 0xa5));
+
+            // The destination view can be smaller than its backing allocation.
+            result.fill(0xa5);
+            request[3] = (plain.len() - 1) as u64;
+            unsafe { enqueue_shim(core::ptr::null_mut(), request.as_ptr().cast()) };
+            assert_eq!(result, [0xa5; 32]);
+        }
+        FILE_MAP.lock().unwrap().retain(|(key, _)| *key != token);
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
 }

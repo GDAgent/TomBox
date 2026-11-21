@@ -1,19 +1,18 @@
 # Technical Debt / Known Gaps / Unverified Assumptions
 
-Honest ledger. Updated continuously.
+## Current platform gaps
 
-## Incomplete functionality
-- Loader, compat libraries, host services, graphics backend: **not started**
-  (intentionally — these follow the real binary's evidence per ADR-0002).
-- ~~`pe-inspect --json` omits exports, relocations, TLS~~ **RESOLVED**: JSON now
-  includes exports (named+ordinals), relocation type histogram, and TLS summary.
+- Proton and Windows load prepared PE images and the app-local DLLs. Retail startup on Proton still needs a title run. [Execution model](ARCHITECTURE.md)
+- Graphics, virtual gamepads and PCM audio have homebrew tests on Proton. XMA2 playback, full-frame FidelityFX upscaling, and physical controller coverage remain open. [GDK sample audit](GDK_SAMPLE_AUDIT.md)
+- DirectStorage’s file-to-memory path checks capacity for raw and zlib reads. The shim logs failures. Queue error records, cancellation, GPU destinations and additional codecs need separate implementation and tests.
+- Proton Experimental reported an unimplemented Cabinet export when running the desktop build of Microsoft’s `xbcompress`. [Reproduction](GDK_SAMPLE_AUDIT.md#reproduce-the-desktop-comparison-on-linux)
 
 ## Independent validation done
 - `pe-inspect` cross-checked against **Microsoft `dumpbin`** on the same binary:
   machine/sections/magic/entry-point/image-base/subsystem and the full import
   module list all agree. (CLAUDE.md §3A — compare against independent tools.)
 
-## Tests that should exist but don't yet
+## Parser test backlog from the initial Windows investigation
 - Base-relocation parser: a fixture asserting exact block/entry/type counts
   (currently only exercised, not value-asserted).
 - TLS parser: a fixture asserting callback count on a binary with TLS callbacks.
@@ -22,14 +21,14 @@ Honest ledger. Updated continuously.
 - `cargo fuzz` / sanitizer builds not yet configured (MSVC target; consider a
   property-test loop as an interim — the random/truncation tests partially cover this).
 
-## Unverified assumptions (must confirm from binary)
+## Initial retail investigation (historical hypotheses)
 - **A1** The extracted EXE is a readable PE32+, not an encrypted blob. _[premise from user; verify first]_
 - **A2** Game code is native x64 needing no instruction translation. _[strong inference; confirm machine + .pdata]_
 - **A3** Imports reference console D3D12.x + GDK modules distinct from PC DLLs. _[expected; confirm]_
 - **A4** Host Zen 3 ISA is a superset of whatever the binary needs. _[likely; confirm via instruction scan]_
 - **A5** Fortnite = Unreal Engine; UE narrows the GDK surface at startup. _[expected; confirm engine version]_
 
-## Architectural risks
+## Risks recorded at the start of the retail investigation
 - **R1 (high)** Shader format: if shaders ship as Xbox microcode rather than DXIL,
   the graphics path is dramatically harder. Unknown until the shader container is found.
 - **R2 (high)** D3D12.x semantic differences from PC D3D12 are NDA-gated; must be
@@ -42,7 +41,7 @@ Honest ledger. Updated continuously.
   connect to production services).
 - **R6 (low/now)** 25.5 GB input: disk and iteration cost; keep derived analysis small.
 
-## Environment constraints
+## Original Windows test machine
 - No real Python interpreter (Store alias stub only).
 - `cmake`/`ninja`/standalone `clang`/`dumpbin` not on PATH (MSVC toolset present under
   VS 2026 but not in the default shell environment).
@@ -64,9 +63,9 @@ Honest ledger. Updated continuously.
 
 ## Audio
 
-* `acphal`: `IAcpHal` is an inert object (no SHAPE DSP): XMA voices never decode. No audio.
+* `acphal`: `IAcpHal` is an inert object (no SHAPE DSP): The recorded retail lobby is silent. Coin Run’s XAudio2 PCM playback is verified separately by stereo loopback.
 
-## Shader translator (tombox-xshader) — unverified assumptions
+## Shader translator (tuxbox-xshader) — unverified assumptions
 
 * Typed-buffer element type (float vs integer) is inferred from use (`infer_tbuf_types`):
   linear scan, majority vote, float when there is no evidence. Agrees with the PC build's
@@ -95,7 +94,7 @@ Honest ledger. Updated continuously.
 * Compute thread-group id registers are assumed to follow the user-data SGPRs.
 * PS entry ABI assumes perspective-centre barycentrics in v0/v1 and position in v2..v5.
 * Inter-stage signatures: graphics pipelines keep the original producer when the
-  compiled registers and masks agree. On a packing mismatch, TomBox retries with
+  compiled registers and masks agree. On a packing mismatch, TuxBox retries with
   the pixel shader's interpolation modifiers. Pairs where neither layout matches
   still need explicit signature packing.
 * DXC uses host wave operations for `v_readfirstlane` and `v_mbcnt`. Guest and host
@@ -132,8 +131,7 @@ Honest ledger. Updated continuously.
 
 ## Network redirect mode (2026-11-17)
 
-- Policy (owner's instruction): traffic may leave the machine only towards
-  `horizon.halcy0n.net`; never Epic. Enforced in-process only — no OS firewall rule.
+- The in-process guard defaults to offline. The historical retail experiment used an explicitly selected private server. The development launcher now uses the same configuration as the runtime.
 - Not covered: `ConnectEx` to a literal IP, any resolver path that bypasses the hooked
   ws2_32 / WinHTTP exports, other processes.
 - The Host header and TLS server name become the redirect host; the originally requested

@@ -27,7 +27,7 @@ name = "d3d12_xs"
 version = "0.1.0"
 dependencies = [
  "compat-common",
- "tombox-xshader",
+ "tuxbox-xshader",
 ]
 
 [[package]]
@@ -75,30 +75,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "tombox-archive"
+name = "tuxbox-archive"
 version = "0.1.0"
 
 [[package]]
-name = "tombox-cli"
+name = "tuxbox-cli"
 version = "0.1.0"
 dependencies = [
- "tombox-pe",
+ "tuxbox-pe",
 ]
 
 [[package]]
-name = "tombox-disasm"
+name = "tuxbox-disasm"
 version = "0.1.0"
 dependencies = [
  "iced-x86",
- "tombox-pe",
+ "tuxbox-pe",
 ]
 
 [[package]]
-name = "tombox-pe"
+name = "tuxbox-pe"
 version = "0.1.0"
 
 [[package]]
-name = "tombox-xshader"
+name = "tuxbox-xshader"
 version = "0.1.0"
 dependencies = [
  "libm",

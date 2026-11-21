@@ -1,4 +1,4 @@
-// Dispatch the retail FSR4 border-clear passes through TomBox. The library is
+// Dispatch the retail FSR4 border-clear passes through TuxBox. The library is
 // read as data; only the verified DXBC containers are passed to the device.
 #define NOMINMAX
 #include "graphics.h"

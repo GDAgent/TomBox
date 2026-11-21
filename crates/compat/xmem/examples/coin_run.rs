@@ -1,4 +1,4 @@
-//! Synthetic x64 Windows title exercising TomBox's xmem.dll.
+//! Synthetic x64 Windows title exercising TuxBox's xmem.dll.
 use std::io::{self, BufRead, Write};
 use std::process::ExitCode;
 

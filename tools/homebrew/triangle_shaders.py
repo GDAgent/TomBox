@@ -1,6 +1,6 @@
-"""Generate original RDNA2 fixtures in the subset of DXBC TomBox reads.
+"""Generate original RDNA2 fixtures in the subset of DXBC TuxBox reads.
 
-The payload is synthetic: these are inputs to TomBox's extractor, not retail
+The payload is synthetic: these are inputs to TuxBox's extractor, not retail
 compiler output. No Xbox SDK, game files or pretranslated HLSL are used.
 """
 import struct

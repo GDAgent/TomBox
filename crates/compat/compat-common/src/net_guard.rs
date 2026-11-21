@@ -590,7 +590,7 @@ pub fn ensure() {
             crate::record_raw("net_guard", "disabled", "TOMBOX_ALLOW_NETWORK=1 — title network access NOT restricted");
             return;
         }
-        // Redirect host: environment first, else a `net_redirect=<host>` line in `tombox.cfg`
+        // Redirect host: environment first, else a `net_redirect=<host>` line in `tuxbox.cfg`
         // next to the title executable (so a plain double-click launch gets the same policy).
         let from_cfg = || crate::cfg("net_redirect");
         let host = std::env::var("TOMBOX_NET_REDIRECT").ok().or_else(from_cfg).map(|h| h.trim().to_string()).filter(|h| !h.is_empty());

@@ -59,7 +59,7 @@ struct Frame {
 
         D3D12_DESCRIPTOR_HEAP_DESC hdesc = {D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1};
         CHECK(dev->CreateDescriptorHeap(&hdesc, IID_PPV_ARGS(&views)));
-        // TomBox returns this handle directly in RAX (Xbox ABI).
+        // TuxBox returns this handle directly in RAX (Xbox ABI).
         using CpuHandle = SIZE_T (WINAPI*)(ID3D12DescriptorHeap*);
         rtv = {xbox_method<CpuHandle>(views.Get(), 9)(views.Get())};
         dev->CreateRenderTargetView(target.Get(), nullptr, rtv);
@@ -194,7 +194,7 @@ struct Mesh {
                                        IID_PPV_ARGS(&root)));
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
-        static_assert(sizeof(pso) == 0x290 && sizeof(*inputs) == 32, "TomBox x64 PSO layout");
+        static_assert(sizeof(pso) == 0x290 && sizeof(*inputs) == 32, "TuxBox x64 PSO layout");
         pso.pRootSignature = root.Get();
         pso.VS = vs;
         pso.PS = ps;

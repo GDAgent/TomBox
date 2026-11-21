@@ -1,6 +1,6 @@
 //! Runtime shader translation for PSO creation.
 //!
-//! Xbox shader blob (DXBC wrapper → XDAT → zlib → FSSM → RDNA2) → HLSL (tombox-xshader)
+//! Xbox shader blob (DXBC wrapper → XDAT → zlib → FSSM → RDNA2) → HLSL (tuxbox-xshader)
 //! → DXC (`dxcompiler.dll`, SM6 DXIL; FXC/`D3DCompile` SM5 DXBC as fallback) → cached bytecode.
 //! Each unique shader is translated once per process (keyed by an FNV-1a hash of its
 //! bytes). Failures are cached too and reported with the reason; failing shaders are
@@ -11,7 +11,7 @@ use core::ffi::c_void;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use tombox_xshader::hlsl::InputInterp;
+use tuxbox_xshader::hlsl::InputInterp;
 
 #[derive(Clone)]
 pub struct CompiledShader {
@@ -134,11 +134,11 @@ fn disk_cache_dir() -> Option<&'static std::path::PathBuf> {
 }
 
 fn translate_uncached(blob: &[u8], hash: u64, feeds_ps: Option<&InputInterp>) -> Result<CompiledShader, String> {
-    let ex = tombox_xshader::extract(blob).map_err(|e| {
+    let ex = tuxbox_xshader::extract(blob).map_err(|e| {
         dump_failure(hash, blob, None, &e);
         format!("extract: {e}")
     })?;
-    let mut t = tombox_xshader::hlsl::translate_linked(&ex, feeds_ps).map_err(|e| {
+    let mut t = tuxbox_xshader::hlsl::translate_linked(&ex, feeds_ps).map_err(|e| {
         dump_failure(hash, blob, None, &e);
         format!("translate: {e}")
     })?;
@@ -152,7 +152,7 @@ fn translate_uncached(blob: &[u8], hash: u64, feeds_ps: Option<&InputInterp>) ->
     // Compiler: DXC (SM6 DXIL) when dxcompiler.dll + dxil.dll are available, otherwise FXC
     // (SM5 DXBC). FXC needs minutes for some of the generated compute shaders; DXC about a
     // second. `TOMBOX_SHADER_COMPILER=fxc` forces the old path.
-    let use_dxc = tombox_xshader::dxc::available()
+    let use_dxc = tuxbox_xshader::dxc::available()
         && std::env::var("TOMBOX_SHADER_COMPILER").map(|v| v != "fxc").unwrap_or(true);
     static ANNOUNCED: std::sync::Once = std::sync::Once::new();
     ANNOUNCED.call_once(|| {
@@ -162,7 +162,7 @@ fn translate_uncached(blob: &[u8], hash: u64, feeds_ps: Option<&InputInterp>) ->
     let _ = disk_cache_dir(); // creates the cache directory
     let ps_input_interp = Arc::new(std::mem::take(&mut t.ps_input_interp));
     let compiled = |code| CompiledShader { code: Arc::new(code), portable_compute_group: t.portable_compute_group, ps_input_interp: ps_input_interp.clone() };
-    let cached = Some(tombox_xshader::dxc::cache_path(&t.hlsl, &profile));
+    let cached = Some(tuxbox_xshader::dxc::cache_path(&t.hlsl, &profile));
     if let Some(p) = &cached {
         if let Ok(v) = std::fs::read(p) {
             if !v.is_empty() {
@@ -177,7 +177,7 @@ fn translate_uncached(blob: &[u8], hash: u64, feeds_ps: Option<&InputInterp>) ->
     let inflight = dir.join(format!("inflight_{hash:016x}.dxbc"));
     let _ = std::fs::write(&inflight, blob);
     let t0 = std::time::Instant::now();
-    let r = if use_dxc { tombox_xshader::dxc::compile(&t.hlsl, &profile) } else { compile(&t.hlsl, &profile) };
+    let r = if use_dxc { tuxbox_xshader::dxc::compile(&t.hlsl, &profile) } else { compile(&t.hlsl, &profile) };
     let _ = std::fs::remove_file(&inflight);
     let ms = t0.elapsed().as_millis();
     if ms > 1500 {
@@ -215,7 +215,7 @@ pub unsafe fn translate_producer(ptr: *const u8, len: usize, pixel: &CompiledSha
         return ordinary;
     }
     if let Ok(producer) = &ordinary {
-        if !tombox_xshader::meta::has_packing_mismatch(&producer.code, &pixel.code) {
+        if !tuxbox_xshader::meta::has_packing_mismatch(&producer.code, &pixel.code) {
             return ordinary;
         }
     }

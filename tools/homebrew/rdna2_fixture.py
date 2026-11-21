@@ -87,7 +87,7 @@ def run_windows(directory, command, log_name, env):
 def memory_suite(directory, env):
     env["RUSTFLAGS"] = "-C target-feature=+crt-static " + env.get("RUSTFLAGS", "")
     build = subprocess.run(["cargo", "xwin", "test", "--locked", "--release", "--target", "x86_64-pc-windows-msvc",
-                            "-p", "tombox-xshader", "--test", "mem_conformance", "--no-run", "--message-format=json-render-diagnostics"],
+                            "-p", "tuxbox-xshader", "--test", "mem_conformance", "--no-run", "--message-format=json-render-diagnostics"],
                            cwd=ROOT, env=env, stdout=subprocess.PIPE, text=True, check=True)
     exe, = [m["executable"] for m in map(json.loads, build.stdout.splitlines())
             if m.get("reason") == "compiler-artifact" and m["target"]["name"] == "mem_conformance" and m.get("executable")]

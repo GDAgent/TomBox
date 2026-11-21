@@ -1,4 +1,6 @@
-# Dev tooling (not part of the runtime)
+# Windows retail case-study tools
+
+These scripts and debugger filters target the recorded Fortnite build. Use the root `tuxbox` launcher for other prepared executables and the [homebrew guide](../homebrew/README.md) for platform tests.
 
 - `mdbg.rs`   — minimal Win32 debugger used to run the title (`rustc -O --edition 2021 mdbg.rs`).
                 Captures OutputDebugString, first-chance exceptions, a module-resolved stack

@@ -1,6 +1,6 @@
 #!/bin/bash
 # usage: hang.sh <dump_at_secs> <grep-regex of symbols selecting threads>
-cd "D:/projects/TomBox"; EXE="input/extracted/Mount/FortniteGame/Binaries/XSX/FortniteClient-XSX-Shipping.exe"; SYM="analysis/fortnite_symbols.decompressed.bin"
+cd "$(dirname "$0")/../.."; EXE="input/extracted/Mount/FortniteGame/Binaries/XSX/FortniteClient-XSX-Shipping.exe"; SYM="analysis/fortnite_symbols.decompressed.bin"
 SB="$(dirname "$0")"
 MDBG_HANGDUMP=$1 bash "$SB/iter.sh" $(($1+8)) 1 >/dev/null 2>&1
 awk '/^\[HANG\] tid/{t=$2} /^    \[rsp/{ if ($0 ~ /FortniteClient/) print t, $NF; else print t, "~" $2 $3 }' "$SB/run.txt" > "$SB/hf.txt"

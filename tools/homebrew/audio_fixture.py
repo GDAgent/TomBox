@@ -95,7 +95,7 @@ def stop(process):
 def check(result):
     # The policy-only WirePlumber profile connects streams without discovering
     # hardware. All three services and their sockets belong to this test.
-    with tempfile.TemporaryDirectory(prefix="tombox-audio-") as runtime, ExitStack() as cleanup:
+    with tempfile.TemporaryDirectory(prefix="tuxbox-audio-") as runtime, ExitStack() as cleanup:
         server = f"unix:{runtime}/pulse/native"
         private = dict(os.environ, XDG_RUNTIME_DIR=runtime, XDG_CONFIG_HOME=runtime,
                        XDG_STATE_HOME=runtime, PIPEWIRE_RUNTIME_DIR=runtime,

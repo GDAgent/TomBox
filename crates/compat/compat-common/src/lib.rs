@@ -27,11 +27,16 @@ pub mod net_guard;
 pub mod gdk_user;
 pub mod gdk_store;
 
-/// Value of `key=` in `tombox.cfg` next to the host executable (user-side configuration that
-/// lives with the game data, not in the repository).
+/// Read the title's configuration, allowing older installs to keep their original file.
 pub fn cfg(key: &str) -> Option<String> {
     let exe = std::env::current_exe().ok()?;
-    let text = std::fs::read_to_string(exe.parent()?.join("tombox.cfg")).ok()?;
+    let directory = exe.parent()?;
+    let text = match std::fs::read_to_string(directory.join("tuxbox.cfg")) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::read_to_string(directory.join("tombox.cfg"))
+        }
+        result => result,
+    }.ok()?;
     let prefix = format!("{key}=");
     text.lines().find_map(|l| l.trim().strip_prefix(prefix.as_str()).map(|v| v.trim().to_string()))
 }

@@ -1,4 +1,4 @@
-# Capture the TomBox host window's client area to a PNG.
+# Capture the TuxBox host window's client area to a PNG.
 # usage: powershell -File capture.ps1 <out.png>
 param([string]$Out)
 Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
@@ -20,7 +20,7 @@ public static class TbCap {
         EnumWindows((h, l) => {
             var sb = new StringBuilder(256); GetClassName(h, sb, 256);
             var tt = new StringBuilder(256); GetWindowText(h, tt, 256);
-            if (sb.ToString() == "TomBoxHostWindow" || (tt.ToString().Trim() == "Fortnite" && IsWindowVisible(h))) { found = h; return false; }
+            if (sb.ToString() == "TuxBoxHostWindow" || (tt.ToString().Trim() == "Fortnite" && IsWindowVisible(h))) { found = h; return false; }
             return true;
         }, IntPtr.Zero);
         return found;
@@ -29,7 +29,7 @@ public static class TbCap {
 '@
 Add-Type -AssemblyName System.Drawing
 $h = [TbCap]::Find()
-if ($h -eq [IntPtr]::Zero) { Write-Output "no TomBoxHostWindow"; exit 1 }
+if ($h -eq [IntPtr]::Zero) { Write-Output "no TuxBoxHostWindow"; exit 1 }
 [void][TbCap]::ShowWindow($h, 9)
 [void][TbCap]::SetWindowPos($h, [IntPtr](-1), 40, 40, 0, 0, 0x0001 -bor 0x0040)
 Start-Sleep -Milliseconds 400

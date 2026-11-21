@@ -1,26 +1,10 @@
-# CLAUDE.md — Xbox Series X|S Compatibility Runtime
+# TuxBox — Xbox Series X|S Compatibility Runtime
 
 ## Mission
 
-You are the principal systems engineer, reverse engineer, runtime architect, graphics engineer, and technical lead for a new Xbox Series X|S compatibility project.
+Build a general Xbox Series X|S compatibility layer for x86-64 PCs. Linux with Proton is the primary development host. Native Windows uses the same Windows-format shim DLLs.
 
-The goal is to investigate and build a technically rigorous platform that can load and run user-provided, already-dumped/decrypted Xbox Series X|S game builds on conventional PC hardware, initially Windows x64. Keep the architecture portable enough to evaluate Linux support later.
-
-The first test target is:
-
-**Fortnite Xbox Series X|S — version 2.0.1461.7919**
-
-Download the supplied build yourself from this exact URL:
-
-https://ia801000.us.archive.org/10/items/fortnite-xbox-series-xs/436609B6.FortniteClient_2.0.1461.7919_neutral__9ncxwbgmmv7m8_xs.zip
-
-The user states that this is an already-dumped and decrypted build. Treat that as the starting premise, then verify the archive contents. The ZIP is a distribution container; do not presume that its contents are an encrypted retail XVC package.
-
-You have access to the project working directory. Work autonomously, make measurable engineering progress, and maintain a clear record of what is actually verified.
-
-This is not a documentation-only exercise. Research, design, implement, compile, test, debug, and iterate.
-
-The long-term objective is to run the actual supplied game build—not a mock game, a recreated menu, or a synthetic demonstration.
+Start with reproducible workloads. Coin Run and the checked-in fixtures exercise graphics, input, audio and import behavior without a retail dump. Use public Microsoft GDK samples to compare documented usage with the relevant runtime path. Record the source revision, build target, host, and observed result. Keep per-title integration findings in their own case studies. [GDK sample audit](docs/GDK_SAMPLE_AUDIT.md) · [Homebrew guide](tools/homebrew/README.md)
 
 ---
 
@@ -73,7 +57,7 @@ Prohibited:
 - Hardcoded outputs that imitate successful runtime behavior.
 - Tests that only check whether the program builds.
 - Catch-all exception handlers that silently hide failures.
-- Synthetic assets or mocked game behavior presented as actual Fortnite output.
+- Homebrew or mock output presented as retail evidence.
 - Documentation claiming support without corresponding tests.
 - Disabling validation merely to make a test pass.
 - Silently ignoring unsupported executable features.
@@ -95,48 +79,9 @@ At the start:
 
 ---
 
-# 2. First action: download and inspect the supplied build
+# 2. Inspecting a supplied build
 
-Download the archive directly from the exact URL above. Do not ask the user to download it manually unless the download is genuinely inaccessible from your environment.
-
-Create a clear input layout, for example:
-
-- `input/original/` — original downloaded ZIP, preserved unchanged.
-- `input/extracted/` — extracted dump.
-- `analysis/` — generated inspection output.
-- `docs/` — project documentation.
-
-Adapt these names to the existing repository rather than blindly imposing them.
-
-For the original archive, record:
-
-- Exact source URL.
-- Download timestamp.
-- File size.
-- SHA-256 checksum.
-- Download success or failure.
-- Archive format and integrity.
-
-Extract safely. Guard against path traversal, unexpected absolute paths, symlinks, decompression bombs, and unreasonable file sizes. Do not execute files during extraction.
-
-Inventory the extracted dump:
-
-- Full directory tree.
-- File names, sizes, and hashes.
-- Candidate executables and dynamic modules.
-- Resource files and asset containers.
-- Configuration and manifest files, if present.
-- Libraries and dependencies.
-- Unknown file types.
-- Any remaining nested containers.
-
-Do not presume a particular directory layout or executable filename. Discover it.
-
-The user states that the build is already dumped and decrypted. Do not turn this into an XVC decryption or retail-package decryption project. Investigate XVC, MSIXVC, or other package structures only if the actual files demonstrate that such analysis is relevant. If the ZIP contains an already-extracted filesystem, work directly from that filesystem.
-
-Never modify the original archive. Make derived or normalized copies when necessary and document transformations.
-
-If the download fails, diagnose the HTTP/network failure, retry reasonably, and continue with independent research and tooling. Do not fabricate an extraction result.
+Use an authorized, already-decrypted build supplied for the task. Preserve the original input, record its provenance and checksum, and keep derived output separate. Inventory executable files, modules, assets and manifests. Check archive paths and sizes before extracting. Discover the executable and dependency names from the package itself. Keep retail inputs out of source control. The native tests and homebrew workflow have no retail download prerequisite.
 
 ---
 
@@ -249,7 +194,7 @@ Build targeted experiments for uncertain behavior.
 
 Xbox Series X|S graphics are based on AMD RDNA 2, but do not treat the GPU as an ordinary PC RDNA 2 device without investigating console-specific differences.
 
-Determine what the actual Fortnite build uses.
+Determine what the sample or title under test uses.
 
 Investigate:
 
@@ -329,9 +274,9 @@ Respect upstream licenses and attribution requirements. Reuse code only when its
 
 ---
 
-# 5. Fortnite target analysis
+# 5. Per-title analysis
 
-The first game is a real-world compatibility target, not a substitute for a general architecture.
+Identify the build and host before recording a title result.
 
 Determine:
 
@@ -364,7 +309,7 @@ Build a dependency graph that distinguishes:
 
 Prioritize the shortest technically valid path to an actual first frame, without hardcoding or faking missing behavior.
 
-Keep game-specific work separate from reusable platform functionality. If a workaround is Fortnite-specific, label it as such and do not present it as general Xbox compatibility.
+Keep game-specific work separate from reusable platform functionality. Label any workaround with the build and behavior it applies to.
 
 ---
 
@@ -449,7 +394,7 @@ Build small test programs for each supported graphics feature before integrating
 
 ## E. Host platform integration
 
-Initially prioritize Windows x64.
+Prioritize x86-64 Linux with Proton. Run the native analysis tests and verify runtime changes with Coin Run under Proton. Record native Windows and Proton results separately.
 
 Implement proper host integration for:
 
@@ -462,7 +407,7 @@ Implement proper host integration for:
 - Filesystem access.
 - Diagnostics and crash reporting.
 
-Keep host-specific code behind explicit interfaces so Linux can be evaluated later without contaminating the core.
+Keep host-specific code behind explicit interfaces so both Proton and native Windows can exercise the shared runtime.
 
 ---
 
@@ -515,7 +460,7 @@ Before each significant implementation, ask:
 - Does this match the target platform?
 - Can the behavior be tested independently?
 - What happens on malformed input or unsupported behavior?
-- Does this implementation generalize beyond Fortnite?
+- Which assumptions depend on a particular title or build?
 
 ---
 
@@ -630,7 +575,7 @@ Work with binaries and materials the user is legally authorized to analyze.
 
 Do not implement mechanisms to compromise consoles, obtain unauthorized access to protected services, extract cryptographic secrets, or defeat platform security and access controls.
 
-Do not connect to Fortnite production services, impersonate authenticated players, or attempt to bypass account, entitlement, or anti-cheat systems.
+Do not connect test titles to production services, impersonate authenticated players, or attempt to bypass account, entitlement, or anti-cheat systems.
 
 Keep user-provided game data separate from source control. Do not redistribute copyrighted game executables or assets.
 
@@ -669,7 +614,7 @@ The host PC's hardware is not identical to either console. Compatibility must be
 
 Track milestones independently. Never mark one complete without evidence.
 
-1. Archive downloaded and checksum recorded.
+1. Input obtained and checksum recorded.
 2. Dump safely extracted and inventoried.
 3. Main executable and modules identified.
 4. Executable structures parsed and validated.
@@ -680,7 +625,7 @@ Track milestones independently. Never mark one complete without evidence.
 9. Required runtime foundation initialized.
 10. Essential system interfaces implemented and tested.
 11. Graphics device and required features initialized.
-12. Actual Fortnite executable reaches meaningful initialization.
+12. The title executable reaches meaningful initialization.
 13. Actual game renders a first frame.
 14. Main menu is reached.
 15. Input works.
@@ -695,42 +640,6 @@ Do not claim a game is playable because it displays a splash screen or menu.
 
 ---
 
-# 13. First assignment — start now
+# 13. Contributor starting point
 
-Execute this sequence without waiting for another user message:
-
-1. Inspect the entire working directory and repository state.
-2. Identify available operating system, CPU, GPU, RAM, disk space, compiler toolchains, SDKs, debuggers, and analysis tools.
-3. Download the exact Fortnite ZIP URL in Section 2.
-4. Preserve the original archive and record its SHA-256.
-5. Safely extract and inventory the already-dumped/decrypted build.
-6. Identify the actual executable, modules, and remaining resource containers.
-7. Parse the main executable and report its real format and characteristics.
-8. Map imports, exports, relocations, module dependencies, and runtime requirements.
-9. Research the Xbox-specific behavior that the binary demonstrably needs.
-10. Study AnyPS5's actual architecture and source code for transferable engineering ideas.
-11. Identify the largest technical risks and unknowns.
-12. Write an evidence-based architecture proposal and prioritized roadmap.
-13. Implement the first useful, independently testable subsystem immediately.
-14. Build and run its tests.
-15. Record results and continue with the next highest-value engineering task.
-
-Do not stop after steps 1–12. Research must lead into implementation.
-
-If the download is inaccessible, do not fabricate results or silently substitute another build. Record the failure, retry reasonably, and continue with independent research and tooling.
-
----
-
-# Final directive
-
-Think like a senior systems engineer building a new compatibility platform from first principles.
-
-Be skeptical, precise, persistent, and ambitious.
-
-Do not blindly follow a plan when evidence contradicts it. Do not hide uncertainty. Do not fake functionality. Do not stop at a research report. Do not mistake a successful build for a working runtime.
-
-Understand the supplied executable, establish the actual platform requirements, implement the necessary compatibility behavior, and validate every meaningful step.
-
-**Work autonomously. Think critically. Verify everything. Make measurable progress toward running the actual supplied Xbox Series X|S Fortnite build on PC.**
-
-Start with repository reconnaissance and downloading the supplied build.
+Run `./tuxbox test` on Linux. For runtime work, select the smallest homebrew check that exercises the changed subsystem, then run it under Proton. A public sample comparison should identify the specific API behavior that matched or failed. Record native Windows and Proton results separately. Retail regressions use the named build and the steps in its case study.

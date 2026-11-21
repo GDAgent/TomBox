@@ -1,4 +1,4 @@
-// Headless synthetic title. Xbox slot numbers follow TomBox's device_wrap,
+// Headless synthetic title. Xbox slot numbers follow TuxBox's device_wrap,
 // cmdlist_wrap and heap_wrap. All other calls use the public Windows SDK.
 #include "graphics.h"
 #include "triangle_shaders.h"

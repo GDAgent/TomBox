@@ -1,13 +1,13 @@
-# TomBox — Xbox Series X|S compatibility runtime (research project)
+# TuxBox — Xbox Series X|S compatibility runtime (research project)
 # Workspace root.
 [workspace]
 resolver = "2"
 members = [
-    "crates/tombox-pe",
-    "crates/tombox-cli",
-    "crates/tombox-archive",
-    "crates/tombox-disasm",
-    "crates/tombox-xshader",
+    "crates/tuxbox-pe",
+    "crates/tuxbox-cli",
+    "crates/tuxbox-archive",
+    "crates/tuxbox-disasm",
+    "crates/tuxbox-xshader",
     "crates/compat/compat-common",
     "crates/compat/xmem",
     "crates/compat/d3d12_xs",

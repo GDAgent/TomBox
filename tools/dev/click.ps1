@@ -1,4 +1,4 @@
-# Click inside the TomBox host window. usage: click.ps1 <fx> <fy>   (fractions of the client area, 0..1)
+# Click inside the TuxBox host window. usage: click.ps1 <fx> <fy>   (fractions of the client area, 0..1)
 param([double]$Fx = 0.5, [double]$Fy = 0.68)
 Add-Type -TypeDefinition @'
 using System; using System.Text; using System.Runtime.InteropServices;
@@ -20,13 +20,13 @@ public static class TbClick {
         IntPtr found = IntPtr.Zero;
         EnumWindows((h, l) => { var sb = new StringBuilder(256); GetClassName(h, sb, 256);
             var tt = new StringBuilder(256); GetWindowText(h, tt, 256);
-            if (sb.ToString() == "TomBoxHostWindow" || (tt.ToString().Trim() == "Fortnite" && IsWindowVisible(h))) { found = h; return false; } return true; }, IntPtr.Zero);
+            if (sb.ToString() == "TuxBoxHostWindow" || (tt.ToString().Trim() == "Fortnite" && IsWindowVisible(h))) { found = h; return false; } return true; }, IntPtr.Zero);
         return found;
     }
 }
 '@
 $h = [TbClick]::Find()
-if ($h -eq [IntPtr]::Zero) { Write-Output "no TomBoxHostWindow"; exit 1 }
+if ($h -eq [IntPtr]::Zero) { Write-Output "no TuxBoxHostWindow"; exit 1 }
 [void][TbClick]::ShowWindow($h, 9); [void][TbClick]::SetForegroundWindow($h)
 Start-Sleep -Milliseconds 500
 $r = New-Object TbClick+RECT; [void][TbClick]::GetClientRect($h, [ref]$r)

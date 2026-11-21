@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""Run TuxBox's native Linux tests, homebrew suite or a prepared title under Proton."""
+import argparse
+import os
+from pathlib import Path
+import re
+import sys
+
+ROOT = Path(__file__).resolve().parent
+NATIVE_PACKAGES = ("tuxbox-pe", "tuxbox-cli", "tuxbox-archive", "tuxbox-disasm", "tuxbox-xshader")
+
+
+def steam_root():
+    if path := os.environ.get("STEAM_COMPAT_CLIENT_INSTALL_PATH"):
+        return Path(path).expanduser().resolve()
+    roots = (Path.home() / ".steam/root", Path.home() / ".local/share/Steam",
+             Path.home() / ".var/app/com.valvesoftware.Steam/data/Steam")
+    for root in roots:
+        if (root / "steamapps").is_dir():
+            return root.resolve()
+    raise ValueError("Set STEAM_COMPAT_CLIENT_INSTALL_PATH to the Steam installation directory.")
+
+
+def proton_path(client):
+    if override := os.environ.get("PROTON"):
+        path = Path(override).expanduser().resolve()
+        if path.is_file() and os.access(path, os.X_OK):
+            return path
+        raise ValueError(f"PROTON does not point to an executable file: {path}")
+    libraries = [client]
+    config = client / "steamapps/libraryfolders.vdf"
+    if config.is_file():
+        for line in config.read_text(encoding="utf-8").splitlines():
+            match = re.fullmatch(r'\s*"path"\s+"([^"]+)"\s*', line)
+            if match:
+                libraries.append(Path(match[1].replace("\\\\", "\\")))
+    for library in libraries:
+        path = library / "steamapps/common/Proton - Experimental/proton"
+        if path.is_file() and os.access(path, os.X_OK):
+            return path.resolve()
+    raise ValueError("Install Proton Experimental in Steam or set PROTON to its proton executable.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("test", help="run the native analysis and shader tests with Cargo")
+    commands.add_parser("homebrew", help="run Coin Run or a scripted homebrew test",
+                        usage="%(prog)s [Coin Run arguments]",
+                        epilog="See tools/homebrew/README.md for test modes.")
+    run = commands.add_parser("run", help="launch a prepared Windows-format executable with Proton")
+    run.add_argument("exe", type=Path)
+    run.add_argument("args", nargs=argparse.REMAINDER)
+    # Coin Run owns its options, including switches such as --3d-test.
+    is_homebrew = sys.argv[1:2] == ["homebrew"]
+    argv = sys.argv[1:]
+    if is_homebrew and argv[1:] not in (["-h"], ["--help"]):
+        argv = argv[:1]
+    args = parser.parse_args(argv)
+    if args.command == "test":
+        os.chdir(ROOT)
+        packages = [arg for package in NATIVE_PACKAGES for arg in ("-p", package)]
+        os.execvp("cargo", ["cargo", "test", "--locked", *packages])
+
+    title = args.exe.expanduser().resolve() if args.command == "run" else None
+    if title and not title.is_file():
+        parser.error(f"executable does not exist: {title}")
+    client = steam_root()
+    proton = proton_path(client)
+    os.environ["STEAM_COMPAT_CLIENT_INSTALL_PATH"] = str(client)
+    os.environ["PROTON"] = str(proton)
+    prefix = os.environ.get("STEAM_COMPAT_DATA_PATH")
+    if prefix:
+        os.environ["STEAM_COMPAT_DATA_PATH"] = str(Path(prefix).expanduser().resolve())
+    if is_homebrew:
+        script = ROOT / "tools/homebrew/play-coins.sh"
+        os.execv(script, [str(script), *sys.argv[2:]])
+
+    if not prefix:
+        data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+        os.environ["STEAM_COMPAT_DATA_PATH"] = str((data / "tuxbox/proton-prefix").resolve())
+    Path(os.environ["STEAM_COMPAT_DATA_PATH"]).mkdir(parents=True, exist_ok=True)
+    os.chdir(title.parent)
+    os.execv(proton, [str(proton), "run", str(title), *args.args])
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, OSError) as error:
+        sys.exit(f"tuxbox: {error}")

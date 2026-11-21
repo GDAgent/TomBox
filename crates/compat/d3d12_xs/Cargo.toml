@@ -12,4 +12,4 @@ path = "src/lib.rs"
 
 [dependencies]
 compat-common = { path = "../compat-common" }
-tombox-xshader = { path = "../../tombox-xshader" }
+tuxbox-xshader = { path = "../../tuxbox-xshader" }

@@ -1,6 +1,8 @@
 # Compatibility Matrix
 
-Derived from the **actual imports** of `FortniteClient-XSX-Shipping.exe` (67 modules /
+For public sample comparisons, host build targets and test results, see the [GDK sample audit](GDK_SAMPLE_AUDIT.md).
+
+The retail matrix below is derived from the **actual imports** of `FortniteClient-XSX-Shipping.exe` (67 modules /
 670 functions) and the exports of the Xbox system DLLs in `EmbeddedXvd/Windows/System32/`.
 Raw per-DLL data: `analysis/fortnite_exe.json`, `analysis/syslib/*.json`.
 
@@ -9,7 +11,7 @@ Raw per-DLL data: `analysis/fortnite_exe.json`, `analysis/syslib/*.json`.
 7 Unit-tested · 8 Integration-tested · 9 Verified vs target · 10 End-to-end.
 The dependency inventory comes from the recorded imports and exports. The module notes identify runtime checks. On the progress map, the green GameInput and XAudio2 squares count the individual factory exports exercised by Coin Run on Proton. The four other listed XAudio2 imports retain their unverified status.
 
-## Module strategy matrix
+## Retail case study · module strategy
 
 Legend — Plan: **BindOS** (forward to the real Windows DLL), **Reuse** (ship/forward to a
 PC redistributable of the same component), **Reimpl** (write our own), **Stub** (minimal
@@ -40,14 +42,14 @@ no-op/offline impl to pass startup), **Translate** (reimpl that maps onto a host
 \* "low*" = the API-set *contract* is standard, but Xbox GameOS implementations may diverge
 behind identical names; each must be validated, not assumed (CLAUDE.md principle; assumption A3).
 
-## Shortest path to a first frame (implied ordering)
+## First-frame dependencies for the recorded retail build
 1. **Loader** (map + DIR64 relocs + TLS + SEH + import resolution/redirection).
 2. **BindOS** the ~52 standard modules; **Stub** EOS/GameChat/xgameruntime-nonessential.
 3. **`xmem`** (memory) + GDK bootstrap enough for `FEngineLoop::PreInit`.
 4. **`d3d12_xs`→PC D3D12 translation** + **`xg_xs`** + windowing for `RHIInit`/device.
 5. First `DXGIXPresentArray`→ present.
 
-## GDK service surface (XGameRuntime)
+## Retail GDK service surface (XGameRuntime)
 Not exposed as named imports; reached via `xgameruntime.dll!QueryApiImpl` after a dynamic
 load. The concrete XTaskQueue/XUser/XGameSave/etc. functions the title pulls will be
 enumerated by (a) tracing `QueryApiImpl` call sites in the EXE using the symbol DB, or
@@ -68,7 +70,7 @@ enumerated by (a) tracing `QueryApiImpl` call sites in the EXE using the symbol 
 
 All 16 supplied DLLs are x64 PE images. Their ordinary import tables contain
 1,337 entries (611 distinct DLL/symbol pairs). The files have no delay-import
-entries. The supplied sibling DLLs and the built TomBox shims were checked by
+entries. The supplied sibling DLLs and the built TuxBox shims were checked by
 export name or ordinal. A Windows probe resolved all 492 distinct host imports
 across 61 modules with `LoadLibraryExA` and `GetProcAddress` under Proton
 Experimental `experimental-11.0-20261027b`. This checks symbol availability.
@@ -134,7 +136,7 @@ conversion to RGBA8 UNORM. [Run the fixture](../tools/homebrew/README.md#graphic
 
 At RVA `0x6dcb` the same FidelityFX DLL takes a resource from its resource table,
 flushes pending barriers and calls command-list slot 55 with the resource and a
-null region. This matches AMD’s discard job. TomBox forwards the call to PC
+null region. This matches AMD’s discard job. TuxBox forwards the call to PC
 `DiscardResource` (slot 51). [AMD discard job](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/c6efa6bf7f2027b3ec94f28578bb5965eabb9e55/sdk/src/backends/dx12/ffx_dx12.cpp#L3431-L3444)
 
 A dispatch-table regression test checks the selected host method. On Proton,
@@ -149,14 +151,14 @@ Microsoft publishes a Scarlett upscaler DLL (SHA-256 `3ffe4c8646ea3ac5f15ef6df49
 
 | Interface and slot | April RVA | October RVA | Observed behavior and translation |
 |---|---|---|---|
-| Device 76 | `0x3883` | `0x33cc` | `CreateCommittedResourceX` supplies a resource description with ordinary fields through byte 51 and DCC options beginning at byte 52. TomBox preserves the logical resource and lets the PC driver choose compression and the layout for private GPU textures using Xbox layout `0x101`. The April binary also uses flags `0xc00005` for a render target with UAV access. |
-| Command list 85 | `0x6dff` | `0x7147`, `0x7191` | Both texture-copy branches use the desktop location layout and a trailing zero. TomBox forwards coordinates, source box and locations to PC `CopyTextureRegion`. Other trailing flag values are unverified. |
+| Device 76 | `0x3883` | `0x33cc` | `CreateCommittedResourceX` supplies a resource description with ordinary fields through byte 51 and DCC options beginning at byte 52. TuxBox preserves the logical resource and lets the PC driver choose compression and the layout for private GPU textures using Xbox layout `0x101`. The April binary also uses flags `0xc00005` for a render target with UAV access. |
+| Command list 85 | `0x6dff` | `0x7147`, `0x7191` | Both texture-copy branches use the desktop location layout and a trailing zero. TuxBox forwards coordinates, source box and locations to PC `CopyTextureRegion`. Other trailing flag values are unverified. |
 | Command list 61 | `0x6a71` | `0x67ac` | `ExecuteIndirect` passes a command signature, maximum count of one, argument buffer and job offset, then a null count buffer and zero count-buffer offset. |
 | Command list 59 | `0x2b9f`, `0x79b2` | `0x6b5a`, `0x6e52` | PIX packets carry an event kind, data pointer and byte size. The host receives the PIX v2 metadata tag. The earlier RHI uses this slot for `ExecuteIndirect`. |
-| Command list 60 | `0x2b7b`, `0x7948` | — | The timing path provides an event kind without a packet. TomBox preserves host GPU event boundaries with a generic label. Xbox CPU/GPU event correlation remains open. |
-| Device 67 | `0x5765` | `0x56d9` | The offline compute pipeline path requests `ID3D12PipelineState`. The October binary explicitly logs a fallback on failure and retries at slot 62 (RVA `0x5825`). TomBox clears the output and returns `E_NOTIMPL` so the caller can create an ordinary compute pipeline. Offline packet deserialization remains open. |
+| Command list 60 | `0x2b7b`, `0x7948` | — | The timing path provides an event kind without a packet. TuxBox preserves host GPU event boundaries with a generic label. Xbox CPU/GPU event correlation remains open. |
+| Device 67 | `0x5765` | `0x56d9` | The offline compute pipeline path requests `ID3D12PipelineState`. The October binary explicitly logs a fallback on failure and retries at slot 62 (RVA `0x5825`). TuxBox clears the output and returns `E_NOTIMPL` so the caller can create an ordinary compute pipeline. Offline packet deserialization remains open. |
 
-The GDK sample source provides the named calls and resource fields. Microsoft’s PIX headers describe how the packet and timing paths select begin, end and marker operations. TomBox uses the edition of the module issuing the call to distinguish slots 59–61. For unmarked modules and older unrecognized editions it retains the original slot-59 indirect path. Conflicting tags or an unreadable edition section select a diagnostic probe. Only the April timing path has a verified slot-60 call. [Resource creation](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Kits/AMDTK/fidelityfx/src/backends/gdk/ffx_gdk.cpp#L1398-L1431) · [Indirect dispatch and copies](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Kits/AMDTK/fidelityfx/src/backends/gdk/ffx_gdk.cpp#L2988-L3059) · [PIX event encoding](https://github.com/microsoft/PixEvents/blob/b0caa735f8510f4ff60c29ef1c88101620defc5e/include/PIXEvents.h#L406-L446) · [PIX desktop forwarding](https://github.com/microsoft/PixEvents/blob/b0caa735f8510f4ff60c29ef1c88101620defc5e/include/pix3_win.h#L452-L523)
+The GDK sample source provides the named calls and resource fields. Microsoft’s PIX headers describe how the packet and timing paths select begin, end and marker operations. TuxBox uses the edition of the module issuing the call to distinguish slots 59–61. For unmarked modules and older unrecognized editions it retains the original slot-59 indirect path. Conflicting tags or an unreadable edition section select a diagnostic probe. Only the April timing path has a verified slot-60 call. [Resource creation](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Kits/AMDTK/fidelityfx/src/backends/gdk/ffx_gdk.cpp#L1398-L1431) · [Indirect dispatch and copies](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Kits/AMDTK/fidelityfx/src/backends/gdk/ffx_gdk.cpp#L2988-L3059) · [PIX event encoding](https://github.com/microsoft/PixEvents/blob/b0caa735f8510f4ff60c29ef1c88101620defc5e/include/PIXEvents.h#L406-L446) · [PIX desktop forwarding](https://github.com/microsoft/PixEvents/blob/b0caa735f8510f4ff60c29ef1c88101620defc5e/include/pix3_win.h#L452-L523)
 
 The homebrew copy, indirect and compute-fallback tests use original shaders and synthetic inputs. The two tagged fixture DLLs contain just the sample edition string. The tests check GPU output under Proton, including the zero-count indirect path. [Run the tests](../tools/homebrew/README.md#graphical-coin-run)
 
@@ -164,13 +166,13 @@ The optional public-binary test loads the pinned Xbox loader and upscaler with M
 
 ### GXDK 250405 compute UAV barrier
 
-The supplied BVH builder calls command-list slot 146 at RVAs `0xd7b4` and `0xd80a`. Both pass one global barrier group containing one barrier. The four 32-bit fields at RVA `0xcdf60` specify compute shading (`0x80`) before and after the barrier and unordered access (`0x10`) on both sides. TomBox recognizes that form for callers tagged GXDK 250405 and records a desktop UAV barrier with a null resource. This orders UAV accesses across resources on the command list and works with the base D3D12 interface. Other barrier groups and access masks are unverified. [Enhanced barrier layout](https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#d3d12_global_barrier) · [Desktop UAV ordering](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_resource_uav_barrier)
+The supplied BVH builder calls command-list slot 146 at RVAs `0xd7b4` and `0xd80a`. Both pass one global barrier group containing one barrier. The four 32-bit fields at RVA `0xcdf60` specify compute shading (`0x80`) before and after the barrier and unordered access (`0x10`) on both sides. TuxBox recognizes that form for callers tagged GXDK 250405 and records a desktop UAV barrier with a null resource. This orders UAV accesses across resources on the command list and works with the base D3D12 interface. Other barrier groups and access masks are unverified. [Enhanced barrier layout](https://microsoft.github.io/DirectX-Specs/d3d/D3D12EnhancedBarriers.html#d3d12_global_barrier) · [Desktop UAV ordering](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_resource_uav_barrier)
 
 The homebrew test records two dependent compute dispatches, checks the host barrier trace and reads back 32 incremented values. The tracker marks slot 146 partial because the translation handles this single global compute UAV barrier form. [Run the fixture](../tools/homebrew/README.md#graphical-coin-run)
 
 ### GXDK 250405 thread-count dispatch
 
-At RVAs `0x14972` and `0x15215`, the BVH builder writes a five-word inline dispatch packet. When the packet buffer is full, it passes the same X, Y, Z and control word to command-list slot 80. The observed values `0x20` and `0x8020` match the RDNA2 thread-dimension and wave32 control bits. TomBox interprets these calls as thread counts and divides each axis by the bound shader’s group dimension before issuing desktop `Dispatch`. [AMD register definitions](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/amd/include/asic_reg/gc/gc_10_3_0_sh_mask.h) · [Desktop dispatch dimensions](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12graphicscommandlist-dispatch)
+At RVAs `0x14972` and `0x15215`, the BVH builder writes a five-word inline dispatch packet. When the packet buffer is full, it passes the same X, Y, Z and control word to command-list slot 80. The observed values `0x20` and `0x8020` match the RDNA2 thread-dimension and wave32 control bits. TuxBox interprets these calls as thread counts and divides each axis by the bound shader’s group dimension before issuing desktop `Dispatch`. [AMD register definitions](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/amd/include/asic_reg/gc/gc_10_3_0_sh_mask.h) · [Desktop dispatch dimensions](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12graphicscommandlist-dispatch)
 
 The translation covers whole groups for a subset of straight-line shaders using ordinary register operands, buffer loads and stores, and lane-local arithmetic. Wave-sensitive instructions, unrecognized shaders and control words, partial groups and counts above the desktop limit are skipped with a diagnostic. The homebrew test verifies both observed control words, pipeline switching and the bounds of GPU writes. Sixteen BVH builder shaders have passed readback through ordinary group dispatch. The library’s own slot 80 dispatch sequence remains unverified. [Run the fixture](../tools/homebrew/README.md#graphical-coin-run)
 
@@ -178,7 +180,7 @@ The translation covers whole groups for a subset of straight-line shaders using 
 
 The supplied `XboxBvhBuilder.dll` (GXDK 250405, SHA-256 `99f803ac22c01ef329dddb1d40be67238d2a812d01e8d040b3cb5135bc23707e`) uses a table of four-byte counters. At RVAs `0xd679` and `0xd6de`, command-list slots 73 and 71 receive the same counter address. Slot 73 receives a comparison value and a 32-bit mask. Slot 71 receives an incremented value and either zero or `0x1000`. Slot 90 receives a counter address and zero at RVA `0xe836`. Microsoft's pipelined postprocessing sample demonstrates GPU-side waits and bottom-of-pipe writes with *64-bit* counters. The 32-bit flags and ordering between queues remain open. [Microsoft synchronization sample](https://github.com/microsoft/Xbox-GDK-Samples/blob/b1e77b6ac10f95b07296025fda171ca2ddc42dbe/Samples/Graphics/PipelinedPostprocess/PipelinedPostprocess.cpp#L278-L300)
 
-The exported `BuildRaytracingAccelerationStructure` at RVA `0x21610` copies the 48-byte build description into a batch entry. At `0xd069` the builder copies the field at byte 40 into the job. That field matches `ScratchAccelerationStructureData`, a GPU virtual address. Slots 71, 73 and 90 address four-byte words within this scratch buffer. TomBox translates the non-final zero write from slot 90 when the last explicit barrier establishes an aligned destination in a `COPY_DEST` buffer and the host supports immediate writes. Coin Run initialized three adjacent words to `[13, 29, 71]` and read back `[13, 0, 71]` on NVIDIA and AMD. The first word exercised the final-batch flag and the last exercised a buffer transitioned to `COPY_SOURCE`. Both cases are logged and skipped. [Build description](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_build_raytracing_acceleration_structure_desc) · [Desktop immediate-write requirements](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12graphicscommandlist2-writebufferimmediate)
+The exported `BuildRaytracingAccelerationStructure` at RVA `0x21610` copies the 48-byte build description into a batch entry. At `0xd069` the builder copies the field at byte 40 into the job. That field matches `ScratchAccelerationStructureData`, a GPU virtual address. Slots 71, 73 and 90 address four-byte words within this scratch buffer. TuxBox translates the non-final zero write from slot 90 when the last explicit barrier establishes an aligned destination in a `COPY_DEST` buffer and the host supports immediate writes. Coin Run initialized three adjacent words to `[13, 29, 71]` and read back `[13, 0, 71]` on NVIDIA and AMD. The first word exercised the final-batch flag and the last exercised a buffer transitioned to `COPY_SOURCE`. Both cases are logged and skipped. [Build description](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_build_raytracing_acceleration_structure_desc) · [Desktop immediate-write requirements](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12graphicscommandlist2-writebufferimmediate)
 
 ### D3D12.x slot tracking
 

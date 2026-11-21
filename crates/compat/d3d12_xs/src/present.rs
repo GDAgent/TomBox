@@ -146,8 +146,8 @@ fn wide(s: &str) -> Vec<u16> {
 fn create_window(client_w: i32, client_h: i32) -> usize {
     let (tx, rx) = std::sync::mpsc::channel::<usize>();
     std::thread::spawn(move || unsafe {
-        let class = wide("TomBoxHostWindow");
-        let title = wide("TomBox — Fortnite (Xbox Series X|S build)");
+        let class = wide("TuxBoxHostWindow");
+        let title = wide("TuxBox — Xbox Series X|S");
         let inst = GetModuleHandleW(core::ptr::null());
         let wc = WndClassExW {
             size: core::mem::size_of::<WndClassExW>() as u32,
@@ -258,7 +258,7 @@ unsafe fn init(queue: *mut c_void, src: *mut c_void) -> Result<State, String> {
         if hwnd == 0 {
             return Err("CreateWindowExW failed".into());
         }
-        record("d3d12_xs", "PresentX", "title window not found (or TOMBOX_OWN_WINDOW=1): presenting into a TomBox host window");
+        record("d3d12_xs", "PresentX", "title window not found (or TOMBOX_OWN_WINDOW=1): presenting into a TuxBox host window");
     }
 
     let dxgi = LoadLibraryA(b"dxgi.dll\0".as_ptr());

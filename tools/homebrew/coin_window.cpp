@@ -229,7 +229,7 @@ static int check_readback(Frame& frame, const char* operation, UINT slot, Expect
     return mismatches != 0;
 }
 
-// These entries have an explicit diagnostic binding in the TomBox wrapper.
+// These entries have an explicit diagnostic binding in the TuxBox wrapper.
 static int check_device_diagnostics() {
     ComPtr<ID3D12Device> dev;
     CHECK(D3D12XboxCreateDevice(nullptr, nullptr, IID_PPV_ARGS(&dev)));
@@ -899,7 +899,7 @@ static HWND game_window() {
     wc.lpfnWndProc = DefWindowProcW;
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.lpszClassName = L"TomBoxCoinRun";
+    wc.lpszClassName = L"TuxBoxCoinRun";
     if (!RegisterClassW(&wc)) return nullptr;
     return CreateWindowExW(0, wc.lpszClassName, L"Coin Run", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                            CW_USEDEFAULT, CW_USEDEFAULT, 640, 480, nullptr, nullptr, wc.hInstance, nullptr);

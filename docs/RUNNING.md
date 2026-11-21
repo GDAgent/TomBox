@@ -1,6 +1,20 @@
-# Build and run a title on Windows
+# Run TuxBox on Linux or Windows
 
-## Requirements
+## Linux with Proton
+
+From the repository root, run `./tuxbox test` for the native analysis tools. For the first graphics check, build Coin Run with `tools/homebrew/build-clear.sh` and run `./tuxbox homebrew --3d-test`. The homebrew suite keeps its existing prefix under `target/x86_64-pc-windows-msvc/release/coin-prefix`. [Dependencies and test modes](../tools/homebrew/README.md)
+
+Launch a prepared executable from Linux with the same app-local DLLs, config and assets that it expects on Windows. For example, after building Coin Run:
+
+```sh
+./tuxbox run target/x86_64-pc-windows-msvc/release/clear_pixel.exe --triangle
+```
+
+The launcher searches the Steam installation and its registered libraries for Proton Experimental. To select an executable yourself, set `PROTON`. Use `STEAM_COMPAT_CLIENT_INSTALL_PATH` for a custom Steam root. For `run`, the default persistent prefix is under `$XDG_DATA_HOME/tuxbox/proton-prefix` (normally `~/.local/share/tuxbox/proton-prefix`). Set `STEAM_COMPAT_DATA_PATH` to select an existing prefix. Prepare any title-specific drive mappings and dependencies in the selected prefix. Retail Fortnite startup on Proton remains unverified.
+
+## Native Windows
+
+### Requirements
 
 - Windows 10/11 x64 with a Direct3D 12 GPU.
 - Microsoft Gaming Services (provides `xgameruntime.dll`).
@@ -8,7 +22,7 @@
   `dxil.dll`, found automatically or through `TOMBOX_DXC_DIR`).
 - Your own authorised, decrypted title dump.
 
-## Build
+### Build
 
 ```
 cargo build --release
@@ -22,7 +36,11 @@ set RUSTFLAGS=-C target-feature=+crt-static
 cargo build --release -p d3d12_xs -p xmem -p xcrdapi -p acphal -p dxcompiler_xs -p mfplat
 ```
 
-## Run the tested Fortnite build
+### Run a prepared title
+
+Place the compatibility DLLs and dependencies required by the executable beside it, keep its asset layout intact, and launch the executable on Windows. Use its actual PE imports and package manifest to select dependencies. Additional setup varies by title.
+
+### Windows case study · Fortnite
 
 The steps below apply to build 2.0.1461.7919. The development scripts use machine-specific paths. [Development tools](../tools/dev/README.md)
 
@@ -34,15 +52,16 @@ The steps below apply to build 2.0.1461.7919. The development scripts use machin
    (`G:\FortniteGame\Binaries\XSX\`).
 4. Copy the **real** `xg_xs.dll` from the dump (`EmbeddedXvd/Windows/System32/`) into the
    same folder. Texture layouts depend on it; do not use the stub crate of that name.
-5. Optional: create `tombox.cfg` in that folder:
+5. To reproduce the recorded build’s offline user and store setup, create `tuxbox.cfg` beside its executable with the following line. The adapter also checks the build timestamp. Ordinary titles leave it disabled.
 
+   ```ini
+   local_user=1
    ```
-   net_redirect=<your server>   # send all traffic to one host (omit to stay offline)
-   gamertag=<name>              # local offline user (default TomBoxPlayer)
-   xuid=<decimal id>
-   xbl_token=<token string your server expects>
-   ```
+
+   Optional keys on separate lines are `gamertag`, `xuid`, `xbl_token`, and `net_redirect`. Set the last key only for your own test server.
 6. Run the game executable (`FortniteClient-XSX-Shipping.exe`).
+
+The runtime reads the existing `tombox.cfg` when `tuxbox.cfg` is absent. Existing `TOMBOX_*` environment variables and diagnostic paths work on both hosts.
 
 Compatibility-layer calls are logged to `%TEMP%\tombox_compat.log` (or `%TOMBOX_LOG%`). The
 game logs only through the debugger channel; `tools/dev/mdbg.rs` is a small tracer for it.

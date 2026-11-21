@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare tombox-xshader's opcode -> mnemonic tables with AMD's machine-readable ISA specs.
+"""Compare tuxbox-xshader's opcode -> mnemonic tables with AMD's machine-readable ISA specs.
 
 Usage: python -I tools/dev/isa_table_check.py <dir with amdgpu_isa_rdna1.xml and amdgpu_isa_rdna2.xml>
 
@@ -63,7 +63,7 @@ def main() -> int:
         print(__doc__)
         return 2
     spec = load_spec(Path(sys.argv[1]))
-    src = (Path(__file__).resolve().parents[2] / "crates/tombox-xshader/src/rdna2/mnem.rs").read_text(encoding="utf-8")
+    src = (Path(__file__).resolve().parents[2] / "crates/tuxbox-xshader/src/rdna2/mnem.rs").read_text(encoding="utf-8")
     bad = 0
     for section, encs in ENCODINGS.items():
         if section == "vopc":

@@ -1,4 +1,4 @@
-# Relative mouse input for the TomBox host window (the title reads raw mouse deltas).
+# Relative mouse input for the TuxBox host window (the title reads raw mouse deltas).
 # usage: mouse.ps1 <dx> <dy> [click]     moves in steps of <=10 counts, then optionally left-clicks
 param([int]$Dx = 0, [int]$Dy = 0, [string]$Click = "")
 Add-Type -TypeDefinition @'
@@ -18,13 +18,13 @@ public static class TbMouse {
         IntPtr found = IntPtr.Zero;
         EnumWindows((h, l) => { var sb = new StringBuilder(256); GetClassName(h, sb, 256);
             var tt = new StringBuilder(256); GetWindowText(h, tt, 256);
-            if (sb.ToString() == "TomBoxHostWindow" || (tt.ToString().Trim() == "Fortnite" && IsWindowVisible(h))) { found = h; return false; } return true; }, IntPtr.Zero);
+            if (sb.ToString() == "TuxBoxHostWindow" || (tt.ToString().Trim() == "Fortnite" && IsWindowVisible(h))) { found = h; return false; } return true; }, IntPtr.Zero);
         return found;
     }
 }
 '@
 $h = [TbMouse]::Find()
-if ($h -eq [IntPtr]::Zero) { Write-Output "no TomBoxHostWindow"; exit 1 }
+if ($h -eq [IntPtr]::Zero) { Write-Output "no TuxBoxHostWindow"; exit 1 }
 [void][TbMouse]::SetForegroundWindow($h); Start-Sleep -Milliseconds 300
 if ([TbMouse]::GetForegroundWindow() -ne $h) {
     # Windows refuses to hand over the foreground to a background process unless it has

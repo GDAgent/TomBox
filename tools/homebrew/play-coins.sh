@@ -134,7 +134,7 @@ case "${1:-}" in
         export TOMBOX_COIN_PROBE_DIR="$PWD/$scratch" PYTHONDONTWRITEBYTECODE=1
         export TOMBOX_DXC_DIR="${TOMBOX_DXC_DIR:-Z:$PWD}"
         python3 "$repo/tools/homebrew/rdna2_fixture.py" --memory "$scratch"
-        cargo test --manifest-path "$repo/Cargo.toml" --locked --release -p tombox-xshader \
+        cargo test --manifest-path "$repo/Cargo.toml" --locked --release -p tuxbox-xshader \
             --test valu_conformance -- --ignored --exact coin_run_valu_conformance --nocapture
         for mode in --test --3d-test --array-test --cube-test --thread-dispatch-test; do
             "$repo/tools/homebrew/play-coins.sh" "$mode"

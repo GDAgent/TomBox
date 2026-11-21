@@ -48,7 +48,7 @@ def main(build, context):
             log = work / "fidelityfx-context.log"
             if log.exists():
                 shutil.copyfile(log, build / log.name)
-                print(f"TomBox trace: {build / log.name}")
+                print(f"TuxBox trace: {build / log.name}")
         return result.returncode
 
 

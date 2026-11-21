@@ -36,7 +36,7 @@ def gamepad(rumble=False):
     if rumble:
         capabilities[e.EV_FF] = [e.FF_RUMBLE]
     pad_type = RumblePad if rumble else UInput
-    return pad_type(capabilities, name="TomBox virtual gamepad",
+    return pad_type(capabilities, name="TuxBox virtual gamepad",
                     bustype=e.BUS_USB, vendor=0x045e, product=0x028e, version=0x0114)
 
 

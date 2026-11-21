@@ -9,24 +9,23 @@ and translate Xbox shaders to HLSL. The checked-in fixtures let you start withou
 game dump. From the repository root, run the tests and scan a sample pixel shader:
 
 ```sh
-cargo test --locked -p tombox-pe -p tombox-cli -p tombox-archive -p tombox-disasm -p tombox-xshader
-cargo run --locked -p tombox-xshader --bin xscan -- analysis/shaders/fortnite_ps_sample.dxbc
+./tuxbox test
+cargo run --locked -p tuxbox-xshader --bin xscan -- analysis/shaders/fortnite_ps_sample.dxbc
 ```
 
 The scan should report one translated pixel shader and zero failures. To read the
 generated HLSL, run:
 
 ```sh
-cargo run --locked -p tombox-xshader --bin xshader -- analysis/shaders/fortnite_ps_sample.dxbc --hlsl-out sample.hlsl
+cargo run --locked -p tuxbox-xshader --bin xshader -- analysis/shaders/fortnite_ps_sample.dxbc --hlsl-out sample.hlsl
 ```
 
-TomBox's DXC integration and game runtime target Windows. Running a retail Xbox title on Linux
-through Wine or Proton is unverified.
+TuxBox builds the runtime and DXC integration as Windows binaries for Proton and native Windows. Coin Run exercises those DLLs under Proton. A retail title run on Linux remains unverified.
 
 ## Terminal Coin Run
 
 `coin_run` is a terminal game that imports `XMemAlloc` and `XMemFree` from
-TomBox's `xmem.dll`. Its board lives in that allocation. A scripted win exercises
+TuxBox's `xmem.dll`. Its board lives in that allocation. A scripted win exercises
 DLL loading, allocation, reads, writes and release without a game dump or console SDK.
 Input and output use the host terminal. Graphics, Xbox input and platform services
 need their own tests.
@@ -48,7 +47,7 @@ beside the freshly built DLL.
 
 ## Headless graphics test
 
-`clear_pixel.exe` uses TomBox's `d3d12_xs.dll` to create a device and an Xbox
+`clear_pixel.exe` uses TuxBox's `d3d12_xs.dll` to create a device and an Xbox
 command queue and list. It clears a one-pixel RGBA8 render target to magenta,
 copies it to a readback buffer and checks all four bytes after the GPU fence
 completes. It also serializes and deserializes a synthetic root signature.
@@ -75,7 +74,7 @@ the same machine rejected D3D feature level 12.0 at device creation.
 
 Run the same executable with `--triangle` to exercise the shader translator and
 draw path. The build script generates original vertex and pixel shader containers
-from short RDNA2 programs. At runtime TomBox translates both during Xbox graphics
+from short RDNA2 programs. At runtime TuxBox translates both during Xbox graphics
 pipeline creation. This mode needs DXC or the D3DCompile fallback provided by Proton.
 The vertex shader passes through three clip-space positions. The pixel shader writes
 opaque green. Readback checks all 256 pixels against the triangle on a magenta
@@ -120,7 +119,7 @@ atlas. Restarting restores the original pixels using the same GPU resources.
 | `tools/homebrew/play-coins.sh --3d-test` | Runs the 20-frame route in 3D, checking textured top and side faces, camera movement and depth occlusion by GPU readback. Requires a display. |
 | `tools/homebrew/play-coins.sh --audio-test` | Plays the board twice, checks which stereo channel carries each pickup, and measures both voices playing together on a private Linux audio monitor. |
 | `tools/homebrew/play-coins.sh --controller-test` | Drives the 3D board with two virtual Linux pads through Proton. Checks collisions, pickup rumble on the active pad, handover after unplugging it and Menu to restart. |
-| `tools/homebrew/play-coins.sh --gameinput-test` | Imports `GameInputCreate` by ordinal 1, checks reading history, callbacks, hotplug and motor output, then plays the controller route through the TomBox GameInput DLL. |
+| `tools/homebrew/play-coins.sh --gameinput-test` | Imports `GameInputCreate` by ordinal 1, checks reading history, callbacks, hotplug and motor output, then plays the controller route through the TuxBox GameInput DLL. |
 | `tools/homebrew/play-coins.sh --test` | Upload, draw and GPU readback using a committed texture, headless |
 | `tools/homebrew/play-coins.sh --placed-test` | Same route using `CreatePlacedResourceX` with a 64 KiB-aligned XMem address and Xbox layout 261, headless |
 | `tools/homebrew/play-coins.sh --present-test` | Committed texture plus `PresentX` to a window, with the same render-target readback |
@@ -136,7 +135,7 @@ atlas. Restarting restores the original pixels using the same GPU resources.
 | `tools/homebrew/play-coins.sh --scarlett-copy-test` | Creates two committed textures through device slot 76, uploads a pattern and copies a 5×4 rectangle between different coordinates through list slot 85. Checks the resource flags and all 54 destination pixels. |
 | `tools/homebrew/play-coins.sh --indirect-test` | Three synthetic DLLs submit indirect draws on one list. Checks legacy slot 59, GXDK slot 61, argument offsets and a zero count buffer across 72 pixels. Exercises the PIX paths in the tagged DLLs. |
 | `tools/homebrew/play-coins.sh --fidelityfx-test` | Downloads the hash-pinned public Xbox FidelityFX loader and upscaler plus the desktop PIX runtime. Checks four resolution queries through the real DLLs under Proton. |
-| `tools/homebrew/play-coins.sh --fidelityfx-context` | Diagnoses FSR 3.1.6 context creation on a TomBox device. Currently returns an error at offline compute PSO deserialization and saves the trace in the release directory as `fidelityfx-context.log`. |
+| `tools/homebrew/play-coins.sh --fidelityfx-context` | Diagnoses FSR 3.1.6 context creation on a TuxBox device. Currently returns an error at offline compute PSO deserialization and saves the trace in the release directory as `fidelityfx-context.log`. |
 | `tools/homebrew/play-coins.sh --thread-dispatch-test` | Exercises GXDK 250405 slot 80 with one- and four-thread groups across pipeline changes, reset and list creation. Checks all 32 values, including the untouched tail. |
 | `tools/homebrew/play-coins.sh --compute-barrier-test` | Issues the GXDK 250405 slot-146 global UAV barrier between two translated compute shaders. Checks the barrier trace and reads back all 32 incremented values. |
 | `tools/homebrew/play-coins.sh --pso-fallback-test` | Exercises the upscaler’s fallback from offline pipeline packets at device slot 67 to a translated compute pipeline at slot 62. Reads back 32 shader writes. |
@@ -275,7 +274,7 @@ Fortnite delay-loads `GameChat2.dll` separately. The optional `--gamechat-test` 
 From Linux, inventory an extracted package with its game config and Appx manifest. The report checks literal install-layout destinations, records DLL hashes and compares each DLL’s import table with the checked-in audit. Once a declared executable is present, the same command records its PE headers, TLS summary, ordinary and delay-loaded symbols, and the exact imports absent from the existing Scarlett and Fortnite snapshots. An unfamiliar symbol needs provider and behavior checks. Dynamic lookups appear only in runtime tests or further analysis.
 
 ```sh
-cargo build --locked --release -p tombox-cli
+cargo build --locked --release -p tuxbox-cli
 python3 tools/homebrew/package_preflight.py /path/to/package > package-preflight.json
 ```
 
@@ -319,7 +318,7 @@ Two partial dispatches over a 32×32 pattern exercise horizontal and vertical wo
 
 Pass the Scarlett upscaler DLL to the probe as a data file. It locates the 13
 FSR4 postpasses from the tested build by container hash and dispatches each
-through TomBox’s compute pipeline. The CPU reference checks the cleared tensor
+through TuxBox’s compute pipeline. The CPU reference checks the cleared tensor
 borders, every interior word and surrounding guards. Three input sizes exercise
 ordinary padding and the right and bottom limits.
 
@@ -339,7 +338,7 @@ tools/homebrew/play-coins.sh --bvh-sort-test /path/to/XboxBvhBuilder.dll
 
 Use the same `PROTON` and DXC setup as for `--rdna2-test`. The probe reads four
 shader containers from the supplied file and creates their pipelines through
-TomBox. It sorts 16,384 keys in four byte passes on the GPU. After each pass it
+TuxBox. It sorts 16,384 keys in four byte passes on the GPU. After each pass it
 compares keys and original indices with a stable CPU sort and checks the guards
 on both buffers. The three-group homebrew prefix tests above run independently
 of the supplied library.
@@ -349,7 +348,7 @@ of the supplied library.
 Each scripted 2D board mode checks 192 RGBA samples per frame, one inside every magnified sprite
 texel on every tile. The 20 frames cover wall and boundary collisions, both pickup
 orders, movement after winning, and restart. A mismatch reports the frame, tile,
-texel and colors and exits with failure. TomBox writes its graphics log to
+texel and colors and exits with failure. TuxBox writes its graphics log to
 `coin-window.log` beside the executable by default.
 
 The 3D mode sends camera-relative positions through a synthetic RDNA2 vertex
@@ -424,7 +423,7 @@ with a 256×256 base, one slice and two levels.
 Native decoding covers layout 261, single-sampled 2D textures and 2D arrays
 with no resource flags. The base texture must consist of complete tiles. Each
 tile covers 32×32 pixels in RGBA8 UNORM or 128×64 pixels in BC1 UNORM. Multilevel textures
-also require both base dimensions to be powers of two. TomBox pads the larger
+also require both base dimensions to be powers of two. TuxBox pads the larger
 mips to whole tiles and packs the smallest mips into one 4 KiB tile per slice.
 The mirror accepts up to 4,096 subresources and requires a layout smaller
 than 4 GiB. Other BC formats still use XG. [AMD GFX10 mip placement](https://github.com/GPUOpen-Drivers/pal/blob/c5e800072a32f68b6ccc4422936d96167c6e0728/src/core/imported/addrlib/src/gfx10/gfx10addrlib.cpp#L3830-L3989)

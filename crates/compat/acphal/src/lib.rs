@@ -5,10 +5,10 @@
 //! `VirtualAlloc` region and bump-allocate from it (signatures recovered from the
 //! call sites in the EXE):
 //!   HRESULT ApuCreateHeap(uint32 sizeBytes, uint32 flags)
-//!   HRESULT ApuAlloc(void** ppBlock, uint64* pPhysAddr, uint32 size, uint32 align)
+//!   HRESULT ApuAlloc(void** ppBlock, uint32* pApuAddr, uint32 size, uint32 align)
 //!   HRESULT ApuHeapGetState(struct{u32 free; u32 used; ...}* out, uint32 idx)
 //! Audio DSP (SHAPE) is not emulated; this only satisfies the memory contract so
-//! init proceeds. Physical addresses are faked as the virtual address.
+//! init proceeds. The returned APU address is modeled as a 32-bit offset.
 
 use core::ffi::c_void;
 use std::sync::Mutex;
@@ -50,7 +50,7 @@ pub extern "system" fn ApuCreateHeap(size_bytes: u32, flags: u32) -> i32 {
 }
 
 #[no_mangle]
-/// `ApuAlloc(void** ppBlock, APU_ADDRESS* pApuAddr, UINT32 size, UINT32 align, UINT32 flags)`.
+/// `ApuAlloc(void** ppBlock, APU_ADDRESS* pApuAddr, UINT32 size, UINT32 align)`.
 /// `APU_ADDRESS` is a **32-bit** handle (title call sites at EXE+0x6def61/0x6defb5 pass a
 /// u32 slot placed 4 bytes before the block-pointer slot), so only 4 bytes may be written.
 pub extern "system" fn ApuAlloc(pp_block: *mut *mut c_void, p_phys: *mut u32, size: u32, align: u32) -> i32 {

@@ -69,7 +69,7 @@ amd_fidelityfx_upscaler_xbox.dll	api-ms-win-crt-string-l1-1-0.dll	strlen	Proton 
 amd_fidelityfx_upscaler_xbox.dll	api-ms-win-crt-string-l1-1-0.dll	wcscmp	Proton Experimental	resolved
 amd_fidelityfx_upscaler_xbox.dll	api-ms-win-crt-string-l1-1-0.dll	wcscpy_s	Proton Experimental	resolved
 amd_fidelityfx_upscaler_xbox.dll	api-ms-win-crt-string-l1-1-0.dll	wcslen	Proton Experimental	resolved
-amd_fidelityfx_upscaler_xbox.dll	d3d12_xs.dll	D3D12CreateRootSignatureDeserializer	TomBox shim	resolved
+amd_fidelityfx_upscaler_xbox.dll	d3d12_xs.dll	D3D12CreateRootSignatureDeserializer	TuxBox shim	resolved
 amd_fidelityfx_upscaler_xbox.dll	msvcp140.dll	??0_Locinfo@std@@QEAA@PEBD@Z	Supplied DLL	resolved
 amd_fidelityfx_upscaler_xbox.dll	msvcp140.dll	??0_Lockit@std@@QEAA@H@Z	Supplied DLL	resolved
 amd_fidelityfx_upscaler_xbox.dll	msvcp140.dll	??0facet@locale@std@@IEAA@_K@Z	Supplied DLL	resolved
@@ -104,9 +104,9 @@ amd_fidelityfx_upscaler_xbox.dll	vcruntime140.dll	memcpy	Supplied DLL	resolved
 amd_fidelityfx_upscaler_xbox.dll	vcruntime140.dll	memmove	Supplied DLL	resolved
 amd_fidelityfx_upscaler_xbox.dll	vcruntime140.dll	memset	Supplied DLL	resolved
 amd_fidelityfx_upscaler_xbox.dll	vcruntime140_1.dll	__CxxFrameHandler4	Supplied DLL	resolved
-amd_fidelityfx_upscaler_xbox.dll	xmem.dll	XMemAlloc	TomBox shim	resolved
-amd_fidelityfx_upscaler_xbox.dll	xmem.dll	XMemFree	TomBox shim	resolved
-amd_fidelityfx_upscaler_xbox.dll	xmem.dll	XMemGetWorkingSetStatistics	TomBox shim	resolved
+amd_fidelityfx_upscaler_xbox.dll	xmem.dll	XMemAlloc	TuxBox shim	resolved
+amd_fidelityfx_upscaler_xbox.dll	xmem.dll	XMemFree	TuxBox shim	resolved
+amd_fidelityfx_upscaler_xbox.dll	xmem.dll	XMemGetWorkingSetStatistics	TuxBox shim	resolved
 bink2scarlett.dll	api-ms-win-core-com-l1-1-0.dll	CoCreateInstance	Proton Experimental	resolved
 bink2scarlett.dll	api-ms-win-core-com-l1-1-0.dll	CoTaskMemFree	Proton Experimental	resolved
 bink2scarlett.dll	api-ms-win-core-com-l1-1-0.dll	PropVariantClear	Proton Experimental	resolved
@@ -165,8 +165,8 @@ bink2scarlett.dll	vcruntime140.dll	memcpy	Supplied DLL	resolved
 bink2scarlett.dll	vcruntime140.dll	memmove	Supplied DLL	resolved
 bink2scarlett.dll	vcruntime140.dll	memset	Supplied DLL	resolved
 bink2scarlett.dll	xaudio2_9.dll	#1	Proton Experimental	resolved
-bink2scarlett.dll	xmem.dll	XMemAlloc	TomBox shim	resolved
-bink2scarlett.dll	xmem.dll	XMemFree	TomBox shim	resolved
+bink2scarlett.dll	xmem.dll	XMemAlloc	TuxBox shim	resolved
+bink2scarlett.dll	xmem.dll	XMemFree	TuxBox shim	resolved
 concrt140.dll	api-ms-win-core-debug-l1-1-0.dll	IsDebuggerPresent	Proton Experimental	resolved
 concrt140.dll	api-ms-win-core-debug-l1-1-0.dll	OutputDebugStringW	Proton Experimental	resolved
 concrt140.dll	api-ms-win-core-errorhandling-l1-1-0.dll	GetLastError	Proton Experimental	resolved
@@ -1179,7 +1179,7 @@ xboxbvhbuilder.dll	api-ms-win-crt-runtime-l1-1-0.dll	terminate	Proton Experiment
 xboxbvhbuilder.dll	api-ms-win-crt-stdio-l1-1-0.dll	__stdio_common_vsprintf	Proton Experimental	resolved
 xboxbvhbuilder.dll	api-ms-win-crt-stdio-l1-1-0.dll	__stdio_common_vsprintf_s	Proton Experimental	resolved
 xboxbvhbuilder.dll	api-ms-win-crt-string-l1-1-0.dll	strncpy_s	Proton Experimental	resolved
-xboxbvhbuilder.dll	d3d12_xs.dll	D3D12SerializeVersionedRootSignature	TomBox shim	resolved
+xboxbvhbuilder.dll	d3d12_xs.dll	D3D12SerializeVersionedRootSignature	TuxBox shim	resolved
 xboxbvhbuilder.dll	msvcp140.dll	?_Xbad_function_call@std@@YAXXZ	Supplied DLL	resolved
 xboxbvhbuilder.dll	msvcp140.dll	?_Xlength_error@std@@YAXPEBD@Z	Supplied DLL	resolved
 xboxbvhbuilder.dll	vcruntime140.dll	_CxxThrowException	Supplied DLL	resolved
@@ -1195,7 +1195,7 @@ xboxbvhbuilder.dll	vcruntime140.dll	memcpy	Supplied DLL	resolved
 xboxbvhbuilder.dll	vcruntime140.dll	memmove	Supplied DLL	resolved
 xboxbvhbuilder.dll	vcruntime140.dll	memset	Supplied DLL	resolved
 xboxbvhbuilder.dll	vcruntime140_1.dll	__CxxFrameHandler4	Supplied DLL	resolved
-xboxbvhbuilder.dll	xmem.dll	XMemVirtualQuery	TomBox shim	resolved
+xboxbvhbuilder.dll	xmem.dll	XMemVirtualQuery	TuxBox shim	resolved
 xcurl.dll	api-ms-win-core-com-l1-1-0.dll	CoCreateGuid	Proton Experimental	resolved
 xcurl.dll	api-ms-win-core-debug-l1-1-0.dll	OutputDebugStringA	Proton Experimental	resolved
 xcurl.dll	api-ms-win-core-errorhandling-l1-1-0.dll	GetLastError	Proton Experimental	resolved

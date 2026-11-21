@@ -2,7 +2,7 @@
 # Drive a freshly started title to the Battle Royale lobby with synthetic mouse input:
 # splash click -> wait for login -> safe-zone DONE -> PLAY. Captures to <outdir>/d_*.png.
 # usage: drive_lobby.sh <trace file> <outdir>
-cd "D:/projects/TomBox"; T="$1"; O="$2"
+cd "$(dirname "$0")/../.."; T="$1"; O="$2"
 W(){ ping -n $(($1+1)) 127.0.0.1 >/dev/null; }
 cap(){ powershell -NoProfile -ExecutionPolicy Bypass -File tools/dev/capture.ps1 "$O/$1" >/dev/null; }
 dead(){ grep -aq "EXIT_PROCESS" "$T"; }

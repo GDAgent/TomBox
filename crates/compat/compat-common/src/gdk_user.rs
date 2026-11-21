@@ -6,7 +6,7 @@
 //! not valid"). A console always has a signed-in user; this module provides one.
 //!
 //! Model: exactly one local, offline user. Its identity is configuration, not an Xbox Live
-//! account: `gamertag=`, `xuid=` and `xbl_token=` in `tombox.cfg` next to the title (defaults
+//! account: `gamertag=`, `xuid=` and `xbl_token=` in `tuxbox.cfg` next to the title (defaults
 //! below). Nothing here contacts Microsoft or Epic; the token is a placeholder string that
 //! the title forwards to whatever backend the network policy routes it to (see
 //! `net_guard`), i.e. the project owner's own server.
@@ -433,8 +433,11 @@ pub(crate) unsafe fn write_jump(p: *mut u8, target: usize) -> bool {
     true
 }
 
-/// Install the local user if this process is the known Fortnite build. Called once.
+/// The archived title adapter is opt-in and also checks the recorded build timestamp.
 pub fn install() {
+    if crate::cfg("local_user").as_deref() != Some("1") {
+        return;
+    }
     unsafe {
         let base = GetModuleHandleW(core::ptr::null());
         if base.is_null() {
@@ -445,10 +448,6 @@ pub fn install() {
         if stamp != BUILD_TIMESTAMP {
             crate::record_raw("gdk_user", "install", &format!(
                 "host EXE timestamp {stamp:#x} is not the known Fortnite build - local XUser layer NOT installed"));
-            return;
-        }
-        if crate::cfg("local_user").as_deref() == Some("0") {
-            crate::record_raw("gdk_user", "install", "local_user=0 in tombox.cfg - local XUser layer NOT installed");
             return;
         }
         let gamertag = crate::cfg("gamertag").filter(|g| !g.is_empty() && g.len() <= 32 && g.is_ascii()).unwrap_or_else(|| "TomBoxPlayer".into());

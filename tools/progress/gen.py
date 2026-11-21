@@ -37,6 +37,8 @@ def imports():
     module_states = {k.lower(): v for k, v in ov.items() if k.lower().endswith(".dll")}
     pair_states = {}
     for override, state in ov.items():
+        if override != "comment" and state not in {"partial", "none"}:
+            raise ValueError(f"Import overrides must describe a limitation: {override}")
         mod, sep, symbol = override.partition("!")
         if sep:
             pair_states[mod.lower(), symbol] = state
@@ -71,6 +73,14 @@ def imports():
                 raise ValueError(f"Duplicate, undocumented or unaudited host import check: {key}")
             host_checks[key] = evidence
 
+    verified = dict(host_checks)
+    for pair, description in cfg["verified_imports"].items():
+        mod, symbol = pair.split("!", 1)
+        key = (mod.lower(), symbol)
+        if key not in sources or not description.strip() or key in pair_states:
+            raise ValueError(f"Invalid or conflicting import evidence: {pair}")
+        verified.setdefault(key, description)
+
     groups, labels = {}, {}
     for key, callers in sorted(sources.items()):
         mod, symbol = key
@@ -80,10 +90,8 @@ def imports():
             group = "Windows API sets"
         else:
             group = names[mod].rsplit(".", 1)[0]
-        # Preserve the title's statuses. A successful export lookup alone
-        # establishes an unverified binding for a newly observed DLL import.
-        state = "done" if "Fortnite" in callers or key in host_checks else "partial"
-        state = pair_states.get(key, ov.get(symbol, module_states.get(mod, state)))
+        default = "done" if key in verified else module_states.get(mod, "partial")
+        state = pair_states.get(key, ov.get(symbol, default))
         evidence = []
         if key in audited:
             provider, resolution = audited[key]
@@ -92,6 +100,8 @@ def imports():
                 state = "none"
         if key in host_checks:
             evidence.append("homebrew host-import test passed: " + host_checks[key])
+        elif key in verified:
+            evidence.append(verified[key])
         evidence.append({"done": "covered", "partial": "partial or unverified", "none": "unavailable"}[state])
         note = cfg["import_notes"].get(f"{mod}!{symbol}")
         if note:
@@ -135,7 +145,7 @@ def d3d12x():
     return groups, labels
 
 def instructions():
-    src = open(os.path.join(root, "crates", "tombox-xshader", "src", "rdna2", "mnem.rs"), encoding="utf-8").read()
+    src = open(os.path.join(root, "crates", "tuxbox-xshader", "src", "rdna2", "mnem.rs"), encoding="utf-8").read()
     used = {}
     for source, filename in [("Fortnite", "mnemonics.txt"), ("Xbox BVH", "bvh-mnemonics.txt"), ("FidelityFX", "fsr-mnemonics.txt")]:
         with open(os.path.join(here, filename), encoding="utf-8") as f:
@@ -285,7 +295,7 @@ def pct_colour(p):
 
 o, y = [], 0
 import_groups, import_labels, import_detail = imports()
-y, a_done, a_n = section(o, y, "Fortnite and Scarlett DLL imports", import_groups, 300, import_detail, import_labels)
+y, a_done, a_n = section(o, y, "Observed title and middleware imports", import_groups, 300, import_detail, import_labels)
 d3d_groups, d3d_labels = d3d12x()
 y, b_done, b_n = section(o, y, "Direct3D 12.x interface methods", d3d_groups, 170, labels=d3d_labels)
 isa_groups, isa_labels, isa_detail, tag_groups, tag_labels = instructions()

@@ -93,7 +93,7 @@ Windows implements. Candidate for binding to the real OS (verify per symbol).
 The game loads `xgameruntime.dll` dynamically. The console DLL has five named exports:
 `InitializeApiImpl`, `InitializeApiImplEx`, `QueryApiImpl`, `UninitializeApiImpl` and
 `XErrorReport`. The title's statically linked GDK wrappers request service interfaces
-through `QueryApiImpl`. TomBox's observed Windows run uses Microsoft's PC runtime,
+through `QueryApiImpl`. TuxBox's observed Windows run uses Microsoft's PC runtime,
 with local user and store implementations for this build. [PE export inventory](../analysis/syslib/xgameruntime.dll.json) · [Windows findings](DEVELOPMENT_LOG.md#2026-11-17-late--local-xbox-user-and-store-login-reaches-the-backend)
 
 ### Linux research with Xodus
@@ -107,7 +107,7 @@ say little about this title's ability to complete an async operation.
 
 The standalone runtime at `642e41c` dispatches only the threading class and includes
 async and queue tests. Its `VerifySimpleAsyncCall` test is a candidate first Wine
-experiment because TomBox's local user implementation relies on the title's own async
+experiment because TuxBox's local user implementation relies on the title's own async
 wrappers to deliver results. Passing that test would establish a PC-runtime baseline.
 The interface IDs and method order requested by the console build still need verification.
 [Standalone dispatcher](https://github.com/xodus-gaming/xgameruntime/blob/642e41c7617310c5d1b39d4e525b01ecae261f9e/src/main.cpp) · [Upstream threading tests](https://github.com/xodus-gaming/xgameruntime/blob/642e41c7617310c5d1b39d4e525b01ecae261f9e/tests/System/test_xthreading.cpp)
