@@ -59,6 +59,8 @@ The steps below apply to build 2.0.1461.7919. The development scripts use machin
    ```
 
    Optional keys on separate lines are `gamertag`, `xuid`, `xbl_token`, and `net_redirect`. Set the last key only for your own test server.
+
+   `locale=<name>` (for example `locale=en-US`) works for any title, without `local_user`: it sets the user language the title sees. Omit it to keep the host's language.
 6. Run the game executable (`FortniteClient-XSX-Shipping.exe`).
 
 The runtime reads the existing `tombox.cfg` when `tuxbox.cfg` is absent. Existing `TOMBOX_*` environment variables and diagnostic paths work on both hosts.
