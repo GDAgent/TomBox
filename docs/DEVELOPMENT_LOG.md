@@ -1403,6 +1403,39 @@ failed, 6,600 frames presented, title screen reached. The vertex-to-pixel case i
 only by the synthetic test. A pixel shader whose inputs are a subset of the producer's
 outputs can still be packed differently. That case is not handled and was not observed.
 
+## 2026-11-21 — Optional user-language override (`locale=` in tuxbox.cfg)
+
+A console reports the language chosen in its settings. On a host, a title sees the Windows
+user's language, so on a non-English Windows a title starts in that language with no way
+to change it from TomBox. Fortnite accepts `-culture=` on its command line, which is
+specific to Unreal Engine.
+
+**Change.** `compat-common::locale`: with `locale=<name>` in `tuxbox.cfg` (or the older `tombox.cfg`) the process-wide
+user-language queries answer with that locale: `GetUserDefaultLocaleName`,
+`GetUserDefaultLCID`, `GetUserDefaultLangID`, `GetUserDefaultUILanguage` and
+`GetUserPreferredUILanguages` (both the name and the ID form, including size queries).
+Without the line nothing is hooked. Windows validates and canonicalises the name
+(`LocaleNameToLCID`, then `LCIDToLocaleName`, so `en-us` becomes `en-US`). An unknown name,
+or one without its own LCID, is logged and changes nothing. The hooks are installed with the
+other process-wide setup (`net_guard::ensure`), before the title's first query. An entry
+point is patched only if the 12-byte jump stays inside the function, by its unwind data or,
+for a leaf without unwind data, a `jmp rel32` thunk followed only by `int3` padding
+(`GetUserDefaultLangID` on the tested host).
+
+**Evidence.** Imports: Fortnite reads `GetUserDefaultLocaleName` and formats with
+`GetLocaleInfoEx`/`LCIDToLocaleName` on the returned name; a second GDK title reads only
+`GetUserDefaultLocaleName`. Neither imports `XPackageGetUserLocale`.
+
+**Tests.** `locale::tests`: validation and canonicalisation by Windows, the buffer contract,
+each hook's answer (name, LCID, LANGID, preferred-UI list in both forms, size queries,
+invalid flags), and that every hooked `kernelbase` export can take the patch.
+`cargo test --release -p compat-common` passes.
+
+**In game (native Windows 11; not run under Proton).** On a German Windows with `locale=en-US`: the second title's UI is English (it
+was German before), and Fortnite, started without `-culture=`, logs `Using OS detected
+language (en-US)` and `locale (en-US)`. The install log lists all five entry points as
+overridden.
+
 ## 2026-11-21 — `Map` of GPU-only resources (unified memory)
 
 A second GDK title faulted right after creating its first render target: its helper for new
