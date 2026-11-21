@@ -26,6 +26,7 @@ extern "system" {
     fn VirtualQueryEx(process: *mut c_void, addr: *const c_void, info: *mut u64, size: usize) -> usize;
 }
 const ERROR_NOT_SUPPORTED: u32 = 50;
+const ERROR_INVALID_PARAMETER: u32 = 87;
 const MEM_DECOMMIT: u32 = 0x0000_4000;
 /// Xbox title physical pages are 64 KiB.
 const XMEM_PAGE: usize = 0x1_0000;
@@ -269,15 +270,28 @@ pub extern "system" fn XMemMapPhysicalPages(
 }
 
 /// `BOOL XMemTransferMemory(UINT32 kind, SIZE_T bytes, ...)`: Win32-style, FALSE plus
-/// `SetLastError` on failure (the system `xmem.dll` sets ERROR_NOT_SUPPORTED or
-/// ERROR_INVALID_PARAMETER). It moves memory budget between the title and the console's
-/// system partition; a PC process has no such partition, so it fails with
-/// ERROR_NOT_SUPPORTED. (Returning an HRESULT here would read as TRUE.)
+/// `SetLastError` on failure. It moves memory budget between the title and the console's
+/// system partition. The system `xmem.dll` checks in this order: kinds 1 and 2 fail with
+/// ERROR_NOT_SUPPORTED when an internal system query returns zero (not identified; taken
+/// as zero here); a zero byte count succeeds without work; a kind above 2 is
+/// ERROR_INVALID_PARAMETER. A PC process has no system partition, so every remaining
+/// request fails with ERROR_NOT_SUPPORTED.
+/// (Returning an HRESULT here would read as TRUE.)
 #[no_mangle]
 pub extern "system" fn XMemTransferMemory(kind: u32, bytes: usize) -> i32 {
+    let error = if kind == 1 || kind == 2 {
+        ERROR_NOT_SUPPORTED
+    } else if bytes == 0 {
+        record(M, "XMemTransferMemory", &format!("kind={kind} bytes=0: nothing to transfer -> TRUE"));
+        return 1;
+    } else if kind > 2 {
+        ERROR_INVALID_PARAMETER
+    } else {
+        ERROR_NOT_SUPPORTED
+    };
     record(M, "XMemTransferMemory", &format!(
-        "kind={kind} bytes={bytes:#x}: no system memory partition on the host -> FALSE (ERROR_NOT_SUPPORTED)"));
-    unsafe { SetLastError(ERROR_NOT_SUPPORTED) };
+        "kind={kind} bytes={bytes:#x}: no system memory partition on the host -> FALSE (error {error})"));
+    unsafe { SetLastError(error) };
     0
 }
 
@@ -323,6 +337,18 @@ mod tests {
 
     #[test]
     fn transfer_memory_fails_as_win32_bool() {
+        // Kinds 1 and 2 fail before the byte count is looked at.
+        for kind in [1, 2] {
+            unsafe { SetLastError(0) };
+            assert_eq!(XMemTransferMemory(kind, 0), 0);
+            assert_eq!(unsafe { GetLastError() }, ERROR_NOT_SUPPORTED);
+        }
+        // An empty transfer of any other kind succeeds, even an unknown one.
+        assert_eq!(XMemTransferMemory(0, 0), 1);
+        assert_eq!(XMemTransferMemory(7, 0), 1);
+        unsafe { SetLastError(0) };
+        assert_eq!(XMemTransferMemory(7, 0x1000), 0);
+        assert_eq!(unsafe { GetLastError() }, ERROR_INVALID_PARAMETER);
         unsafe { SetLastError(0) };
         assert_eq!(XMemTransferMemory(0, 0x800_0000), 0);
         assert_eq!(unsafe { GetLastError() }, ERROR_NOT_SUPPORTED);
