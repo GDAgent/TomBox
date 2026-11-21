@@ -49,6 +49,8 @@ def main():
                         usage="%(prog)s [Coin Run arguments]",
                         epilog="See tools/homebrew/README.md for test modes.")
     run = commands.add_parser("run", help="launch a prepared Windows-format executable with Proton")
+    run.add_argument("--native-ucrt", action="store_true",
+                     help="prefer Microsoft's x64 ucrtbase.dll from the prepared executable directory")
     run.add_argument("exe", type=Path)
     run.add_argument("args", nargs=argparse.REMAINDER)
     # Coin Run owns its options, including switches such as --3d-test.
@@ -65,6 +67,11 @@ def main():
     title = args.exe.expanduser().resolve() if args.command == "run" else None
     if title and not title.is_file():
         parser.error(f"executable does not exist: {title}")
+    if title and args.native_ucrt:
+        if not (title.parent / "ucrtbase.dll").is_file():
+            parser.error("--native-ucrt requires the x64 SDK redistributable ucrtbase.dll beside the executable")
+        overrides = os.environ.get("WINEDLLOVERRIDES", "")
+        os.environ["WINEDLLOVERRIDES"] = ";".join(filter(None, (overrides, "ucrtbase=n,b")))
     client = steam_root()
     proton = proton_path(client)
     os.environ["STEAM_COMPAT_CLIENT_INSTALL_PATH"] = str(client)

@@ -13,6 +13,18 @@ if [[ ${1:-} == --scarlett-http-test || ${1:-} == --scarlett-user-test ]]; then
     }
     gdk_windows=$(realpath -- "$3")
     library_dir=$(realpath -- "$2")
+elif [[ ${1:-} == --runtime-import-test ]]; then
+    [[ $# -ge 2 && $# -le 3 && -d $2 ]] || { echo "Usage: $0 $1 PACKAGE [X64_UCRT_REDIST]" >&2; exit 2; }
+    library_dir=$(realpath -- "$2")
+    winrt_exe=
+    if [[ -n ${TUXBOX_WINRT_FIXTURE:-} ]]; then
+        winrt_exe=$(realpath -e -- "$TUXBOX_WINRT_FIXTURE")
+    fi
+    ucrt_dir=
+    if [[ $# == 3 ]]; then
+        ucrt_dir=$(realpath -- "$3")
+        [[ -f "$ucrt_dir/ucrtbase.dll" ]] || { echo "Missing $ucrt_dir/ucrtbase.dll" >&2; exit 2; }
+    fi
 elif [[ ${1:-} == --scarlett-libraries-test ]]; then
     [[ $# == 2 && -d $2 ]] || { echo "Usage: $0 $1 DIRECTORY" >&2; exit 2; }
     library_dir=$(realpath -- "$2")
@@ -22,6 +34,10 @@ cd "$(dirname "$0")/../.."
 build="$PWD/target/x86_64-pc-windows-msvc/release"
 required=(coin_window.exe)
 case ${1:-} in
+    --runtime-import-test)
+        tools/homebrew/build-clear.sh "$1"
+        required=(runtime_import_probe.exe runtime_cpp_fixture.exe)
+        ;;
     --gamechat-test) tools/homebrew/build-clear.sh ;;
     --scarlett-import-test)
         [[ $# == 1 ]] || exit 2
@@ -75,6 +91,43 @@ export TOMBOX_LOG="${TOMBOX_LOG:-coin-window.log}"
 # The Windows GUI executable has no console of its own. Capture its scripted
 # checks through cmd so Linux callers see pixel mismatches and the exit status.
 case "${1:-}" in
+    --runtime-import-test)
+        scratch=$(mktemp -d "$build/runtime-check.XXXXXXXX")
+        trap 'rm -rf -- "$scratch"' EXIT
+        cp runtime_import_probe.exe runtime_cpp_fixture.exe "$library_dir"/{msvcp140,vcruntime140,vcruntime140_1}.dll "$scratch/"
+        (cd "$scratch" && WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}ucrtbase=b;msvcp140,vcruntime140,vcruntime140_1=n,b" \
+            timeout 120s "$PROTON" run cmd.exe /d /c 'runtime_import_probe.exe coin-runtime 17 > report.tsv 2> errors.txt && runtime_cpp_fixture.exe > cpp.tsv 2>> errors.txt') || {
+            [[ ! -f "$scratch/errors.txt" ]] || cat "$scratch/errors.txt" >&2
+            exit 1
+        }
+        if [[ -s "$scratch/errors.txt" ]]; then cat "$scratch/errors.txt" >&2; fi
+        [[ -s "$scratch/report.tsv" && -s "$scratch/cpp.tsv" ]]
+        # A pair may pass in both executables. Keep the explicit check in that case.
+        LC_ALL=C awk -F '\t' '{sub(/\r$/, ""); if (NF != 3) exit 1; if (!seen[$1 FS $2]++) print}' \
+            "$scratch/report.tsv" "$scratch/cpp.tsv" > "$scratch/checked.tsv"
+        if [[ -n $winrt_exe ]]; then
+            cp -- "$winrt_exe" "$scratch/runtime_winrt_fixture.exe"
+            cp -- "$library_dir/vccorlib140.dll" "$scratch/"
+            (cd "$scratch" && WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}ucrtbase=b;vccorlib140,msvcp140,vcruntime140,vcruntime140_1=n,b" \
+                timeout 45s "$PROTON" run cmd.exe /d /c 'runtime_winrt_fixture.exe > winrt.log 2>&1') || {
+                cat "$scratch/winrt.log" >&2; exit 1;
+            }
+            [[ -s "$scratch/winrt.tsv" ]]
+        fi
+        if [[ -n $ucrt_dir ]]; then
+            cp -- "$ucrt_dir/ucrtbase.dll" "$scratch/"
+            timeout 45s "$repo/tuxbox" run --native-ucrt "$scratch/runtime_import_probe.exe" --native-ucrt || {
+                cat "$scratch/native-errors.txt" >&2; exit 1;
+            }
+            [[ -s "$scratch/native.tsv" ]]
+            tr -d '\r' < "$scratch/native.tsv" > "$scratch/native-checked.tsv"
+        fi
+        if [[ -n $winrt_exe ]]; then mv "$scratch/winrt.tsv" "$build/runtime-winrt-checks.tsv"; fi
+        if [[ -n $ucrt_dir ]]; then mv "$scratch/native-checked.tsv" "$build/runtime-native-ucrt-checks.tsv"; fi
+        mv "$scratch/checked.tsv" "$build/runtime-import-checks.tsv"
+        echo "Verified runtime imports written to $build/runtime-import-checks.tsv"
+        exit 0
+        ;;
     --scarlett-import-test)
         scratch=$(mktemp -d "$build/import-check.XXXXXXXX")
         trap 'rm -rf -- "$scratch"' EXIT

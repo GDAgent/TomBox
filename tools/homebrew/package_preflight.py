@@ -8,6 +8,8 @@ from collections import Counter, defaultdict
 from pathlib import Path, PureWindowsPath
 import xml.etree.ElementTree as ET
 
+from package_assets import audit_assets, probe_reads
+
 REPO = Path(__file__).resolve().parents[2]
 
 
@@ -56,7 +58,7 @@ def file_hash(path):
     return digest.hexdigest()
 
 
-def audit_package(root, tool):
+def audit_package(root, tool, probe_asset_io=False):
     files = {}
     for entry in root.rglob("*"):
         if entry.is_file():
@@ -116,8 +118,12 @@ def audit_package(root, tool):
     appx_identity = appx.find("./{*}Identity")
     if identity is None or appx_identity is None:
         raise ValueError("Package identity missing from game or Appx manifest")
+    archives = sorted(p for p in files.values() if p.suffix.lower() in {".rpf", ".ttpf"})
+    assets = audit_assets(root, archives)
+    if probe_asset_io and archives:
+        assets["proton_win32_reads"] = probe_reads(REPO, root, archives)
     return {
-        "identity": identity.attrib, "appx_identity": appx_identity.attrib,
+        "assets": assets, "identity": identity.attrib, "appx_identity": appx_identity.attrib,
         "title_id": config.findtext("TitleId"),
         "file_types": dict(sorted(Counter(p.suffix.lower() for p in files.values()).items())),
         "executables": titles,
@@ -135,9 +141,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("package", type=Path)
     parser.add_argument("--pe-inspect", type=Path, default=REPO / "target/release/pe-inspect")
+    parser.add_argument("--probe-asset-io", action="store_true", help="compare Win32 reads under Proton with host archive bytes")
     args = parser.parse_args()
     try:
-        report = audit_package(args.package, args.pe_inspect.resolve())
-    except (OSError, KeyError, ValueError, ET.ParseError) as error:
+        report = audit_package(args.package.resolve(), args.pe_inspect.resolve(), args.probe_asset_io)
+    except (OSError, KeyError, ValueError, ET.ParseError, subprocess.SubprocessError) as error:
         parser.exit(1, f"Package inspection failed: {error}\n")
     print(json.dumps(report, indent=2))

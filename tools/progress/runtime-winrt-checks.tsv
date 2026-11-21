@@ -1,0 +1,2 @@
+dependency	symbol	evidence
+vcruntime140.dll	_SetWinRTOutOfMemoryExceptionCallback	Scarlett maps bad_alloc to the registered WinRT out-of-memory exception

@@ -12,6 +12,8 @@ Launch a prepared executable from Linux with the same app-local DLLs, config and
 
 The launcher searches the Steam installation and its registered libraries for Proton Experimental. To select an executable yourself, set `PROTON`. Use `STEAM_COMPAT_CLIENT_INSTALL_PATH` for a custom Steam root. For `run`, the default persistent prefix is under `$XDG_DATA_HOME/tuxbox/proton-prefix` (normally `~/.local/share/tuxbox/proton-prefix`). Set `STEAM_COMPAT_DATA_PATH` to select an existing prefix. Prepare any title-specific drive mappings and dependencies in the selected prefix. Retail Fortnite startup on Proton remains unverified.
 
+For a title that needs Microsoft’s UCRT, place the x64 Windows SDK redistributable `ucrtbase.dll` beside the prepared executable and run `./tuxbox run --native-ucrt /path/to/game.exe`. This opts that launch into Proton’s native-first UCRT selection. The runtime probe verified the loaded provider path with SDK DLL version 10.0.26100.9457. [Microsoft UCRT deployment](https://learn.microsoft.com/en-us/cpp/windows/universal-crt-deployment) · [Import coverage](COMPATIBILITY.md#scarlett-dll-audit)
+
 ## Native Windows
 
 ### Requirements

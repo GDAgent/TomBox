@@ -76,7 +76,9 @@ across 61 modules with `LoadLibraryExA` and `GetProcAddress` under Proton
 Experimental `experimental-11.0-20261027b`. This checks symbol availability.
 Coin Run also exercised the local libraries and dispatched the embedded shaders separately. The progress map merges these imports with Fortnite’s by dependency DLL and exact symbol name or ordinal. [Reproduce the library checks](../tools/homebrew/README.md#local-scarlett-libraries) · [Audit snapshot](../tools/progress/scarlett-dll-imports.tsv) · [Progress map](img/progress.svg)
 
-**All 611 distinct static imports resolve.** The standalone homebrew probe exercised 235 of the 492 host imports under Proton Experimental. It allocated an embedded-NUL string through OLE ordinal 4 and freed it through ordinal 6, verified CRT math and numeric parsing, read back CRT and Win32 file data, checked synchronization across threads and read a marshaled COM stream from a second thread. The report identifies the exact DLL, symbol and passing scenario. Retail caller behavior needs a separate title run. [Host-import results](../tools/progress/scarlett-import-checks.tsv)
+**All 611 distinct static imports resolve.** The standalone homebrew probe exercised 277 of the 492 host imports under Proton Experimental. It allocated an embedded-NUL string through OLE ordinal 4 and freed it through ordinal 6, verified CRT math and numeric parsing, exercised all 38 audited CRT stdio exports, checked saved-file contents and metadata, checked synchronization across threads and read a marshaled COM stream from a second thread. The report identifies the exact DLL, symbol and passing scenario. Retail caller behavior needs a separate title run. [Host-import results](../tools/progress/scarlett-import-checks.tsv)
+
+**All 487 observed C/C++ runtime imports have behavior checks.** On Linux, 483 passed with Proton Experimental’s built-in UCRT and the supplied Scarlett C++ DLLs. Four passed with Microsoft’s optional x64 UCRT 10.0.26100.9457. On stock Proton, `_set_new_handler` and `_callnewh` failed the callback round trip, `__tzname` returned `PS` and `PD` for `PST8PDT`, and `_invoke_watson` reached an unimplemented export. Both providers passed the explicit `en-US` locale-name check. Together the host and runtime probes exercised 327/492 audited host imports with the stock UCRT and 330/492 across both providers. These results cover the recorded imports and tested scenarios. [Runtime evidence](../tools/progress/runtime-import-checks.tsv) · [C++/CX callback](../tools/progress/runtime-winrt-checks.tsv) · [Native UCRT evidence](../tools/progress/runtime-native-ucrt-checks.tsv)
 
 Coin Run checks the BVH builder’s `xmem!XMemVirtualQuery` against reserved and committed process memory, including an invalid-handle case. The shim returns host memory state and protection, and reports zero for the console GPU-access fields. The upscaler’s `XMemGetWorkingSetStatistics` still returns `E_NOTIMPL`. Coin Run uses `GetModuleHandleExW` to recover the owning module from an export address and `GetModuleFileNameW` to check that module’s on-disk path. The Scarlett atomic wait DLL calls the host’s `WaitOnAddress` and `WakeByAddressSingle` during the timeout, unequal-value return and cross-thread notification checks.
 
@@ -89,15 +91,15 @@ Coin Run checks the BVH builder’s `xmem!XMemVirtualQuery` against reserved and
 | `libHttpClient.GDK.dll` | 198 | 129 | The version query and offline HTTP request setup passed under Proton. The startup probe initializes the public desktop Gaming Runtime before calling `HCInitialize`. Network transfers and WebSocket sessions remain unverified. |
 | `XCurl.dll` | 140 | 61 | URL decoding returned three bytes including an embedded NUL, and the DLL freed the result. Strings name `xgameruntime.dll`, `gameplatformservices.dll`, `QueryApiImpl` and a URL-security query. Network transfers and these dynamic lookups remain unverified. |
 | `concrt140.dll` | 103 | 291 | The native concurrency runtime reported an available processor count within the host system limit. |
-| `msvcp140.dll` | 187 | 1493 | The native library reported zero uncaught exceptions outside an exception handler. The binary also names `appmodel.dll`. |
+| `msvcp140.dll` | 187 | 1493 | All 194 observed exports passed, including narrow and wide streams, locale facets, synchronization and exception propagation. The binary also names `appmodel.dll`. |
 | `msvcp140_1.dll` | 33 | 7 | The initial aligned default memory resource matched the aligned new/delete resource. |
 | `msvcp140_2.dll` | 96 | 44 | The native beta function returned 1/12 for inputs 2 and 3. |
 | `msvcp140_atomic_wait.dll` | 64 | 32 | Zero-initialized allocation, immediate timeout, unequal-value return and waking one waiting thread passed. The binary also names `icu.dll`. |
 | `msvcp140_codecvt_ids.dll` | 24 | 4 | The two exported character-conversion facet IDs resolved to distinct addresses. |
-| `vccorlib140.dll` | 114 | 256 | The C++/CX initialization export resolved from the supplied DLL. WinRT activation remains unverified. The binary also names `gcombase.dll`. |
+| `vccorlib140.dll` | 114 | 256 | The C++/CX fixture caught the preallocated platform exception returned by the registered out-of-memory callback. WinRT activation remains unverified. The binary also names `gcombase.dll`. |
 | `vcomp140.dll` | 78 | 113 | The serial OpenMP team reported one thread with index zero. The binary also names `vcomp120ui.dll`. |
-| `vcruntime140.dll` | 41 | 71 | An overlapping native memmove produced the expected bytes and returned the destination pointer. |
-| `vcruntime140_1.dll` | 34 | 3 | The native exception-handler export resolved. Exception unwinding remains unverified. |
+| `vcruntime140.dll` | 41 | 71 | Memory operations, runtime type identity, nonlocal jumps and typed exception unwinding passed. |
+| `vcruntime140_1.dll` | 34 | 3 | The supplied ostream caught a throwing homebrew stream buffer and set badbit. Its x64 unwind entry selected the supplied `__CxxFrameHandler4`. |
 
 Only the upscaler and BVH builder contain identifiable DXBC shader containers.
 The ten Microsoft runtime DLLs report version 14.29.30157.0. Their static imports
@@ -113,6 +115,21 @@ For the inspected Scarlett package version 1.0.2.1, both manifests name `game_sc
 The homebrew startup probe ran on Proton Experimental with Microsoft.GDK.Windows 2610.0.9661. The desktop Gaming Runtime accepted the package’s `MicrosoftGame.Config` and returned the declared title ID through `XGameGetXboxTitleId`. The staged Scarlett HTTP client then initialized, created a request, returned the expected method and URL, and released the handle. The same request passed with default runtime initialization. Calling `HCInitialize` in the original 16-DLL environment returned `E_GAMERUNTIME_DLL_NOT_FOUND`. The package declares multiple-user support, advanced Series X and S memory profiles, SMT, and 2,048 MB of persistent local storage. Memory profiles, SMT and storage still need runtime tests. The existing Fortnite-specific user and store integration is gated on its executable build. [Reproduce the startup checks](../tools/homebrew/README.md#scarlett-package-startup) · [Gaming Runtime error codes](https://learn.microsoft.com/en-us/xbox/gdk/docs/reference/errorcodes)
 
 With that same config, the desktop runtime reported a maximum of one user for this session. User-change registration and unregistration both succeeded. A silent default-user request reached its completion callback and returned `E_GAMEUSER_NO_DEFAULT_USER` with no handle. The probe observed zero user-change notifications. Signed-in identity lookup and delivery of a real account transition still need a session with a user. [GDK silent user selection](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/xuser/enums/xuseraddoptions)
+
+### Scarlett package assets
+
+The asset section of the progress map covers package 1.0.2.1. Each square names a specific check. The audit and probe produced the following results. [Measured counts](../tools/progress/scarlett-assets.json) · [Reproduce the checks](../tools/homebrew/README.md#scarlett-package-assets)
+
+| Asset | Verified locally | Open question |
+|---|---|---|
+| RPF9 | All 22 archives have the RPF9 signature. A Windows homebrew process on Proton matched 52 host byte ranges across those archives, including reads spanning 4 GiB in eight files. | Can the title resolve an archive member by name and stream its contents? |
+| TTPF | All 57 stores passed RDS5 chunk-boundary and ETPF descriptor-table checks. They contain 357,115 descriptors with 20 distinct DXGI format IDs. The virtual stream exceeds 4 GiB in 18 stores. Proton matched 114 physical byte ranges. | Can the title decompress, untile and upload its textures with correct GPU output? |
+| Texture compression | One complete zlib chunk from each store inflated to its indexed virtual size and passed its checksum. The audit records all observed codec tags. | BCPack payload decoding and end-to-end mip readback need reference results. |
+| Shader cache | A checksummed zlib member in `shaders.rpf` contains a `PS 00 09` header declaring 25,471 graphics PSOs, 2,693 compute PSOs, 54,576 metadata records and 21,522 shader binaries. | Translation and GPU execution of shaders from this cache need their own tests. |
+
+6Stars documents the texture descriptor layout, chunk codec tags and shader-cache fields. Its format-identification and preview results are useful references for fixture selection. TuxBox tracks its own measurements. [6Stars texture format coverage](https://github.com/Ahmet-Dedeler/6Stars/blob/eb65e94e0169b5bedf294466c1b9bf2561cb7591/docs/format-coverage.md) · [6Stars PSO cache parser](https://github.com/Ahmet-Dedeler/6Stars/blob/eb65e94e0169b5bedf294466c1b9bf2561cb7591/src/rdna2.rs)
+
+The engine may parse these containers itself. Once the executable is available, rerun preflight for its ordinary and delay-loaded imports, then trace the first archive open and completed read under Proton. Record the requested path, API, offset, byte count and result. That will show whether the next compatibility change belongs in file access, a DirectStorage queue, decompression or graphics.
 
 ### Scarlett command-list UAV clears
 

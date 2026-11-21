@@ -7,6 +7,11 @@
     "Xbox BVH Builder": {"readback": 16, "observed": 52}
   },
   "import_notes": {
+    "api-ms-win-crt-heap-l1-1-0.dll!_callnewh": "stock Proton returned 0 without invoking the registered allocation handler",
+    "api-ms-win-crt-runtime-l1-1-0.dll!_set_new_handler": "the handler was not invoked on stock Proton",
+    "api-ms-win-crt-runtime-l1-1-0.dll!_invoke_watson": "stock Proton reported an unimplemented function in the child process",
+    "api-ms-win-crt-time-l1-1-0.dll!__tzname": "stock Proton returned PS and PD for PST8PDT",
+    "api-ms-win-crt-locale-l1-1-0.dll!___lc_locale_name_func": "explicit en-US passed with both providers; the legacy English_United States.1252 spelling selected en in this environment",
     "xmem.dll!XMemGetWorkingSetStatistics": "returns E_NOTIMPL",
     "xmem.dll!XMemVirtualQuery": "Coin Run verified desktop region state and protection; GPU access flags unavailable",
     "gamechat2.dll!(delay-loaded)": "optional Windows GDK provider loaded under Proton; Fortnite delay-load symbols and voice sessions unverified"

@@ -14,7 +14,7 @@ Microsoft’s public GDK samples guide platform testing. The audit compares spec
 
 [![Verified imports](docs/img/badge-imports.svg)](docs/COMPATIBILITY.md#scarlett-dll-audit) [![Direct3D 12.x methods](docs/img/badge-d3d12x.svg)](docs/img/progress.svg) [![RDNA2 instructions](docs/img/badge-instructions.svg)](docs/img/progress.svg)
 
-[![Progress map for observed imports, Direct3D methods and shader instructions](docs/img/progress.svg)](docs/img/progress.svg)
+[![Progress map for observed imports, Direct3D methods, shader instructions and package assets](docs/img/progress.svg)](docs/img/progress.svg)
 
 **Reading the map.** Each import square represents one DLL and symbol across the recorded title and 16 Scarlett libraries. Green requires a behavior check for that pair. An observed import or resolved export with unverified behavior is amber. Missing exports are grey. Hover for the callers and evidence. Direct3D green counts implemented or forwarded slots. RDNA2 green requires successful translation of every scanned retail shader containing the instruction. [Compatibility matrix](docs/COMPATIBILITY.md) · [Known limitations](docs/TECHNICAL_DEBT.md)
 

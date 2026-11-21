@@ -1,0 +1,73 @@
+{
+  "package_version": "1.0.2.1",
+  "assets": {
+    "files": {
+      "rpf": 22,
+      "ttpf": 57
+    },
+    "physical_bytes": {
+      "rpf": 161307137472,
+      "ttpf": 62217061888
+    },
+    "verified": {
+      "rpf": 22,
+      "ttpf": 57
+    },
+    "inspection_errors": {},
+    "ttpf_virtual_over_4gib": 18,
+    "chunk_codec_counts": {
+      "0": 62,
+      "1": 102725,
+      "3": 35,
+      "4": 77,
+      "5": 333,
+      "6": 268,
+      "7": 5167,
+      "8": 918223
+    },
+    "texture_format_counts": {
+      "10": 3,
+      "11": 5,
+      "28": 1774,
+      "29": 2,
+      "54": 947,
+      "61": 8,
+      "65": 121,
+      "71": 174674,
+      "72": 82177,
+      "74": 2,
+      "77": 3045,
+      "78": 3880,
+      "80": 4656,
+      "83": 6904,
+      "87": 50,
+      "91": 4,
+      "95": 1000,
+      "96": 25,
+      "98": 52612,
+      "99": 25226
+    },
+    "stores_with_zlib_sample": 57,
+    "ps09_headers": [
+      {
+        "graphics_psos": 25471,
+        "compute_psos": 2693,
+        "metadata_records": 54576,
+        "shader_binaries": 21522
+      }
+    ],
+    "proton_win32_reads": {
+      "files": {
+        "rpf": 22,
+        "ttpf": 57
+      },
+      "ranges": {
+        "rpf": 52,
+        "ttpf": 114
+      },
+      "crossings_4gib": {
+        "rpf": 8
+      }
+    }
+  }
+}

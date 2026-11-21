@@ -1,0 +1,6 @@
+dependency	symbol	evidence
+api-ms-win-crt-runtime-l1-1-0.dll	_set_new_handler	allocation callback receives requested size
+api-ms-win-crt-heap-l1-1-0.dll	_callnewh	allocation callback receives requested size
+api-ms-win-crt-locale-l1-1-0.dll	___lc_locale_name_func	English (United States) locale name
+api-ms-win-crt-time-l1-1-0.dll	__tzname	standard and daylight timezone names
+api-ms-win-crt-runtime-l1-1-0.dll	_invoke_watson	Watson terminates child with the CRT failure status

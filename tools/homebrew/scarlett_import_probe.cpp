@@ -16,6 +16,7 @@
 #include <cmath>
 #include <limits>
 #include <cstdio>
+#include <cstdarg>
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
@@ -28,37 +29,9 @@
 #include <share.h>
 #include <thread>
 
+#include "import_probe.h"
+
 namespace {
-const char* scenario;
-using Import = std::pair<std::string, std::string>;
-std::map<Import, std::string> checked;
-
-void fail(const char* reason, int line) {
-    std::fprintf(stderr, "%s (line %d): %s\n", scenario, line, reason);
-    std::exit(1);
-}
-#define REQUIRE(expr) do { if (!(expr)) fail(#expr, __LINE__); } while (false)
-
-struct Module {
-    const char* name;
-    HMODULE handle;
-    explicit Module(const char* dll) : name(dll), handle(LoadLibraryExA(dll, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32)) {
-        REQUIRE(handle);
-    }
-    ~Module() { FreeLibrary(handle); }
-    Module(const Module&) = delete;
-    Module& operator=(const Module&) = delete;
-
-    template<typename Fn>
-    Fn function(const char* symbol, WORD ordinal = 0) const {
-        auto proc = GetProcAddress(handle, ordinal ? MAKEINTRESOURCEA(ordinal) : symbol);
-        if (!proc) fail((std::string(name) + "!" + symbol).c_str(), __LINE__);
-        checked.emplace(Import{name, symbol}, scenario);
-        return reinterpret_cast<Fn>(proc);
-    }
-};
-#define API(module, fn) (module.function<decltype(&::fn)>(#fn))
-
 void automation_strings() {
     Module ole("oleaut32.dll");
     const wchar_t text[] = L"A\0\u03a9";
@@ -580,25 +553,184 @@ void temp_files() {
     ULARGE_INTEGER available{}, capacity{}, free{};
     REQUIRE(API(core, GetDiskFreeSpaceExW)(path, &available, &capacity, &free));
     REQUIRE(capacity.QuadPart && available.QuadPart <= free.QuadPart && free.QuadPart <= capacity.QuadPart);
-    auto make = [](const wchar_t* name, DWORD disposition, DWORD access) {
-        return CreateFileW(name, access, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, disposition, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Module handles("api-ms-win-core-handle-l1-1-0.dll");
+    auto close = API(handles, CloseHandle);
+    auto make = [&](const wchar_t* name, DWORD disposition, DWORD access) {
+        return API(core, CreateFileW)(name, access, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, disposition, FILE_ATTRIBUTE_NORMAL, nullptr);
     };
     HANDLE src = make(L"original.tmp", CREATE_NEW, GENERIC_WRITE);
     DWORD n = 0;
-    REQUIRE(src != INVALID_HANDLE_VALUE && WriteFile(src, "first", 5, &n, nullptr) && n == 5 && CloseHandle(src));
+    REQUIRE(src != INVALID_HANDLE_VALUE && API(core, WriteFile)(src, "first", 5, &n, nullptr) && n == 5 && close(src));
     REQUIRE(SUCCEEDED(API(copy, CopyFile2)(L"original.tmp", L"copy.tmp", nullptr)));
     REQUIRE(API(copy, CreateHardLinkW)(L"linked.tmp", L"original.tmp", nullptr));
     src = make(L"original.tmp", OPEN_EXISTING, GENERIC_WRITE);
-    REQUIRE(src != INVALID_HANDLE_VALUE && WriteFile(src, "other", 5, &n, nullptr) && n == 5 && CloseHandle(src));
+    REQUIRE(src != INVALID_HANDLE_VALUE && API(core, WriteFile)(src, "other", 5, &n, nullptr) && n == 5 && close(src));
     auto read = [&](const wchar_t* name, const char* expected) {
         HANDLE input = make(name, OPEN_EXISTING, GENERIC_READ);
         char data[6]{};
-        REQUIRE(input != INVALID_HANDLE_VALUE && ReadFile(input, data, sizeof(data), &n, nullptr) && n == 5);
-        REQUIRE(std::strcmp(data, expected) == 0 && CloseHandle(input));
+        REQUIRE(input != INVALID_HANDLE_VALUE && API(core, ReadFile)(input, data, sizeof(data), &n, nullptr) && n == 5);
+        REQUIRE(std::strcmp(data, expected) == 0 && close(input));
     };
     read(L"linked.tmp", "other");
     read(L"copy.tmp", "first");
     for (auto* name : {L"original.tmp", L"linked.tmp", L"copy.tmp"}) REQUIRE(DeleteFileW(name));
+}
+
+void file_metadata() {
+    Module file("api-ms-win-core-file-l1-1-0.dll"), newer("api-ms-win-core-file-l1-2-0.dll");
+    Module errors("api-ms-win-core-errorhandling-l1-1-0.dll");
+    REQUIRE(API(file, CreateDirectoryW)(L"saves", nullptr));
+    const wchar_t* first = L"saves\\one.sav";
+    const wchar_t* second = L"saves\\two.sav";
+    auto create = API(newer, CreateFile2);
+    HANDLE save = create(first, GENERIC_WRITE, 0, CREATE_NEW, nullptr);
+    DWORD written = 0;
+    REQUIRE(save != INVALID_HANDLE_VALUE && WriteFile(save, "abcdef", 6, &written, nullptr) && written == 6);
+    LARGE_INTEGER offset{}, size{};
+    offset.QuadPart = 3;
+    REQUIRE(SetFilePointerEx(save, offset, nullptr, FILE_BEGIN) && API(file, SetEndOfFile)(save));
+    REQUIRE(API(file, GetFileSizeEx)(save, &size) && size.QuadPart == 3);
+
+    SYSTEMTIME date{};
+    date.wYear = 2024; date.wMonth = 4; date.wDay = 12; date.wHour = 8;
+    FILETIME modified{};
+    REQUIRE(SystemTimeToFileTime(&date, &modified));
+    REQUIRE(API(file, SetFileTime)(save, nullptr, nullptr, &modified) && CloseHandle(save));
+    REQUIRE(API(file, SetFileAttributesW)(first, FILE_ATTRIBUTE_READONLY));
+    WIN32_FILE_ATTRIBUTE_DATA info{};
+    REQUIRE(API(file, GetFileAttributesExW)(first, GetFileExInfoStandard, &info));
+    REQUIRE((info.dwFileAttributes & FILE_ATTRIBUTE_READONLY) && !info.nFileSizeHigh && info.nFileSizeLow == 3);
+    REQUIRE(CompareFileTime(&modified, &info.ftLastWriteTime) == 0);
+
+    save = create(second, GENERIC_WRITE, 0, CREATE_NEW, nullptr);
+    REQUIRE(save != INVALID_HANDLE_VALUE && CloseHandle(save));
+    WIN32_FIND_DATAW entry{};
+    HANDLE scan = API(file, FindFirstFileW)(first, &entry);
+    REQUIRE(scan != INVALID_HANDLE_VALUE && !std::wcscmp(entry.cFileName, L"one.sav") && entry.nFileSizeLow == 3);
+    auto finish = API(file, FindClose);
+    REQUIRE(finish(scan));
+
+    auto next = API(file, FindNextFileW);
+    auto last_error = API(errors, GetLastError);
+    API(errors, SetLastError)(ERROR_INVALID_DATA);
+    REQUIRE(last_error() == ERROR_INVALID_DATA);
+    scan = API(file, FindFirstFileExW)(L"saves\\*.sav", FindExInfoBasic, &entry, FindExSearchNameMatch, nullptr, 0);
+    REQUIRE(scan != INVALID_HANDLE_VALUE);
+    std::map<std::wstring, DWORD> found;
+    do {
+        REQUIRE(!entry.nFileSizeHigh && found.emplace(entry.cFileName, entry.nFileSizeLow).second);
+    } while (next(scan, &entry));
+    REQUIRE(last_error() == ERROR_NO_MORE_FILES && finish(scan));
+    const std::map<std::wstring, DWORD> expected = {{L"one.sav", 3}, {L"two.sav", 0}};
+    REQUIRE(found == expected);
+    REQUIRE(API(file, SetFileAttributesW)(first, FILE_ATTRIBUTE_NORMAL));
+    REQUIRE(DeleteFileW(first) && DeleteFileW(second) && RemoveDirectoryW(L"saves"));
+}
+
+void buffered_stream() {
+    Module io("api-ms-win-crt-stdio-l1-1-0.dll");
+    const char payload[] = {'C', '\0', 'R', 'T'};
+    char buffer[512]{};
+    FILE* stream = API(io, fopen)("buffered.sav", "w+b");
+    REQUIRE(stream && API(io, setvbuf)(stream, buffer, _IOFBF, sizeof(buffer)) == 0);
+    REQUIRE(API(io, fwrite)(payload, sizeof(payload), 1, stream) == 1);
+    auto put = API(io, fputc);
+    REQUIRE(put('!', stream) == '!' && API(io, ftell)(stream) == 5);
+    REQUIRE(API(io, fflush)(stream) == 0);
+    constexpr __int64 far_offset = (1LL << 32) + 5;
+    REQUIRE(API(io, _fseeki64)(stream, far_offset, SEEK_SET) == 0 && API(io, _ftelli64)(stream) == far_offset);
+    REQUIRE(API(io, fclose)(stream) == 0);
+
+    stream = API(io, _wfsopen)(L"buffered.sav", L"rb", _SH_DENYNO);
+    REQUIRE(stream && API(io, setvbuf)(stream, buffer, _IOFBF, sizeof(buffer)) == 0);
+    auto get = API(io, fgetc);
+    REQUIRE(get(stream) == 'C');
+    char **base = nullptr, **cursor = nullptr;
+    int* remaining = nullptr;
+    REQUIRE(API(io, _get_stream_buffer_pointers)(stream, &base, &cursor, &remaining) == 0);
+    REQUIRE(base && cursor && remaining && *base == buffer && *cursor == buffer + 1 && *remaining == 4);
+    fpos_t saved{};
+    REQUIRE(API(io, fgetpos)(stream, &saved) == 0 && get(stream) == 0);
+    REQUIRE(API(io, ungetc)('X', stream) == 'X' && get(stream) == 'X');
+    REQUIRE(API(io, fsetpos)(stream, &saved) == 0);
+    char tail[4]{};
+    REQUIRE(API(io, fread)(tail, 2, 2, stream) == 2 && !std::memcmp(tail, "\0RT!", 4));
+    auto error = API(io, ferror);
+    REQUIRE(get(stream) == EOF && !error(stream));
+    REQUIRE(API(io, fseek)(stream, -1, SEEK_END) == 0 && get(stream) == '!');
+    REQUIRE(API(io, fclose)(stream) == 0);
+    stream = API(io, fopen)("buffered.sav", "rb");
+    REQUIRE(stream && !error(stream) && put('?', stream) == EOF && error(stream));
+    API(io, fclose)(stream); // Closing can also report the failed write.
+    stream = API(io, fopen)("buffered.sav", "rb");
+    char intact[5]{};
+    REQUIRE(stream && API(io, fread)(intact, 1, sizeof(intact), stream) == 5);
+    REQUIRE(!std::memcmp(intact, "C\0RT!", 5) && get(stream) == EOF && !error(stream));
+    REQUIRE(API(io, fclose)(stream) == 0);
+    REQUIRE(DeleteFileW(L"buffered.sav"));
+}
+
+// Supply a real Windows x64 va_list to the same entry points used by inline CRT wrappers.
+template<class Call, class Char>
+int with_args(Call call, const Char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    int result = call(format, args);
+    va_end(args);
+    return result;
+}
+
+void formatted_io() {
+    Module io("api-ms-win-crt-stdio-l1-1-0.dll");
+    for (auto format : {API(io, __stdio_common_vsprintf), API(io, __stdio_common_vsprintf_s)}) {
+        char buffer[24]{};
+        int n = with_args([&](auto fmt, va_list args) { return format(0, buffer, sizeof(buffer), fmt, nullptr, args); },
+                          "%04X/%d", 42u, -7);
+        REQUIRE(n == 7 && !std::strcmp(buffer, "002A/-7"));
+    }
+    for (auto format : {API(io, __stdio_common_vswprintf), API(io, __stdio_common_vswprintf_s)}) {
+        wchar_t buffer[24]{};
+        int n = with_args([&](auto fmt, va_list args) { return format(0, buffer, 24, fmt, nullptr, args); },
+                          L"\u03a9:%04X", 42u);
+        REQUIRE(n == 6 && !std::wcscmp(buffer, L"\u03a9:002A"));
+    }
+    char short_buffer[5]{};
+    int n = with_args([&](auto fmt, va_list args) {
+        return API(io, __stdio_common_vsnprintf_s)(0, short_buffer, sizeof(short_buffer), _TRUNCATE, fmt, nullptr, args);
+    }, "%s", "coinrun");
+    REQUIRE(n < 0 && !std::memcmp(short_buffer, "coin\0", 5));
+
+    unsigned hex = 0;
+    int value = 0;
+    // Limit the source to seven bytes, excluding a trailing digit.
+    n = with_args([&](auto fmt, va_list args) {
+        return API(io, __stdio_common_vsscanf)(0, "002A/-79", 7, fmt, nullptr, args);
+    }, "%x/%d", &hex, &value);
+    REQUIRE(n == 2 && hex == 42 && value == -7);
+
+    FILE* stream = API(io, _wfsopen)(L"label.txt", L"w, ccs=UTF-8", _SH_DENYNO);
+    REQUIRE(stream);
+    n = with_args([&](auto fmt, va_list args) {
+        return API(io, __stdio_common_vfwprintf)(0, stream, fmt, nullptr, args);
+    }, L"\u03a9:%d", -7);
+    REQUIRE(n == 4 && API(io, fclose)(stream) == 0);
+    stream = API(io, fopen)("label.txt", "rb");
+    unsigned char actual[9]{};
+    const unsigned char encoded[] = {0xef, 0xbb, 0xbf, 0xce, 0xa9, ':', '-', '7'};
+    REQUIRE(stream && API(io, fread)(actual, 1, sizeof(actual), stream) == sizeof(encoded));
+    REQUIRE(!std::memcmp(actual, encoded, sizeof(encoded)) && API(io, fclose)(stream) == 0);
+    REQUIRE(DeleteFileW(L"label.txt"));
+}
+
+void report_header() {
+    // The launcher captures stdout. Flush the provider's stream before the static CRT writes the rows.
+    Module io("api-ms-win-crt-stdio-l1-1-0.dll");
+    FILE* output = API(io, __acrt_iob_func)(1);
+    REQUIRE(output);
+    int n = with_args([&](auto fmt, va_list args) {
+        return API(io, __stdio_common_vfprintf)(0, output, fmt, nullptr, args);
+    }, "%s\t%s\t%s\n", "dependency", "symbol", "evidence");
+    REQUIRE(n == sizeof("dependency\tsymbol\tevidence\n") - 1 && API(io, fflush)(output) == 0);
 }
 
 void apartments() {
@@ -798,6 +930,9 @@ int main() {
         {"loader handles, ordinal address, image ownership and version resource", runtime_modules},
         {"processor core topology and monotonic and system clocks", clocks_and_topology},
         {"temporary directory, hard-link visibility and independent file copy", temp_files},
+        {"truncated save sizes, timestamps, attributes and wildcard enumeration", file_metadata},
+        {"buffered binary stream positions, pushback, EOF and write errors", buffered_stream},
+        {"bounded formatted output, length-limited scanning and UTF-8 stream bytes", formatted_io},
         {"WinRT MTA initialization, context and balanced teardown", apartments},
         {"Windows directory registry value through both open-key contracts", registry_values},
         {"one-time initialization and condition variable wakeups", condition_variables},
@@ -810,7 +945,8 @@ int main() {
         scenario = test.name;
         test.run();
     }
-    std::puts("dependency\tsymbol\tevidence");
+    scenario = "formatted host-import report header on standard output";
+    report_header();
     for (const auto& [key, evidence] : checked)
         std::printf("%s\t%s\t%s\n", key.first.c_str(), key.second.c_str(), evidence.c_str());
     return std::fflush(stdout) != 0 || std::ferror(stdout) != 0;

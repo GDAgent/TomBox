@@ -10,17 +10,34 @@ api-ms-win-core-com-l1-1-0.dll	CoGetInterfaceAndReleaseStream	COM server referen
 api-ms-win-core-com-l1-1-0.dll	CoGetObjectContext	WinRT MTA initialization, context and balanced teardown
 api-ms-win-core-com-l1-1-0.dll	CoMarshalInterThreadInterfaceInStream	COM server references and cross-thread stream readback
 api-ms-win-core-com-l1-1-0.dll	CoReleaseServerProcess	COM server references and cross-thread stream readback
+api-ms-win-core-errorhandling-l1-1-0.dll	GetLastError	truncated save sizes, timestamps, attributes and wildcard enumeration
+api-ms-win-core-errorhandling-l1-1-0.dll	SetLastError	truncated save sizes, timestamps, attributes and wildcard enumeration
 api-ms-win-core-fibers-l1-1-0.dll	FlsAlloc	fiber storage pointer round trip and cleanup callback
 api-ms-win-core-fibers-l1-1-0.dll	FlsFree	fiber storage pointer round trip and cleanup callback
 api-ms-win-core-fibers-l1-1-0.dll	FlsGetValue	fiber storage pointer round trip and cleanup callback
 api-ms-win-core-fibers-l1-1-0.dll	FlsSetValue	fiber storage pointer round trip and cleanup callback
+api-ms-win-core-file-l1-1-0.dll	CreateDirectoryW	truncated save sizes, timestamps, attributes and wildcard enumeration
+api-ms-win-core-file-l1-1-0.dll	CreateFileW	temporary directory, hard-link visibility and independent file copy
+api-ms-win-core-file-l1-1-0.dll	FindClose	truncated save sizes, timestamps, attributes and wildcard enumeration
+api-ms-win-core-file-l1-1-0.dll	FindFirstFileExW	truncated save sizes, timestamps, attributes and wildcard enumeration
+api-ms-win-core-file-l1-1-0.dll	FindFirstFileW	truncated save sizes, timestamps, attributes and wildcard enumeration
+api-ms-win-core-file-l1-1-0.dll	FindNextFileW	truncated save sizes, timestamps, attributes and wildcard enumeration
 api-ms-win-core-file-l1-1-0.dll	GetDiskFreeSpaceExW	temporary directory, hard-link visibility and independent file copy
+api-ms-win-core-file-l1-1-0.dll	GetFileAttributesExW	truncated save sizes, timestamps, attributes and wildcard enumeration
 api-ms-win-core-file-l1-1-0.dll	GetFileAttributesW	file contents, offsets and duplicate-handle lifetime
 api-ms-win-core-file-l1-1-0.dll	GetFileInformationByHandle	file contents, offsets and duplicate-handle lifetime
+api-ms-win-core-file-l1-1-0.dll	GetFileSizeEx	truncated save sizes, timestamps, attributes and wildcard enumeration
+api-ms-win-core-file-l1-1-0.dll	ReadFile	temporary directory, hard-link visibility and independent file copy
+api-ms-win-core-file-l1-1-0.dll	SetEndOfFile	truncated save sizes, timestamps, attributes and wildcard enumeration
+api-ms-win-core-file-l1-1-0.dll	SetFileAttributesW	truncated save sizes, timestamps, attributes and wildcard enumeration
 api-ms-win-core-file-l1-1-0.dll	SetFilePointerEx	file contents, offsets and duplicate-handle lifetime
+api-ms-win-core-file-l1-1-0.dll	SetFileTime	truncated save sizes, timestamps, attributes and wildcard enumeration
+api-ms-win-core-file-l1-1-0.dll	WriteFile	temporary directory, hard-link visibility and independent file copy
+api-ms-win-core-file-l1-2-0.dll	CreateFile2	truncated save sizes, timestamps, attributes and wildcard enumeration
 api-ms-win-core-file-l1-2-0.dll	GetTempPathW	temporary directory, hard-link visibility and independent file copy
 api-ms-win-core-file-l2-1-0.dll	CopyFile2	temporary directory, hard-link visibility and independent file copy
 api-ms-win-core-file-l2-1-0.dll	CreateHardLinkW	temporary directory, hard-link visibility and independent file copy
+api-ms-win-core-handle-l1-1-0.dll	CloseHandle	temporary directory, hard-link visibility and independent file copy
 api-ms-win-core-handle-l1-1-0.dll	DuplicateHandle	file contents, offsets and duplicate-handle lifetime
 api-ms-win-core-heap-l1-1-0.dll	HeapReAlloc	zeroed, resized and aligned allocations with paired release
 api-ms-win-core-heap-l2-1-0.dll	LocalAlloc	zeroed, resized and aligned allocations with paired release
@@ -162,18 +179,43 @@ api-ms-win-crt-runtime-l1-1-0.dll	_initialize_onexit_table	CRT wide argument ret
 api-ms-win-crt-runtime-l1-1-0.dll	_register_onexit_function	CRT wide argument retrieval and LIFO exit callbacks
 api-ms-win-crt-runtime-l1-1-0.dll	_set_errno	formatted messages, CRT error state and binary Base64 decoding
 api-ms-win-crt-runtime-l1-1-0.dll	strerror	formatted messages, CRT error state and binary Base64 decoding
+api-ms-win-crt-stdio-l1-1-0.dll	__acrt_iob_func	formatted host-import report header on standard output
+api-ms-win-crt-stdio-l1-1-0.dll	__stdio_common_vfprintf	formatted host-import report header on standard output
+api-ms-win-crt-stdio-l1-1-0.dll	__stdio_common_vfwprintf	bounded formatted output, length-limited scanning and UTF-8 stream bytes
+api-ms-win-crt-stdio-l1-1-0.dll	__stdio_common_vsnprintf_s	bounded formatted output, length-limited scanning and UTF-8 stream bytes
+api-ms-win-crt-stdio-l1-1-0.dll	__stdio_common_vsprintf	bounded formatted output, length-limited scanning and UTF-8 stream bytes
+api-ms-win-crt-stdio-l1-1-0.dll	__stdio_common_vsprintf_s	bounded formatted output, length-limited scanning and UTF-8 stream bytes
+api-ms-win-crt-stdio-l1-1-0.dll	__stdio_common_vsscanf	bounded formatted output, length-limited scanning and UTF-8 stream bytes
+api-ms-win-crt-stdio-l1-1-0.dll	__stdio_common_vswprintf	bounded formatted output, length-limited scanning and UTF-8 stream bytes
+api-ms-win-crt-stdio-l1-1-0.dll	__stdio_common_vswprintf_s	bounded formatted output, length-limited scanning and UTF-8 stream bytes
 api-ms-win-crt-stdio-l1-1-0.dll	_close	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-stdio-l1-1-0.dll	_fseeki64	buffered binary stream positions, pushback, EOF and write errors
 api-ms-win-crt-stdio-l1-1-0.dll	_fsopen	CRT file offsets, UTF-8 streams, rename and removal
 api-ms-win-crt-stdio-l1-1-0.dll	_ftelli64	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-stdio-l1-1-0.dll	_get_stream_buffer_pointers	buffered binary stream positions, pushback, EOF and write errors
 api-ms-win-crt-stdio-l1-1-0.dll	_lseeki64	CRT file offsets, UTF-8 streams, rename and removal
 api-ms-win-crt-stdio-l1-1-0.dll	_open	CRT file offsets, UTF-8 streams, rename and removal
 api-ms-win-crt-stdio-l1-1-0.dll	_read	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-stdio-l1-1-0.dll	_wfsopen	buffered binary stream positions, pushback, EOF and write errors
 api-ms-win-crt-stdio-l1-1-0.dll	_wopen	CRT file offsets, UTF-8 streams, rename and removal
 api-ms-win-crt-stdio-l1-1-0.dll	_write	CRT file offsets, UTF-8 streams, rename and removal
 api-ms-win-crt-stdio-l1-1-0.dll	fclose	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-stdio-l1-1-0.dll	ferror	buffered binary stream positions, pushback, EOF and write errors
+api-ms-win-crt-stdio-l1-1-0.dll	fflush	buffered binary stream positions, pushback, EOF and write errors
+api-ms-win-crt-stdio-l1-1-0.dll	fgetc	buffered binary stream positions, pushback, EOF and write errors
+api-ms-win-crt-stdio-l1-1-0.dll	fgetpos	buffered binary stream positions, pushback, EOF and write errors
 api-ms-win-crt-stdio-l1-1-0.dll	fgetwc	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-stdio-l1-1-0.dll	fopen	buffered binary stream positions, pushback, EOF and write errors
+api-ms-win-crt-stdio-l1-1-0.dll	fputc	buffered binary stream positions, pushback, EOF and write errors
 api-ms-win-crt-stdio-l1-1-0.dll	fputs	CRT file offsets, UTF-8 streams, rename and removal
 api-ms-win-crt-stdio-l1-1-0.dll	fputwc	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-stdio-l1-1-0.dll	fread	buffered binary stream positions, pushback, EOF and write errors
+api-ms-win-crt-stdio-l1-1-0.dll	fseek	buffered binary stream positions, pushback, EOF and write errors
+api-ms-win-crt-stdio-l1-1-0.dll	fsetpos	buffered binary stream positions, pushback, EOF and write errors
+api-ms-win-crt-stdio-l1-1-0.dll	ftell	buffered binary stream positions, pushback, EOF and write errors
+api-ms-win-crt-stdio-l1-1-0.dll	fwrite	buffered binary stream positions, pushback, EOF and write errors
+api-ms-win-crt-stdio-l1-1-0.dll	setvbuf	buffered binary stream positions, pushback, EOF and write errors
+api-ms-win-crt-stdio-l1-1-0.dll	ungetc	buffered binary stream positions, pushback, EOF and write errors
 api-ms-win-crt-stdio-l1-1-0.dll	ungetwc	CRT file offsets, UTF-8 streams, rename and removal
 api-ms-win-crt-string-l1-1-0.dll	__strncnt	bounded narrow and wide strings and character predicates
 api-ms-win-crt-string-l1-1-0.dll	_wcsdup	C locale numeric formatting, classification and string duplication

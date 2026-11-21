@@ -269,6 +269,33 @@ Pass the directory containing all 16 DLLs from the audit. The launcher stages th
 
 Fortnite delay-loads `GameChat2.dll` separately. The optional `--gamechat-test` passed with the x64 desktop provider from Microsoft.GDK.Windows 2610.0.9661. It tests local loading and thread configuration. Voice chat and Fortnite’s delay-load path need a title run. [Microsoft GDK package](https://www.nuget.org/packages/Microsoft.GDK.Windows/2610.0.9661)
 
+### C/C++ runtime coverage
+
+Run the host-import check above and the runtime probe below to reproduce the C/C++ row. The runtime probe needs `msvcp140.dll`, `vcruntime140.dll` and `vcruntime140_1.dll` from the Scarlett directory. It checks Proton’s CRT API sets, observes executed C++ fixture calls against the app-local exports, and checks child exit codes and callback output. The optional second directory selects the x64 Windows SDK UCRT redistributable for an additional run through `tuxbox run --native-ucrt`.
+
+```sh
+./tuxbox homebrew --runtime-import-test /path/to/Scarlett /path/to/x64/ucrt/redist
+```
+
+The last C++/CX check needs `vccorlib140.dll` from the same Scarlett package and a fixture built with MSVC. In a Visual Studio 2022 x64 developer shell with the C++ Universal Windows Platform tools and Windows SDK, build the fixture from the repository root. The tested MSVC 14.44 frontend switch `/d1ZWbad_alloc` enables the catch metadata for converting `std::bad_alloc` into a platform exception.
+
+```bat
+cl /nologo /MD /EHsc /ZW /d1ZWbad_alloc /ZW:nostdlib ^
+  /FU"%VCToolsInstallDir%lib\x86\store\references\platform.winmd" ^
+  /FU"%WindowsSdkDir%UnionMetadata\%WindowsSDKVersion%Windows.winmd" ^
+  tools\homebrew\runtime_winrt_fixture.cpp /Fe:runtime_winrt_fixture.exe ^
+  /link /subsystem:console vccorlib.lib runtimeobject.lib
+```
+
+On Linux, the same source builds with the MSVC tools under Wine. The build prefix needs .NET Framework for the compiler’s metadata reader. Pass the toolset directory containing `bin/Hostx64/x64/cl.exe` and the SDK’s `UnionMetadata/<version>/Windows.winmd`. This writes `runtime_winrt_fixture.exe` beside the other homebrew executables.
+
+```sh
+WINEPREFIX=/path/to/msvc-build-prefix tools/homebrew/build-clear.sh --winrt-oom-fixture \
+  /path/to/VC/Tools/MSVC/14.44.35207 /path/to/UnionMetadata/10.0.26100.0/Windows.winmd
+```
+
+Set `TUXBOX_WINRT_FIXTURE` to the absolute path of that executable when running the Linux probe. A full run writes `runtime-import-checks.tsv`, `runtime-winrt-checks.tsv` and `runtime-native-ucrt-checks.tsv` under `target/x86_64-pc-windows-msvc/release/`. Copy the reports from the modes you ran into `tools/progress/` and regenerate the SVG with `python3 tools/progress/gen.py`. Each native-only square names the optional provider in its tooltip. [Recorded results and stock Proton gaps](../../docs/COMPATIBILITY.md#scarlett-dll-audit)
+
 ### Scarlett package startup
 
 From Linux, inventory an extracted package with its game config and Appx manifest. The report checks literal install-layout destinations, records DLL hashes and compares each DLL’s import table with the checked-in audit. Once a declared executable is present, the same command records its PE headers, TLS summary, ordinary and delay-loaded symbols, and the exact imports absent from the existing Scarlett and Fortnite snapshots. An unfamiliar symbol needs provider and behavior checks. Dynamic lookups appear only in runtime tests or further analysis.
@@ -288,6 +315,24 @@ The user startup probe needs only the package’s `MicrosoftGame.config` and the
 
 ```sh
 tools/homebrew/play-coins.sh --scarlett-user-test /path/to/package /path/to/native/261000/windows
+```
+
+### Scarlett package assets
+
+Package preflight inspects RPF9 signatures, scans `shaders.rpf` for the first checksummed PS09 header block, and walks the RDS5 span and ETPF descriptor tables in each TTPF. It samples one zlib span per store when an eligible span fits the 1 MiB sample limit. Inspect `assets.inspection_errors` for unsupported variants or malformed tables. The PSO counts come from the header.
+
+For the Win32 check, use the same Linux cross-build environment as Coin Run and set `PROTON` to the desired Proton executable. The probe opens each file by its package-relative path and compares its size, first and last bytes, and a 64-byte read across the 4 GiB boundary wherever it fits. The expected bytes and comparison result live in a temporary directory. The package is opened read-only.
+
+```sh
+python3 tools/homebrew/package_preflight.py /path/to/package --probe-asset-io > package-preflight.json
+jq '.assets' package-preflight.json
+```
+
+To refresh the measured snapshot for the audited Scarlett package and redraw the map, run the following after reviewing the file counts and inspection errors.
+
+```sh
+jq '{package_version: .identity.Version, assets}' package-preflight.json > tools/progress/scarlett-assets.json
+python3 tools/progress/gen.py
 ```
 
 ### Retail FidelityFX prepass

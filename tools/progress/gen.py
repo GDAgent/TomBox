@@ -4,7 +4,7 @@ docs/img/progress.svg is a map with one square per item (green = done, amber = p
 grey = not done), grouped the way the data is grouped:
   * imports from the test title and the Scarlett DLL audit, keyed by (module, symbol).
     Refresh scarlett-dll-imports.tsv from the per-import audit report after auditing a new build.
-    Refresh scarlett-import-checks.tsv from the passing --scarlett-import-test report.
+    Refresh scarlett-import-checks.tsv and runtime-import-checks.tsv from the passing homebrew probes.
   * Direct3D 12.x interface methods (slot ranges in progress.json)
   * RDNA2 instructions: named opcode table entries plus retail scan observations. Green
     requires every scanned retail shader using the instruction to translate. Each source
@@ -13,6 +13,7 @@ grey = not done), grouped the way the data is grouped:
     Set TOMBOX_VALU_MNEMONICS to the output path when running the full valu_conformance
     test to refresh valu-mnemonics.txt. Coin Run writes coin-rdna2-coverage.tsv after
     --rdna2-test passes; copy that report here to refresh the homebrew evidence.
+  * Scarlett archive checks from package_preflight.py and the package-read Proton probe.
 Badges (docs/img/badge-*.svg) carry the headline numbers.
 """
 import csv, json, os, re, math
@@ -74,17 +75,39 @@ def imports():
             host_checks[key] = evidence
 
     verified = dict(host_checks)
+    runtime_prefixes = ("api-ms-win-crt", "vcruntime", "msvcp")
+    runtime_checks = {}
+    native_only = set()
+    for filename, provider, prefixes in (
+        ("runtime-import-checks.tsv", "homebrew runtime test passed", runtime_prefixes),
+        ("runtime-winrt-checks.tsv", "homebrew C++/CX test passed", ("vcruntime",)),
+        ("runtime-native-ucrt-checks.tsv", "optional Microsoft native UCRT on Proton passed", ("api-ms-win-crt-",)),
+    ):
+        with open(os.path.join(here, filename), encoding="utf-8") as f:
+            seen = set()
+            for row in csv.DictReader(f, delimiter="\t"):
+                key = (row["dependency"].lower(), row["symbol"])
+                evidence = row["evidence"].strip()
+                if (key in seen or key not in sources or not key[0].startswith(prefixes)
+                        or not evidence or key in pair_states or audited.get(key, (None, None))[1] == "missing"):
+                    raise ValueError(f"Invalid or duplicate runtime import evidence in {filename}: {key}")
+                seen.add(key)
+                if filename == "runtime-native-ucrt-checks.tsv" and key not in verified:
+                    native_only.add(key)
+                runtime_checks.setdefault(key, []).append(f"{provider}: {evidence}")
+                verified.setdefault(key, evidence)
     for pair, description in cfg["verified_imports"].items():
         mod, symbol = pair.split("!", 1)
         key = (mod.lower(), symbol)
         if key not in sources or not description.strip() or key in pair_states:
             raise ValueError(f"Invalid or conflicting import evidence: {pair}")
         verified.setdefault(key, description)
+        native_only.discard(key)
 
     groups, labels = {}, {}
     for key, callers in sorted(sources.items()):
         mod, symbol = key
-        if mod.startswith(("api-ms-win-crt", "vcruntime", "msvcp")):
+        if mod.startswith(runtime_prefixes):
             group = "C/C++ runtime"
         elif mod.startswith(("api-ms-", "ext-ms-")):
             group = "Windows API sets"
@@ -100,7 +123,9 @@ def imports():
                 state = "none"
         if key in host_checks:
             evidence.append("homebrew host-import test passed: " + host_checks[key])
-        elif key in verified:
+        if key in runtime_checks:
+            evidence.extend(runtime_checks[key])
+        elif key not in host_checks and key in verified:
             evidence.append(verified[key])
         evidence.append({"done": "covered", "partial": "partial or unverified", "none": "unavailable"}[state])
         note = cfg["import_notes"].get(f"{mod}!{symbol}")
@@ -111,7 +136,10 @@ def imports():
         labels.setdefault(group, []).append(f"{names[mod]}!{symbol}: " + "; ".join(evidence))
     resolved = sum(result == "resolved" for _, result in audited.values())
     detail = f" · {len(dlls)} audited DLLs · {resolved}/{len(audited)} audited imports resolve"
-    return groups, labels, detail
+    runtime = groups["C/C++ runtime"]
+    summary = (f"C/C++ runtime · {runtime.count('done')}/{len(runtime)}"
+               f" · {len(native_only)} need optional native UCRT")
+    return groups, labels, detail, summary
 
 def d3d12x():
     groups, labels = {}, {}
@@ -252,7 +280,7 @@ def text(x, y, s, size=12):
     return (f'<text x="{x:.2f}" y="{y:.2f}" font-family="sans-serif" font-size="{size}" fill="#ffffff" stroke="{BG}" '
             f'stroke-width="3" paint-order="stroke" pointer-events="none">{escape(s)}</text>')
 
-def section(o, y, title, groups, height, detail="", labels=None, show_progress=True, subtitle=""):
+def section(o, y, title, groups, height, detail="", labels=None, show_progress=True, subtitle="", captions=None):
     n = sum(len(v) for v in groups.values())
     done = sum(v.count("done") for v in groups.values())
     count = f"{100 * done / n:.2f}% ({done}/{n})" if show_progress else str(n)
@@ -276,7 +304,8 @@ def section(o, y, title, groups, height, detail="", labels=None, show_progress=T
             o.append(f'<rect x="{ix + (i % cols) * sw:.2f}" y="{iy + (i // cols) * sh:.2f}" width="{sw:.2f}" height="{sh:.2f}" '
                      f'fill="{COL[st[j]]}" stroke="{BG}" stroke-width="0.5"{end}')
         o.append(f'<rect x="{cx:.2f}" y="{cy:.2f}" width="{cw:.2f}" height="{ch:.2f}" fill="none" stroke="{BG}" stroke-width="2"/>')
-        label = key[: max(0, int((cw - 6) / 7))]
+        caption = (captions or {}).get(key, key)
+        label = caption[: max(0, int((cw - 6) / 7))]
         if label and ch >= 18:
             o.append(text(cx + 5, cy + 16, label))
         o.append("</g>")
@@ -290,12 +319,50 @@ def badge(name, label, value, colour):
            f'<text x="{lw / 2}" y="14">{label}</text><text x="{lw + vw / 2}" y="14">{value}</text></g></svg>')
     open(os.path.join(root, "docs", "img", f"badge-{name}.svg"), "w", encoding="utf-8").write(svg)
 
+def asset_checks():
+    with open(os.path.join(here, "scarlett-assets.json"), encoding="utf-8") as source:
+        snapshot = json.load(source)
+    assets = snapshot["assets"]
+    files, verified = assets["files"], assets["verified"]
+    reads = assets.get("proton_win32_reads", {})
+    formats, headers = assets["texture_format_counts"], assets["ps09_headers"]
+    groups, labels = {}, {}
+
+    def check(group, label, passed=0, total=1):
+        if not 0 <= passed <= total:
+            raise ValueError(f"Invalid archive check counts for {label}")
+        state = "done" if passed and passed == total else "partial" if passed else "none"
+        groups.setdefault(group, []).append(state)
+        labels.setdefault(group, []).append(label)
+
+    for kind, group in (("rpf", "RPF9"), ("ttpf", "TTPF")):
+        count = files.get(kind, 0)
+        valid = verified.get(kind, 0)
+        paths = reads.get("files", {}).get(kind, 0)
+        ranges = reads.get("ranges", {}).get(kind, 0)
+        check(group, f"Win32 byte-range reads under Proton: {ranges} ranges across {paths}/{count} files", paths, count)
+        if kind == "rpf":
+            check(group, f"RPF9 file signature: {valid}/{count} archives", valid, count)
+            check(group, "Look up and read a named RPF9 member through its directory")
+        else:
+            check(group, f"RDS5 chunk extents and ETPF tables: {valid}/{count} stores, "
+                  f"{sum(formats.values()):,} texture descriptors, {len(formats)} format IDs", valid, count)
+            samples = assets["stores_with_zlib_sample"]
+            check(group, f"One complete zlib chunk inflated to the declared size in {samples}/{count} stores", samples, count)
+            check(group, "Decode a retail BCPack texture payload against reference output")
+            check(group, "Upload and sample a retail tiled texture with verified GPU readback")
+    binaries = sum(h["shader_binaries"] for h in headers)
+    check("PSO cache", f"Locate PS09 header in shaders.rpf: {binaries:,} declared shader binaries", bool(headers))
+    check("PSO cache", "Translate a shader from this cache and verify its GPU output")
+    check("Title storage", "Observe the retail executable open an archive and complete an asset request")
+    return groups, labels, snapshot["package_version"]
+
 def pct_colour(p):
     return "#4c1" if p >= 90 else "#97ca00" if p >= 70 else "#dfb317" if p >= 40 else "#fe7d37"
 
 o, y = [], 0
-import_groups, import_labels, import_detail = imports()
-y, a_done, a_n = section(o, y, "Observed title and middleware imports", import_groups, 300, import_detail, import_labels)
+import_groups, import_labels, import_detail, runtime_summary = imports()
+y, a_done, a_n = section(o, y, "Observed title and middleware imports", import_groups, 300, import_detail, import_labels, captions={"C/C++ runtime": runtime_summary})
 d3d_groups, d3d_labels = d3d12x()
 y, b_done, b_n = section(o, y, "Direct3D 12.x interface methods", d3d_groups, 170, labels=d3d_labels)
 isa_groups, isa_labels, isa_detail, tag_groups, tag_labels = instructions()
@@ -309,6 +376,9 @@ y, c_done, c_n = section(o, y, "RDNA2 in translated retail shaders", isa_groups,
                          isa_detail, isa_labels, subtitle="Retail compute shaders passing GPU readback · " + " · ".join(kernel_results))
 if tag_groups:
     y, _, _ = section(o, y, "Unidentified retail opcode tags", tag_groups, 55, labels=tag_labels, show_progress=False)
+asset_groups, asset_labels, version = asset_checks()
+y, _, _ = section(o, y, "Scarlett package asset checks", asset_groups, 95, labels=asset_labels,
+                  subtitle=f"Package {version} · Each square represents one inspection, I/O or runtime check.")
 svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 {y:.0f}" width="1000" height="{y:.0f}">\n'
        f'<rect x="0" y="0" width="1000" height="{y:.0f}" fill="{BG}"/>\n' + "\n".join(o) + "\n</svg>\n")
 open(os.path.join(root, "docs", "img", "progress.svg"), "w", encoding="utf-8").write(svg)

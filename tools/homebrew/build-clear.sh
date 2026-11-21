@@ -14,6 +14,45 @@ build_pe() {
         /link /libpath:"$sdk/crt/lib/x86_64" \
         /libpath:"$sdk/sdk/lib/um/x86_64" /libpath:"$sdk/sdk/lib/ucrt/x86_64" kernel32.lib "$@"
 }
+if [[ ${1:-} == --package-read-test ]]; then
+    mkdir -p "$build"
+    build_pe "$build/package_read_probe.exe" tools/homebrew/package_read_probe.cpp
+    exit 0
+fi
+if [[ ${1:-} == --winrt-oom-fixture ]]; then
+    [[ $# == 3 ]] || { echo "Usage: $0 $1 MSVC_TOOLS_DIRECTORY WINDOWS_WINMD" >&2; exit 2; }
+    msvc=$(realpath -e -- "$2")
+    winmd=$(realpath -e -- "$3")
+    mkdir -p "$build"
+    # MSVC emits the C++/CX catch metadata for converting bad_alloc. Its
+    # metadata reader needs .NET Framework in the selected Wine build prefix.
+    export WINEDEBUG="${WINEDEBUG:--all}"
+    wine "$msvc/bin/Hostx64/x64/cl.exe" /nologo /MD /EHsc /ZW /ZW:nostdlib /d1ZWbad_alloc \
+        "/FU$(winepath -w "$msvc/lib/x86/store/references/platform.winmd")" "/FU$(winepath -w "$winmd")" \
+        "/I$(winepath -w "$msvc/include")" "/I$(winepath -w "$sdk/sdk/include/ucrt")" \
+        "/I$(winepath -w "$sdk/sdk/include/shared")" "/I$(winepath -w "$sdk/sdk/include/um")" \
+        /c "$(winepath -w "$PWD/tools/homebrew/runtime_winrt_fixture.cpp")" \
+        "/Fo$(winepath -w "$PWD/$build/runtime_winrt_fixture.obj")"
+    lld-link /subsystem:console /out:"$build/runtime_winrt_fixture.exe" "$build/runtime_winrt_fixture.obj" \
+        /libpath:"$sdk/crt/lib/x86_64" /libpath:"$sdk/sdk/lib/um/x86_64" \
+        /libpath:"$sdk/sdk/lib/ucrt/x86_64" kernel32.lib vccorlib.lib runtimeobject.lib
+    exit 0
+fi
+if [[ ${1:-} == --runtime-import-test ]]; then
+    mkdir -p "$build"
+    build_pe "$build/runtime_import_probe.exe" tools/homebrew/runtime_import_probe.cpp user32.lib
+    stl_flags=(--target=x86_64-pc-windows-msvc -fms-runtime-lib=dll -fexceptions -fcxx-exceptions -std=c++17
+        -isystem "$sdk/crt/include" -isystem "$sdk/sdk/include/ucrt"
+        -isystem "$sdk/sdk/include/shared" -isystem "$sdk/sdk/include/um")
+    clang++ "${stl_flags[@]}" -S -emit-llvm tools/homebrew/runtime_cpp_fixture.cpp -o "$build/runtime_cpp.ll"
+    python3 tools/homebrew/trace_runtime_calls.py "$build/runtime_cpp.ll" "$build/runtime_calls.ll"
+    clang++ --target=x86_64-pc-windows-msvc -c "$build/runtime_calls.ll" -o "$build/runtime_calls.obj"
+    clang++ "${stl_flags[@]}" -c tools/homebrew/runtime_cpp_report.cpp -o "$build/runtime_cpp_report.obj"
+    lld-link /out:"$build/runtime_cpp_fixture.exe" "$build"/{runtime_calls,runtime_cpp_report}.obj \
+        /libpath:"$sdk/crt/lib/x86_64" /libpath:"$sdk/sdk/lib/um/x86_64" \
+        /libpath:"$sdk/sdk/lib/ucrt/x86_64" msvcprt.lib kernel32.lib
+    exit 0
+fi
 if [[ ${1:-} == --scarlett-import-test ]]; then
     mkdir -p "$build"
     build_pe "$build/scarlett_import_probe.exe" tools/homebrew/scarlett_import_probe.cpp ole32.lib
