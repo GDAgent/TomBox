@@ -23,9 +23,11 @@
 //!         loopback or an address `<host>` resolves to; any other destination is refused.
 //!     Null/empty names, `localhost` and this machine's own name are passed through.
 //!
-//! Mechanism: each entry point is overwritten with `mov rax, imm64; jmp rax` to a hook. In
-//! redirect mode the displaced instructions are relocated into a trampoline (iced-x86
-//! block encoder) so the hook can call the original.
+//! Mechanism: each entry point is overwritten with `mov rax, imm64; jmp rax` to a hook. Where
+//! a hook must call the original (redirect mode, and the four resolvers and four socket
+//! calls of deny mode) the displaced instructions are relocated into a trampoline (iced-x86
+//! block encoder). In deny mode an entry point whose trampoline cannot be built gets the
+//! plain failing stub instead.
 //!
 //! Limits (documented, not hidden): a socket connected through `ConnectEx` to a literal IP
 //! address is not covered; DNS-over-anything not using these APIs is not covered; other
@@ -747,7 +749,53 @@ pub fn ensure() {
 
 #[cfg(test)]
 mod tests {
-    use super::local_only;
+    use super::{local_only, loopback_dest};
+
+    fn sockaddr_in(ip: [u8; 4]) -> [u8; 16] {
+        let mut sa = [0u8; 16];
+        sa[0] = 2; // AF_INET
+        sa[2..4].copy_from_slice(&9u16.to_be_bytes());
+        sa[4..8].copy_from_slice(&ip);
+        sa
+    }
+
+    fn sockaddr_in6(ip: std::net::Ipv6Addr) -> [u8; 28] {
+        let mut sa = [0u8; 28];
+        sa[0] = 23; // AF_INET6 on Windows
+        sa[2..4].copy_from_slice(&9u16.to_be_bytes());
+        sa[8..24].copy_from_slice(&ip.octets());
+        sa
+    }
+
+    #[test]
+    fn deny_mode_destinations_are_loopback_only() {
+        unsafe {
+            assert!(loopback_dest(core::ptr::null(), 0), "connected socket, no destination");
+            for ip in [[127, 0, 0, 1], [127, 5, 6, 7]] {
+                let sa = sockaddr_in(ip);
+                assert!(loopback_dest(sa.as_ptr(), sa.len() as i32), "{ip:?}");
+            }
+            // Broadcast, private and wildcard addresses, and a short sockaddr_in.
+            for ip in [[192, 168, 0, 255], [10, 0, 0, 1], [0, 0, 0, 0], [192, 0, 2, 1], [255, 255, 255, 255]] {
+                let sa = sockaddr_in(ip);
+                assert!(!loopback_dest(sa.as_ptr(), sa.len() as i32), "{ip:?}");
+            }
+            assert!(!loopback_dest(sockaddr_in([127, 0, 0, 1]).as_ptr(), 4), "truncated");
+            for ip in ["::1", "::ffff:127.0.0.1"] {
+                let sa = sockaddr_in6(ip.parse().unwrap());
+                assert!(loopback_dest(sa.as_ptr(), sa.len() as i32), "{ip}");
+            }
+            for ip in ["ff02::1", "fe80::1", "::", "::ffff:8.8.8.8", "2001:db8::1"] {
+                let sa = sockaddr_in6(ip.parse().unwrap());
+                assert!(!loopback_dest(sa.as_ptr(), sa.len() as i32), "{ip}");
+            }
+            let short = sockaddr_in6("::1".parse().unwrap());
+            assert!(!loopback_dest(short.as_ptr(), 20), "truncated sockaddr_in6");
+            let mut other = sockaddr_in([127, 0, 0, 1]);
+            other[0] = 6; // neither AF_INET nor AF_INET6
+            assert!(!loopback_dest(other.as_ptr(), other.len() as i32), "unknown family");
+        }
+    }
 
     #[test]
     fn only_names_that_cannot_reach_a_name_server_are_local() {
