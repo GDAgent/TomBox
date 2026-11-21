@@ -134,43 +134,25 @@ unsafe extern "system" fn release_list(this: *mut c_void) -> u32 {
 }
 
 unsafe extern "system" fn resource_barrier_traced(this: *mut c_void, n: u32, barriers: *const u8) {
-    crate::rtcap::note_barriers(n, barriers);
-    // Copy-on-write: only transitions of textures carrying buffer-only state bits change.
-    let mut fixed: Option<Vec<u8>> = None;
-    if !barriers.is_null() {
+    let forward: unsafe extern "system" fn(*mut c_void, u32, *const u8) = core::mem::transmute(*REAL_VT_PTR.add(26));
+    if n == 0 || barriers.is_null() {
+        return forward(this, n, barriers);
+    }
+    let guest = core::slice::from_raw_parts(barriers.cast::<crate::barriers::Barrier>(), n as usize);
+    let host = crate::barriers::translate(guest);
+    if host.is_empty() {
+        return;
+    }
+    crate::rtcap::note_barriers(&host);
+    {
         let mut tracker = crate::texture_state::TRACKER.lock().unwrap();
-        // The x64 D3D12_RESOURCE_BARRIER ABI has a 32-byte stride.
-        for i in 0..n as usize {
-            let b = barriers.add(i * 32);
-            let word = |offset| b.add(offset).cast::<u32>().read_unaligned();
-            if word(0) == 0 {
-                let resource = b.add(8).cast::<usize>().read_unaligned();
-                let (mut before, mut after) = (word(20), word(24));
-                if (before | after) & crate::device_wrap::BUFFER_ONLY_STATES != 0 && resource != 0
-                    && !crate::device_wrap::is_buffer(resource as *mut c_void) {
-                    before = crate::device_wrap::texture_state(before);
-                    after = crate::device_wrap::texture_state(after);
-                    let v = fixed.get_or_insert_with(|| core::slice::from_raw_parts(barriers, n as usize * 32).to_vec());
-                    v[i * 32 + 20..i * 32 + 24].copy_from_slice(&before.to_le_bytes());
-                    v[i * 32 + 24..i * 32 + 28].copy_from_slice(&after.to_le_bytes());
-                    static N: AtomicUsize = AtomicUsize::new(0);
-                    if N.fetch_add(1, Ordering::Relaxed) < 4 {
-                        record("d3d12_xs", "ResourceBarrier", &format!(
-                            "texture {resource:#x}: buffer-only state bits dropped ({:#x}->{:#x} becomes {before:#x}->{after:#x})",
-                            word(20), word(24)));
-                    }
-                }
-                let _ = before;
-                let after = (word(4) != 1).then_some(after);
-                tracker.record(this as usize, resource, word(16), after);
+        for barrier in host.iter() {
+            if let Some(t) = barrier.transition() {
+                tracker.record(this as usize, t.resource as usize, t.subresource, barrier.completed_state(t));
             }
         }
     }
-    let f: unsafe extern "system" fn(*mut c_void, u32, *const u8) = core::mem::transmute(*REAL_VT_PTR.add(26));
-    match &fixed {
-        Some(v) => f(this, n, v.as_ptr()),
-        None => f(this, n, barriers),
-    }
+    forward(this, host.len() as u32, host.as_ptr().cast());
 }
 
 // Draw-trace hooks (installed only with the diagnostic capture): note, then forward.

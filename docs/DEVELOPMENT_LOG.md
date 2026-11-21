@@ -1481,10 +1481,17 @@ copied only when a barrier changes) and in the initial state of `CreateCommitted
 resource, copy source) keep their synchronisation. Buffers are unchanged. The first four
 rewritten barriers are logged.
 
-**Tests.** `device_wrap::state_tests`: the observed state, `GENERIC_READ`, a non-read state, a
-state of only buffer bits, and that buffers keep every bit. `cargo test --release -p d3d12_xs`
-passes.
+When the guest states become identical on PC, the wrapper omits that transition,
+including each half of a split transition. The command list, placed-texture uploader,
+and diagnostic capture all use the resulting host states. Capture reads subresource zero
+and skips it while a split transition is pending.
 
-**In game (native Windows 11; not run under Proton).** No more device removal: one run presented 3,600+ frames in 90 s under the debug
+**Proton verification.** The homebrew state test starts a placed texture in guest state
+`0x83`, submits a split transition that disappears on PC, and then changes mip 1 to
+guest state `0x803`. It checks all six uploader barrier arguments and all 1,280 pixels.
+A separate capture run reported `0x8c0` for both a texture created in `0x8c3` and one
+transitioned to it, and skipped a third texture with a pending split transition.
+
+**Contributor’s retail run (native Windows 11, original PR).** No more device removal: one run presented 3,600+ frames in 90 s under the debug
 layer. The remaining debug-layer errors are root CBV addresses not aligned to 256 bytes,
 which this change does not address.

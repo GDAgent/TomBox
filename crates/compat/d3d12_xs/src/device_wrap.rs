@@ -509,7 +509,7 @@ unsafe extern "system" fn create_committed_resource(
                 unsafe { crate::resource_map::arm(*ppv, allocation_size(desc_copy) as usize) };
             }
         }
-        unsafe { crate::rtcap::register(*ppv, &desc_copy[..0x38], init_state) };
+        unsafe { crate::rtcap::register(*ppv, &desc_copy[..0x38], pc_state) };
         if crate::rtcap::enabled() && desc_copy[0] == 1 && !pheap.is_null() {
             let width = u64::from_le_bytes(desc_copy[0x10..0x18].try_into().unwrap());
             unsafe { crate::bindtrace::note_buffer(*ppv, width, *pheap) };
@@ -1197,7 +1197,8 @@ unsafe extern "system" fn create_placed_resource_x(
     let heap: [u32; 5] = [1 /* DEFAULT */, 0, 0, 1, 1];
     let f: unsafe extern "system" fn(*mut c_void, *const u32, u32, *const u8, u32, *const c_void, *const Guid, *mut *mut c_void) -> i32 =
         unsafe { core::mem::transmute(*real_vtbl(real).add(27)) };
-    let hr = unsafe { f(real, heap.as_ptr(), 0, d.as_ptr(), initial_state(dim, init_state), pclear, &IID_ID3D12RESOURCE, ppv) };
+    let pc_state = initial_state(dim, init_state);
+    let hr = unsafe { f(real, heap.as_ptr(), 0, d.as_ptr(), pc_state, pclear, &IID_ID3D12RESOURCE, ppv) };
     static N: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
     if hr < 0 || n < 12 {
@@ -1210,7 +1211,7 @@ unsafe extern "system" fn create_placed_resource_x(
         let res = unsafe { *ppv };
         let addref: unsafe extern "system" fn(*mut c_void) -> u32 = unsafe { core::mem::transmute(*real_vtbl(res).add(1)) };
         unsafe { addref(res) };
-        crate::placed::register(res, crate::placed::Placed { va, desc: orig, init_state });
+        crate::placed::register(res, crate::placed::Placed { va, desc: orig, init_state: pc_state });
     }
     hr
 }

@@ -140,7 +140,7 @@ atlas. Restarting restores the original pixels using the same GPU resources.
 | `tools/homebrew/play-coins.sh --compute-barrier-test` | Issues the GXDK 250405 slot-146 global UAV barrier between two translated compute shaders. Checks the barrier trace and reads back all 32 incremented values. |
 | `tools/homebrew/play-coins.sh --pso-fallback-test` | Exercises the upscaler’s fallback from offline pipeline packets at device slot 67 to a translated compute pipeline at slot 62. Reads back 32 shader writes. |
 | `tools/homebrew/play-coins.sh --discard-test` | Discards a whole render target and a rectangle through slot 55, overwrites the discarded data and checks all 54 texels. Also checks the shim log for an unmapped call. Runs headless. |
-| `tools/homebrew/play-coins.sh --state-test` | Submits two command lists in reverse recording order, edits one mip, copies it back and samples its neighbor. Checks the uploader’s barrier arguments and all 1,280 pixels. Requires a display. |
+| `tools/homebrew/play-coins.sh --state-test` | Creates a texture with Xbox buffer-state bits, submits two command lists in reverse recording order and edits one mip. Checks split-transition filtering, the uploader’s six barrier arguments and all 1,280 pixels. Requires a display. |
 | `tools/homebrew/play-coins.sh --stream-test` | Streams a two-mip RGBA8 texture through XMem, checks the rendered pixels and verifies upload order across partial mapping, eviction and reload. Runs offline and requires a display. |
 
 ### Audio
