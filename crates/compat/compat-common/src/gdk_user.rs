@@ -275,6 +275,10 @@ unsafe extern "system" fn x_find_for_device(_device: *const u8, out: *mut usize)
         return E_INVALIDARG;
     }
     *out = handle(); // every input device belongs to the one local user
+    static N: AtomicUsize = AtomicUsize::new(0);
+    if N.fetch_add(1, Ordering::Relaxed) < 4 {
+        log("XUserFindForDevice", "-> local user (every device belongs to it)");
+    }
     S_OK
 }
 
