@@ -14,6 +14,7 @@
 #include <process.h>
 #include <vector>
 #include <cmath>
+#include <limits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -142,6 +143,57 @@ void numbers() {
     auto long_sign = API(math, _ldsign);
     REQUIRE(float_sign(-0.0f) && !float_sign(0.0f));
     REQUIRE(long_sign(-0.0L) && !long_sign(0.0L));
+}
+
+void number_parsing() {
+    Module conv("api-ms-win-crt-convert-l1-1-0.dll");
+    REQUIRE(API(conv, atoi)("  -1729pts") == -1729);
+    REQUIRE(API(conv, _wtoi)(L"  +314xp") == 314);
+
+    char* end = nullptr;
+    const char amount[] = " -12.5e1pts";
+    REQUIRE(API(conv, strtod)(amount, &end) == -125.0 && end == amount + 8);
+    const char hex[] = "-0x20!";
+    REQUIRE(API(conv, strtol)(hex, &end, 0) == -32 && end == hex + 5);
+    const char octal[] = "0779";
+    REQUIRE(API(conv, strtoul)(octal, &end, 0) == 63 && end == octal + 3);
+    const char large[] = "100000001g";
+    REQUIRE(API(conv, strtoull)(large, &end, 16) == 0x100000001ULL && end == large + 9);
+    wchar_t* wide_end = nullptr;
+    const wchar_t binary[] = L"101102";
+    REQUIRE(API(conv, wcstoul)(binary, &wide_end, 2) == 22 && wide_end == binary + 5);
+}
+
+void real_math() {
+    Module math("api-ms-win-crt-math-l1-1-0.dll");
+    using Unary = double (*)(double);
+    using Binary = double (*)(double, double);
+    struct Reference { const char* symbol; double input, expected; };
+    constexpr double pi = 3.14159265358979323846;
+    const Reference cases[] = {
+        {"atan", -1, -pi / 4}, {"cos", pi / 3, 0.5}, {"sin", -pi / 6, -0.5},
+        {"tan", pi / 4, 1}, {"exp", -1, 0.36787944117144232}, {"log", 2, 0.69314718055994531},
+        {"ceil", -2.75, -2}, {"floor", -2.75, -3}, {"sqrt", 2.25, 1.5},
+    };
+    for (const auto& ref : cases) {
+        const double actual = math.function<Unary>(ref.symbol)(ref.input);
+        if (!(std::abs(actual - ref.expected) < 1e-12)) fail(ref.symbol, __LINE__);
+    }
+    REQUIRE(math.function<Binary>("fmod")(-5.5, 2) == -1.5);
+    REQUIRE(math.function<Binary>("pow")(-2, 5) == -32);
+    REQUIRE(API(math, powf)(4.f, -0.5f) == 0.5f);
+    REQUIRE(API(math, sqrtf)(0.0625f) == 0.25f);
+    REQUIRE(API(math, exp2f)(-3.f) == 0.125f);
+    REQUIRE(API(math, log2f)(0.25f) == -2.f);
+    REQUIRE(std::abs(API(math, logf)(2.f) - 0.69314718f) < 1e-6f);
+    int exponent = 0;
+    auto fraction = math.function<double (*)(double, int*)>("frexp")(-10, &exponent);
+    REQUIRE(fraction == -0.625 && exponent == 4);
+    REQUIRE(math.function<double (*)(double, int)>("ldexp")(fraction, exponent) == -10);
+    auto sign = API(math, _dsign);
+    REQUIRE(sign(-0.0) && !sign(0.0));
+    auto is_nan = API(math, _isnan);
+    REQUIRE(is_nan(std::numeric_limits<double>::quiet_NaN()) && !is_nan(std::numeric_limits<double>::infinity()));
 }
 
 void runtime_callbacks() {
@@ -729,6 +781,8 @@ int main() {
         {"owned and referenced WinRT strings with embedded NUL", winrt_strings},
         {"UTF-8 round trip, casing and character classification", unicode_text},
         {"numeric conversions and signed floating-point reference values", numbers},
+        {"decimal and integer parsing with base detection and exact end positions", number_parsing},
+        {"CRT math reference values, exponent decomposition, signed zero and NaN", real_math},
         {"CRT wide argument retrieval and LIFO exit callbacks", runtime_callbacks},
         {"suspended thread priority, worker exit code and queued event", thread_lifecycle},
         {"bounded narrow and wide strings and character predicates", crt_strings},

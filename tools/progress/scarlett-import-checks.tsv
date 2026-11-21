@@ -94,11 +94,18 @@ api-ms-win-core-winrt-string-l1-1-0.dll	WindowsGetStringRawBuffer	owned and refe
 api-ms-win-core-winrt-string-l1-1-0.dll	WindowsIsStringEmpty	owned and referenced WinRT strings with embedded NUL
 api-ms-win-core-winrt-string-l1-1-0.dll	WindowsStringHasEmbeddedNull	owned and referenced WinRT strings with embedded NUL
 api-ms-win-crt-convert-l1-1-0.dll	_itow_s	numeric conversions and signed floating-point reference values
+api-ms-win-crt-convert-l1-1-0.dll	_wtoi	decimal and integer parsing with base detection and exact end positions
+api-ms-win-crt-convert-l1-1-0.dll	atoi	decimal and integer parsing with base detection and exact end positions
 api-ms-win-crt-convert-l1-1-0.dll	atol	numeric conversions and signed floating-point reference values
 api-ms-win-crt-convert-l1-1-0.dll	btowc	numeric conversions and signed floating-point reference values
+api-ms-win-crt-convert-l1-1-0.dll	strtod	decimal and integer parsing with base detection and exact end positions
 api-ms-win-crt-convert-l1-1-0.dll	strtof	numeric conversions and signed floating-point reference values
+api-ms-win-crt-convert-l1-1-0.dll	strtol	decimal and integer parsing with base detection and exact end positions
+api-ms-win-crt-convert-l1-1-0.dll	strtoul	decimal and integer parsing with base detection and exact end positions
+api-ms-win-crt-convert-l1-1-0.dll	strtoull	decimal and integer parsing with base detection and exact end positions
 api-ms-win-crt-convert-l1-1-0.dll	wcstombs	numeric conversions and signed floating-point reference values
 api-ms-win-crt-convert-l1-1-0.dll	wcstombs_s	numeric conversions and signed floating-point reference values
+api-ms-win-crt-convert-l1-1-0.dll	wcstoul	decimal and integer parsing with base detection and exact end positions
 api-ms-win-crt-convert-l1-1-0.dll	wcstoull	numeric conversions and signed floating-point reference values
 api-ms-win-crt-environment-l1-1-0.dll	_putenv_s	Win32 and CRT process environment round trip
 api-ms-win-crt-environment-l1-1-0.dll	_wgetcwd	CRT file offsets, UTF-8 streams, rename and removal
@@ -116,14 +123,34 @@ api-ms-win-crt-locale-l1-1-0.dll	___mb_cur_max_func	C locale numeric formatting,
 api-ms-win-crt-locale-l1-1-0.dll	__pctype_func	C locale numeric formatting, classification and string duplication
 api-ms-win-crt-locale-l1-1-0.dll	localeconv	C locale numeric formatting, classification and string duplication
 api-ms-win-crt-locale-l1-1-0.dll	setlocale	C locale numeric formatting, classification and string duplication
+api-ms-win-crt-math-l1-1-0.dll	_dsign	CRT math reference values, exponent decomposition, signed zero and NaN
 api-ms-win-crt-math-l1-1-0.dll	_fdsign	numeric conversions and signed floating-point reference values
+api-ms-win-crt-math-l1-1-0.dll	_isnan	CRT math reference values, exponent decomposition, signed zero and NaN
 api-ms-win-crt-math-l1-1-0.dll	_ldsign	numeric conversions and signed floating-point reference values
+api-ms-win-crt-math-l1-1-0.dll	atan	CRT math reference values, exponent decomposition, signed zero and NaN
+api-ms-win-crt-math-l1-1-0.dll	ceil	CRT math reference values, exponent decomposition, signed zero and NaN
 api-ms-win-crt-math-l1-1-0.dll	ceilf	numeric conversions and signed floating-point reference values
+api-ms-win-crt-math-l1-1-0.dll	cos	CRT math reference values, exponent decomposition, signed zero and NaN
 api-ms-win-crt-math-l1-1-0.dll	cosh	numeric conversions and signed floating-point reference values
+api-ms-win-crt-math-l1-1-0.dll	exp	CRT math reference values, exponent decomposition, signed zero and NaN
+api-ms-win-crt-math-l1-1-0.dll	exp2f	CRT math reference values, exponent decomposition, signed zero and NaN
 api-ms-win-crt-math-l1-1-0.dll	expm1	numeric conversions and signed floating-point reference values
+api-ms-win-crt-math-l1-1-0.dll	floor	CRT math reference values, exponent decomposition, signed zero and NaN
+api-ms-win-crt-math-l1-1-0.dll	fmod	CRT math reference values, exponent decomposition, signed zero and NaN
+api-ms-win-crt-math-l1-1-0.dll	frexp	CRT math reference values, exponent decomposition, signed zero and NaN
+api-ms-win-crt-math-l1-1-0.dll	ldexp	CRT math reference values, exponent decomposition, signed zero and NaN
+api-ms-win-crt-math-l1-1-0.dll	log	CRT math reference values, exponent decomposition, signed zero and NaN
 api-ms-win-crt-math-l1-1-0.dll	log1p	numeric conversions and signed floating-point reference values
 api-ms-win-crt-math-l1-1-0.dll	log2	numeric conversions and signed floating-point reference values
+api-ms-win-crt-math-l1-1-0.dll	log2f	CRT math reference values, exponent decomposition, signed zero and NaN
+api-ms-win-crt-math-l1-1-0.dll	logf	CRT math reference values, exponent decomposition, signed zero and NaN
+api-ms-win-crt-math-l1-1-0.dll	pow	CRT math reference values, exponent decomposition, signed zero and NaN
+api-ms-win-crt-math-l1-1-0.dll	powf	CRT math reference values, exponent decomposition, signed zero and NaN
+api-ms-win-crt-math-l1-1-0.dll	sin	CRT math reference values, exponent decomposition, signed zero and NaN
 api-ms-win-crt-math-l1-1-0.dll	sinh	numeric conversions and signed floating-point reference values
+api-ms-win-crt-math-l1-1-0.dll	sqrt	CRT math reference values, exponent decomposition, signed zero and NaN
+api-ms-win-crt-math-l1-1-0.dll	sqrtf	CRT math reference values, exponent decomposition, signed zero and NaN
+api-ms-win-crt-math-l1-1-0.dll	tan	CRT math reference values, exponent decomposition, signed zero and NaN
 api-ms-win-crt-runtime-l1-1-0.dll	__p___argc	CRT wide argument retrieval and LIFO exit callbacks
 api-ms-win-crt-runtime-l1-1-0.dll	__p___wargv	CRT wide argument retrieval and LIFO exit callbacks
 api-ms-win-crt-runtime-l1-1-0.dll	_beginthreadex	suspended thread priority, worker exit code and queued event
