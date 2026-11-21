@@ -24,6 +24,7 @@ mod upload;
 mod texture_state;
 mod rtcap;
 mod bindtrace;
+mod resource_map;
 
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicUsize, Ordering};

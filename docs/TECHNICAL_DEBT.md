@@ -227,6 +227,21 @@
   unnormalised coordinates on mipped views, and samplers that force unnormalised
   coordinates through the S#, are not modelled.
 
+## User-language override (2026-11-21)
+- `locale=` changes the user-language queries only. The geographic region
+  (`GetUserGeoID`), the system locale and explicit per-thread UI-language settings keep the
+  host's values. GDK `XPackageGetUserLocale` is not covered (no examined title uses it).
+- The hooks patch `kernelbase` entry points in place. A host whose exports are too short for
+  the patch (checked per function) keeps the host answer for that query and logs it.
+
+## Map of GPU-only resources (2026-11-21)
+
+The verified helper pattern is limited to a zero fill immediately after committed
+resource creation. General CPU access to GPU-only resources still needs synchronized
+readback and upload, including Xbox subresource layouts and queue state. The initial
+retail report did not include the executable timestamp and call-site RVAs needed to
+enable and retest the scoped workaround. [Configuration](RUNNING.md#gpu-resource-zero-initialization)
+
 ## Resource states (2026-11-21)
 - Buffer-only read bits are dropped from texture transitions; other console-only state
   combinations, if any, are not translated. Root constant-buffer views at addresses that

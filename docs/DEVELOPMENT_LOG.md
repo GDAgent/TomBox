@@ -1403,6 +1403,67 @@ failed, 6,600 frames presented, title screen reached. The vertex-to-pixel case i
 only by the synthetic test. A pixel shader whose inputs are a subset of the producer's
 outputs can still be packed differently. That case is not handled and was not observed.
 
+## 2026-11-21 — Optional user-language override (`locale=` in tuxbox.cfg)
+
+A console reports the language chosen in its settings. On a host, a title sees the Windows
+user's language, so on a non-English Windows a title starts in that language with no way
+to change it from TomBox. Fortnite accepts `-culture=` on its command line, which is
+specific to Unreal Engine.
+
+**Change.** `compat-common::locale`: with `locale=<name>` in `tuxbox.cfg` (or the older `tombox.cfg`) the process-wide
+user-language queries answer with that locale: `GetUserDefaultLocaleName`,
+`GetUserDefaultLCID`, `GetUserDefaultLangID`, `GetUserDefaultUILanguage` and
+`GetUserPreferredUILanguages` (both the name and the ID form, including size queries).
+Without the line nothing is hooked. Windows validates and canonicalises the name
+(`LocaleNameToLCID`, then `LCIDToLocaleName`, so `en-us` becomes `en-US`). An unknown name,
+or one without its own LCID, is logged and changes nothing. The hooks are installed with the
+other process-wide setup (`net_guard::ensure`), before the title's first query. An entry
+point is patched only if the 12-byte jump stays inside the function, by its unwind data or,
+for a leaf without unwind data, a `jmp rel32` thunk followed only by `int3` padding
+(`GetUserDefaultLangID` on the tested host).
+
+**Evidence.** Imports: Fortnite reads `GetUserDefaultLocaleName` and formats with
+`GetLocaleInfoEx`/`LCIDToLocaleName` on the returned name; a second GDK title reads only
+`GetUserDefaultLocaleName`. Neither imports `XPackageGetUserLocale`.
+
+**Tests.** `locale::tests`: validation and canonicalisation by Windows, the buffer contract,
+each hook's answer (name, LCID, LANGID, preferred-UI list in both forms, size queries,
+invalid flags), and that every hooked `kernelbase` export can take the patch.
+`cargo test --release -p compat-common` passes.
+
+**In game (native Windows 11; not run under Proton).** On a German Windows with `locale=en-US`: the second title's UI is English (it
+was German before), and Fortnite, started without `-culture=`, logs `Using OS detected
+language (en-US)` and `locale (en-US)`. The install log lists all five entry points as
+overridden.
+
+## 2026-11-21 — `Map` of GPU-only resources (unified memory)
+
+A second GDK title faulted right after creating its first render target: its helper for new
+committed resources calls `CreateCommittedResource`, then `Map(0, NULL, &p)` without checking
+the HRESULT, then `memset(p, 0, GetResourceAllocationInfo(desc).SizeInBytes)` and `Unmap`,
+for every heap kind including DEFAULT-heap render targets (disassembly of the helper). On the
+console every resource is CPU-visible; PC D3D12 refuses `Map` on a heap without CPU access
+(`E_INVALIDARG`, debug layer `MAP_INVALIDHEAP`) and leaves `p` NULL.
+
+**Scope.** The initial prototype returned CPU scratch memory for GPU-only resources generally.
+Its author reported that the title presented on Windows with the companion texture-state
+change. Reads and nonzero writes through that prototype could disagree with GPU memory.
+
+The revised implementation enables scratch memory only for a configured executable build
+and a verified pair of creation and mapping call sites. The helper must clear the entire
+allocation before any GPU use. The creation and map must run on the same thread. Scratch
+storage belongs to the resource through D3D12 private data and is released on unmap or
+resource destruction. Other callers use the host resource's own Map and Unmap methods.
+
+The Proton real-device regression exercises the synthetic helper on a 1904 × 1041 RGBA8
+render target, checks the 0x870000-byte allocation, rejects unrelated and repeated maps,
+and releases a resource with a mapping still open. An upload buffer retains a nonzero
+pattern across a native unmap and remap. A separate executable loaded the release DLL,
+copied 64 KiB of nonzero data through a DEFAULT buffer on the GPU and verified every byte
+via a READBACK buffer. The direct map after GPU use was refused with the workaround both
+enabled and disabled. The retail executable timestamp and call-site RVAs are still
+needed to verify this revision on that title.
+
 ## 2026-11-21 — Buffer-only resource states on textures
 
 A second GDK title presented three frames, then every `Present` returned

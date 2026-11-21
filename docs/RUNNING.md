@@ -59,6 +59,8 @@ The steps below apply to build 2.0.1461.7919. The development scripts use machin
    ```
 
    Optional keys on separate lines are `gamertag`, `xuid`, `xbl_token`, and `net_redirect`. Set the last key only for your own test server.
+
+   `locale=<name>` (for example `locale=en-US`) works for any title, without `local_user`: it sets the user language the title sees. Omit it to keep the host's language.
 6. Run the game executable (`FortniteClient-XSX-Shipping.exe`).
 
 The runtime reads the existing `tombox.cfg` when `tuxbox.cfg` is absent. Existing `TOMBOX_*` environment variables and diagnostic paths work on both hosts.
@@ -73,3 +75,18 @@ game logs only through the debugger channel; `tools/dev/mdbg.rs` is a small trac
 | `TOMBOX_D3D12_DEBUG=1` | Direct3D validation layer |
 | `TOMBOX_RTCAP=1` | Diagnostics: render-target capture, per-draw trace, shader skip list and override, binding trace (see `docs/DEVELOPMENT_LOG.md`) |
 | `TOMBOX_OWN_WINDOW=1` | Present into a separate window |
+
+### GPU resource zero initialization
+
+For a verified game helper that immediately clears a new committed GPU-only resource
+before submitting it to the GPU, add the following line to `tuxbox.cfg` beside the game
+executable. Omit it for ordinary execution.
+
+```ini
+zero_init_map=<PE timestamp>:<CreateCommittedResource return RVA>:<Map return RVA>
+```
+
+All three fields are hexadecimal. Each RVA identifies the instruction immediately after
+the corresponding call in the executable. The helper must map subresource zero with a
+null read range, write only zeros, then unmap. Only the configured paths in that build
+can use the workaround. General GPU resource readback and upload remain open work.
