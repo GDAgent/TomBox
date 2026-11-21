@@ -226,3 +226,10 @@
 - **UNORM sampling** normalises by mip 0 of the view; the console's behaviour for
   unnormalised coordinates on mipped views, and samplers that force unnormalised
   coordinates through the S#, are not modelled.
+
+## User-language override (2026-11-21)
+- `locale=` changes the user-language queries only. The geographic region
+  (`GetUserGeoID`), the system locale and explicit per-thread UI-language settings keep the
+  host's values. GDK `XPackageGetUserLocale` is not covered (no examined title uses it).
+- The hooks patch `kernelbase` entry points in place. A host whose exports are too short for
+  the patch (checked per function) keeps the host answer for that query and logs it.
