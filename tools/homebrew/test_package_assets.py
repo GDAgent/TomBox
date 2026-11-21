@@ -1,10 +1,12 @@
 """Regression fixtures for table boundaries which cannot be inferred from physical size."""
 import io
+import struct
 import tempfile
 import unittest
 import zlib
 from pathlib import Path
 
+from ps09_cache import PS09Cache
 from package_assets import BOUNDARY, DESCRIPTOR, GIB4, HEADER, audit_assets, inspect_store
 
 
@@ -42,6 +44,24 @@ class PackageAssets(unittest.TestCase):
         data[512:512+len(packed)] = bytes(len(packed))
         with self.assertRaises(zlib.error):
             inspect_store(io.BytesIO(data), len(data))
+
+    def test_ps09_records_are_bounded_by_their_own_sections(self):
+        data = bytearray(152)
+        data[:4] = b"PS\0\x09"
+        struct.pack_into("<6I", data, 0x50, 0, 0, 1, 1, 4, 4)
+        struct.pack_into("<4I", data, 128, 0, 4, 0, 4)
+        data[144:] = b"metaCODE"
+        cache = PS09Cache(data)
+        self.assertEqual(cache.metadata(0), b"meta")
+        self.assertEqual(cache.code(0), b"CODE")
+        for index in (-1, 1):
+            with self.assertRaisesRegex(ValueError, "index"):
+                cache.code(index)
+        struct.pack_into("<II", data, 128, 3, 2)
+        with self.assertRaisesRegex(ValueError, "exceeds its section"):
+            cache.metadata(0)
+        with self.assertRaisesRegex(ValueError, "declared section sizes"):
+            PS09Cache(data[:-1])
 
     def test_unknown_archive_does_not_hide_valid_files(self):
         with tempfile.TemporaryDirectory() as tmp:

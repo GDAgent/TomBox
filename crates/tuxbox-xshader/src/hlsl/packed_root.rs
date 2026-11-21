@@ -1,7 +1,10 @@
 //! Some Scarlett compute shaders load root descriptors and inline constants from one
 //! argument block pointed to by s[0:1]. Track the origin of the descriptor words so
 //! MUBUF operations can use desktop root SRVs/UAVs without exposing a GPU address.
+mod copy_loop;
 mod fspx;
+mod ps09_depth;
+pub(super) mod ps09_raster;
 use super::*;
 use crate::meta::RootParamKind;
 
@@ -50,6 +53,8 @@ pub(super) enum RootAbi {
     #[default]
     ArgumentBlock,
     RegisterWave32,
+    RegisterWave64,
+    Ps09Raster,
 }
 
 #[derive(Default)]
@@ -57,11 +62,25 @@ pub(super) struct PackedRoot {
     pub(super) abi: RootAbi,
     loads: BTreeMap<usize, Vec<Option<(u32, u32)>>>,
     raw_scalar: BTreeMap<usize, (Binding, u32, u8)>,
+    raw_offsets: BTreeMap<usize, u8>,
+    pub(super) wide_images: BTreeSet<usize>,
     images: BTreeMap<usize, (Binding, u32, Option<u32>)>,
     buffers: BTreeMap<usize, (Binding, u32)>,
+    entry_constants: Vec<(u8, u32, u32)>, // SGPR, cbuffer, dword
+    uint_srvs: BTreeSet<u32>,
+    // Publish/cohere UAV data around an inter-workgroup ticket.
+    pub(super) device_sync_before: BTreeSet<usize>,
+    pub(super) device_sync_barriers: BTreeSet<usize>,
+    pub(super) copy_backedges: BTreeSet<usize>,
     pub(super) scan_width: Option<u32>,
     pub(super) lane_masks: BTreeSet<usize>,
     pub(super) ballots: BTreeSet<usize>,
+}
+
+pub(super) fn matches_program(isa: &[u8], size: usize, fingerprint: u64) -> bool {
+    isa.len() == size && isa.iter().fold(0xcbf29ce484222325u64, |hash, &b| {
+        (hash ^ u64::from(b)).wrapping_mul(0x100000001b3)
+    }) == fingerprint
 }
 
 type State = [Word; 106];
@@ -135,6 +154,12 @@ impl PackedRoot {
     ) -> Result<Option<Self>, String> {
         if ex.fspx_config.is_some() { return Self::fspx(ex, insns).map(Some); }
         let Some(root) = &ex.root_sig else { return Ok(None) };
+        if ex.stage == Stage::Pixel {
+            return ps09_depth::bindings(ex, root, insns);
+        }
+        if ex.stage == Stage::Compute {
+            if let Some(plan) = ps09_raster::bindings(ex, root, insns)? { return Ok(Some(plan)); }
+        }
         // This executable layout is corroborated by PSV thread dimensions and the
         // compiler prologue which keeps the low eight bits of the argument pointer’s high word.
         let mut prologue = insns
@@ -203,7 +228,9 @@ impl PackedRoot {
             && insns
                 .iter()
                 .any(|i| i.mnemonic == "v_and_b32" && i.src == [Opnd::ConstInt(63), Opnd::Vgpr(0)]);
+        let mut resume = 0;
         for (idx, ins) in insns.iter().enumerate() {
+            if idx < resume { continue; }
             if scan.is_some_and(|s| s.subtotal.contains(&idx)) {
                 // This validated region only reads local scalars and VGPRs.
                 // The first wave skips the loop, so its surviving scalar words
@@ -225,8 +252,22 @@ impl PackedRoot {
                 falls = true;
             }
             if !falls {
+                if ins.mnemonic == "s_nop" { continue; }
                 // The common HLSL emitter visits unreachable blocks too.
                 return Err("unreachable block in packed compute shader".into());
+            }
+            if !plan.copy_backedges.is_empty() && ins.mnemonic == "s_cmp_eq_u32" {
+                if let Some(end) = plan.copy_tail_mask(idx, insns, &args, &mut state, &joins)? {
+                    resume = end + 1;
+                    continue;
+                }
+            }
+            if ins.mnemonic == "s_branch" && scan.is_none() {
+                if let Some(end) = plan.copy_loop(idx, insns, &args, &mut state, &joins)? {
+                    resume = end + 1;
+                    branched = true;
+                    continue;
+                }
             }
             if ins.enc == Enc::Sopp && Emitter::branch_cond(ins.op).is_some() {
                 branched = true;
@@ -402,6 +443,19 @@ impl PackedRoot {
                 let Some(Opnd::Sgpr(base)) = s.first() else {
                     return Err("bad scalar load base");
                 };
+                if m == "s_buffer_load_dword" && ins.raw[0] & 0xffff_e000 == 0xf420_0000
+                    && ins.raw[1] & 0xffe0_0003 == 0xfa00_0000 && ins.aux.imm >= 0
+                {
+                    if let Some([Word::AddressLo(lo), Word::AddressHi(hi, _), Word::Immediate(u32::MAX), Word::Immediate(0x1101_4fac)]) =
+                        state.get(*base as usize..*base as usize + 4)
+                    {
+                        if lo == hi && !lo.uav {
+                            self.raw_scalar.insert(idx, (*lo, ins.aux.imm as u32, 1));
+                            state[dst.ok_or("bad scalar load destination")?] = Word::Data;
+                            return Ok(());
+                        }
+                    }
+                }
                 if ins.op > 4
                     || state.get(*base as usize..*base as usize + 2) != Some(&[Word::PointerLo, Word::PointerHi])
                     || ins.raw.get(1).ok_or("truncated scalar load")? >> 25 != 0x7d
@@ -593,7 +647,14 @@ impl PackedRoot {
         Ok(())
     }
 
+    pub(super) fn init_args(&self, h: &mut String) {
+        for &(sgpr, reg, off) in &self.entry_constants {
+            writeln!(h, "    s{sgpr} = cb{reg}[{}].{};", off / 4, XYZW[off as usize % 4]).unwrap();
+        }
+    }
+
     pub(super) fn declarations(&self, h: &mut String) {
+        if !self.wide_images.is_empty() { h.push_str("RWTexture2D<uint64_t> wide_u10 : register(u10);\n"); }
         for binding in self.buffers.values().map(|(b, _)| *b).chain(self.raw_scalar.values().map(|(b, _, _)| *b)).collect::<BTreeSet<_>>() {
             let reg = binding.register();
             let rw = if binding.uav { "RW" } else { "" };
@@ -606,6 +667,11 @@ impl Emitter<'_> {
     pub(super) fn resolve_packed(&mut self, scan: Option<&wave_scan::Scan>) -> Result<bool, String> {
         self.packed = PackedRoot::analyze(self.ex, &self.insns, scan)?;
         let Some(ref plan) = self.packed else { return Ok(false) };
+        for &(_, reg, off) in &plan.entry_constants {
+            let size = self.cb_size.entry(reg).or_default();
+            *size = (*size).max(off + 1);
+        }
+        for &reg in &plan.uint_srvs { self.img_ty.insert((false, reg), 1); }
         for &(reg, off) in plan.loads.values().flatten().flatten() {
             let size = self.cb_size.entry(reg).or_default();
             *size = (*size).max(off + 1);
@@ -614,6 +680,7 @@ impl Emitter<'_> {
             let slot = binding.slot;
             let (map, res) = if binding.uav { (&mut self.uav, Res::Uav(slot, dim)) } else { (&mut self.tex, Res::Tex(slot, dim)) };
             if map.insert(slot, dim).is_some_and(|old| old != dim) { return Err("inconsistent FSPX texture dimensions".into()); }
+            if binding.uav && self.insns[idx].mnemonic.starts_with("image_atomic_") { self.uav_uint.insert(slot); }
             let mut resources = vec![res];
             if let Some(s) = sampler { self.samp.insert(s); resources.push(Res::Samp(s)); }
             self.res.insert(idx, resources);
@@ -624,8 +691,16 @@ impl Emitter<'_> {
     pub(super) fn emit_packed_load(&mut self, idx: usize, ins: &Insn) -> Result<(), String> {
         if let Some(&(binding, offset, n)) = self.packed.as_ref().and_then(|p| p.raw_scalar.get(&idx)) {
             let d = sreg_num(&ins.dst[0]).ok_or("invalid raw scalar destination")?;
+            let base = if let Some(&sgpr) = self.packed.as_ref().and_then(|p| p.raw_offsets.get(&idx)) {
+                self.touch(&Opnd::Sgpr(sgpr));
+                let temp = self.tmp;
+                self.tmp += 1;
+                // The offset SGPR can also be a load destination.
+                self.line(&format!("uint base{temp} = s{sgpr};"));
+                format!("base{temp} + ")
+            } else {String::new()};
             for k in 0..n {
-                self.ws(&sreg_opnd(d + k), &format!("root_{}.Load({}u)", binding.register(), offset + 4 * u32::from(k)))?;
+                self.ws(&sreg_opnd(d + k), &format!("root_{}.Load({base}{}u)", binding.register(), offset + 4 * u32::from(k)))?;
             }
             return Ok(());
         }

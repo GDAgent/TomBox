@@ -68,6 +68,327 @@
       "crossings_4gib": {
         "rpf": 8
       }
+    },
+    "gpu_readback": {
+      "ps09_cache_sha256": "cb596e0ef2e11eb972d2d41f0041ae9629d2cd4c019ff9ed619469a2f332772a",
+      "texture_store": "data/ttdb/graphics/ttdb_graphics.ttpf",
+      "textures": [
+        {
+          "descriptor": 234,
+          "pixels": 65536,
+          "rgba_sha256": "9b8ff88ee37b24e7a2bf10da2f4243992bea141080e7dd7a7cbce1ca45a691a2"
+        },
+        {
+          "descriptor": 765,
+          "pixels": 65536,
+          "rgba_sha256": "a67315f69b8517dfca328eaf6185c4f8f557417c8f774cc063dda7d1e3a21ee6"
+        }
+      ],
+      "pixel_shader": {
+        "graphics_pso": 10682,
+        "shader_index": 4553,
+        "record_sha256": "f58c513842d162762d134c920c7b61f6927ad4f43a171ecd2855d221df67ff5e",
+        "matched_pixels": 256,
+        "vopc": []
+      },
+      "pixel_compare_shaders": [
+        {
+          "graphics_pso": 24690,
+          "shader_index": 20532,
+          "record_sha256": "19a352802a268dcedf61158c22b80094d6ab26fb163a27b8df21e80e5e386e21",
+          "matched_pixels": 256,
+          "discarded_pixels": 175,
+          "vopc": [
+            "v_cmpx_nlt_f32"
+          ]
+        },
+        {
+          "graphics_pso": 8964,
+          "shader_index": 3482,
+          "record_sha256": "5953486e3b0561b3cf3ae52ba54c74b9dbdb66606ef474d882d47687f9b4487c",
+          "matched_pixels": 256,
+          "discarded_pixels": 212,
+          "vopc": [
+            "v_cmp_gt_f32"
+          ]
+        },
+        {
+          "graphics_pso": 11910,
+          "shader_index": 4915,
+          "record_sha256": "4c54f91763d23b6a3aeb42b3e65d171861b3aec56eee0becb48be831478f8ab8",
+          "matched_pixels": 256,
+          "discarded_pixels": 0,
+          "vopc": [
+            "v_cmp_eq_f32"
+          ]
+        },
+        {
+          "graphics_pso": 11902,
+          "shader_index": 4904,
+          "record_sha256": "157f93374d9ef001e1d91ea9dd61fea24a495024af132c9bec5b87952d4dfe2c",
+          "matched_pixels": 256,
+          "discarded_pixels": 0,
+          "max_error_unorm8_steps": 0.4995,
+          "vopc": [
+            "v_cmp_lt_f32"
+          ]
+        },
+        {
+          "graphics_pso": 11903,
+          "shader_index": 4906,
+          "record_sha256": "ede19603b1c9e19d4eba5abaabe0d95cd9af03ba79f001c1dbdd0088e092b296",
+          "matched_pixels": 256,
+          "discarded_pixels": 0,
+          "max_error_unorm8_steps": 0.4989,
+          "vopc": [
+            "v_cmp_le_f32",
+            "v_cmpx_lt_f32"
+          ]
+        },
+        {
+          "graphics_pso": 11907,
+          "shader_index": 4910,
+          "record_sha256": "b5f98fcd3007f937a40a36616577db1d65824b0eee1f5ada110e5ae4a29c66a5",
+          "matched_pixels": 256,
+          "discarded_pixels": 0,
+          "max_error_unorm8_steps": 0.4981,
+          "vopc": [
+            "v_cmp_ge_f32",
+            "v_cmp_le_f32",
+            "v_cmpx_lt_f32"
+          ]
+        },
+        {
+          "graphics_pso": 11906,
+          "shader_index": 4909,
+          "record_sha256": "5787fd89815a0fb84fdde7cc95c3b5b0239cc3c081481131c20e399ad7bbb10f",
+          "matched_pixels": 256,
+          "discarded_pixels": 0,
+          "max_error_unorm8_steps": 0.5,
+          "vopc": [
+            "v_cmpx_gt_f32",
+            "v_cmpx_lt_f32"
+          ]
+        },
+        {
+          "graphics_pso": 8924,
+          "shader_index": 3447,
+          "record_sha256": "51f5bffb0e02f70b69897abe118cd3fae36e903cb08c621de91cba7bff4c56b9",
+          "bindings_sha256": "838b984f7a4130dc71cda18f24ef884a5c060e63d7b83d0b5189d0832c19fdf3",
+          "targets": 2,
+          "matched_pixels": 512,
+          "vopc": [
+            "v_cmp_le_f32"
+          ]
+        },
+        {
+          "graphics_pso": 12178,
+          "shader_index": 5192,
+          "record_sha256": "140155da37a0b5ddf64fbef4de2f0e82672c2dbdb72beb9211eb07d946fc077b",
+          "bindings_sha256": "4ccbe11654a14beffed2d8053f26c19fa1e1cc32445cb06aee80140dac7650df",
+          "matched_pixels": 256,
+          "discarded_pixels": 192,
+          "vopc": [
+            "v_cmp_class_f16",
+            "v_cmp_ne_i32",
+            "v_cmpx_ne_i64"
+          ]
+        },
+        {
+          "graphics_pso": 14459,
+          "shader_index": 8604,
+          "record_sha256": "e43dfd0444eaaf89ab6f909a25423c84aaa19c151dd3cb09c1ad4b1f5a2767dc",
+          "matched_pixels": 256,
+          "front_facing_pixels": 128,
+          "back_facing_pixels": 128,
+          "vopc": [
+            "v_cmp_lt_f32"
+          ]
+        }
+      ],
+      "compute_shaders": [
+        {
+          "compute_pso": 438,
+          "shader_index": 1235,
+          "record_sha256": "65387be3fc98ecbdcb37d3afe13a115ea2016c6cd022d2dce8fcfd9682fdde9c",
+          "threads": [
+            32,
+            1,
+            1
+          ],
+          "groups": 3,
+          "matched_dwords": 128,
+          "vopc": [
+            "v_cmpx_ge_u32"
+          ]
+        },
+        {
+          "compute_pso": 521,
+          "shader_index": 1318,
+          "record_sha256": "23ed6ba267178cea7eec24d3b54d67c7046575b13d8faa7b3d980d75ca031c30",
+          "threads": [
+            32,
+            1,
+            1
+          ],
+          "groups": 3,
+          "matched_dwords": 128,
+          "vopc": [
+            "v_cmpx_gt_u32"
+          ]
+        },
+        {
+          "compute_pso": 205,
+          "shader_index": 1009,
+          "record_sha256": "6740efc2c360080896dfa8a980eeff9cd6dd867422229efa6a47dbe6263d3ac0",
+          "threads": [
+            1024,
+            1,
+            1
+          ],
+          "groups": 1,
+          "dispatches": 2,
+          "matched_dwords": 512,
+          "checked_predicate": "v_cmpx_ne_i16",
+          "vopc": [
+            "v_cmp_eq_i32",
+            "v_cmp_le_u32",
+            "v_cmp_ne_i32",
+            "v_cmpx_eq_i32",
+            "v_cmpx_gt_i32",
+            "v_cmpx_le_i32",
+            "v_cmpx_lt_u32",
+            "v_cmpx_ne_i16",
+            "v_cmpx_ne_i32"
+          ]
+        },
+        {
+          "compute_pso": 1230,
+          "shader_index": 2027,
+          "record_sha256": "9f037bafd86b107a0caa3ad005545319995ffd2f9ba7cdb76ca650c9cfde40c9",
+          "threads": [
+            8,
+            8,
+            1
+          ],
+          "groups": 1,
+          "dispatches": 3,
+          "matched_dwords": 3072,
+          "checked_predicates": [
+            "v_cmp_nle_f16",
+            "v_cmpx_nle_f16"
+          ],
+          "vopc": [
+            "v_cmp_class_f16",
+            "v_cmp_eq_i32",
+            "v_cmp_gt_f32",
+            "v_cmp_gt_u32",
+            "v_cmp_le_u32",
+            "v_cmp_nle_f16",
+            "v_cmpx_nle_f16"
+          ]
+        },
+        {
+          "compute_pso": 1231,
+          "shader_index": 2028,
+          "record_sha256": "ed5e9120ef7d1eece114bd05ab405aba4195dc28fad257fa66193d5d32e8568f",
+          "threads": [
+            8,
+            8,
+            1
+          ],
+          "groups": 1,
+          "dispatches": 3,
+          "matched_dwords": 3072,
+          "checked_predicates": [
+            "v_cmp_nle_f16",
+            "v_cmpx_nle_f16"
+          ],
+          "vopc": [
+            "v_cmp_class_f16",
+            "v_cmp_eq_i32",
+            "v_cmp_gt_f32",
+            "v_cmp_gt_u32",
+            "v_cmp_le_u32",
+            "v_cmp_nle_f16",
+            "v_cmpx_nle_f16"
+          ]
+        },
+        {
+          "compute_pso": 439,
+          "shader_index": 1236,
+          "record_sha256": "38606fa3c502987603b34d169f0fb8472c3444aa48d248e32a6918c348b96938",
+          "threads": [
+            8,
+            8,
+            1
+          ],
+          "groups": 1,
+          "dispatches": 5,
+          "matched_dwords": 640,
+          "checked_predicate": "v_cmp_ne_i64",
+          "vopc": [
+            "v_cmp_gt_u32",
+            "v_cmp_ne_i32",
+            "v_cmp_ne_i64",
+            "v_cmp_neq_f32"
+          ]
+        },
+        {
+          "compute_pso": 1430,
+          "shader_index": 2227,
+          "record_sha256": "096c18c7bda1783c5c2480a347b26cc0808a1ba69117b4ef44379323dbf3ca9a",
+          "threads": [
+            64,
+            1,
+            1
+          ],
+          "groups": 1,
+          "dispatches": 3,
+          "matched_dwords": 24,
+          "checked_predicate": "v_cmpx_lt_u64",
+          "vopc": [
+            "v_cmp_eq_i32",
+            "v_cmp_ge_f32",
+            "v_cmp_gt_f32",
+            "v_cmp_le_u32",
+            "v_cmp_lt_f32",
+            "v_cmp_lt_u32",
+            "v_cmp_nge_f32",
+            "v_cmpx_gt_u32",
+            "v_cmpx_lt_f32",
+            "v_cmpx_lt_u64",
+            "v_cmpx_nlt_f32"
+          ]
+        },
+        {
+          "compute_pso": 1431,
+          "shader_index": 2228,
+          "record_sha256": "ac7612a5f261684f6dea6305fe502607c9142740bf118f902f230bad75c4dee2",
+          "threads": [
+            64,
+            1,
+            1
+          ],
+          "groups": 1,
+          "dispatches": 3,
+          "matched_dwords": 24,
+          "checked_predicate": "v_cmpx_lt_u64",
+          "vopc": [
+            "v_cmp_eq_i32",
+            "v_cmp_ge_f32",
+            "v_cmp_gt_f32",
+            "v_cmp_le_u32",
+            "v_cmp_lt_f32",
+            "v_cmp_lt_u32",
+            "v_cmp_nge_f32",
+            "v_cmpx_gt_u32",
+            "v_cmpx_lt_f32",
+            "v_cmpx_lt_u64",
+            "v_cmpx_nlt_f32"
+          ]
+        }
+      ]
     }
   }
 }

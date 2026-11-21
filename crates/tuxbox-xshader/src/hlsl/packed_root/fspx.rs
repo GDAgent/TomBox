@@ -2,6 +2,8 @@
 //! descriptor table addresses (one word) and root CBV addresses (two words).
 use super::*;
 
+mod convolution;
+mod exposure;
 mod prepass;
 
 fn raw(insns: &[Insn], words: &[&[u32]]) -> bool {
@@ -90,6 +92,11 @@ impl PackedRoot {
         let RootParamKind::Table(srvs) = &srvs.kind else {
             return Err("expected FSPX SRV table".into());
         };
+        if ex.psv_threads == Some([256, 1, 1])
+            && ex.fspx_config == Some([0x4005cf00, 0x6c090102, 0, 0x10100, 1, 0x402c0349, 0x18190])
+        {
+            return exposure::bindings(ex, insns, root, u, srvs, cbvs);
+        }
         let sharpen = ex.psv_threads == Some([64, 1, 1])
             && ex.fspx_config == Some([0x4005cf00, 0x6c090102, 0, 0x10040, 1, 0x402c0349, 0x190]);
         if srvs.is_empty() || (!sharpen && srvs.len() != 1) {
@@ -107,6 +114,12 @@ impl PackedRoot {
             || !matches!(u.offset_in_table, 0 | u32::MAX)
         {
             return Err("unsupported FSPX root signature".into());
+        }
+        if ex.psv_threads == Some([32, 1, 1])
+            && ex.fspx_config == Some([0x4005cf00, 0x6c090102, 0, 0x10020, 0x100001, 0x402c0345, 0x19c])
+            && matches_program(&ex.isa, 3852, 0xd0be69c77bcf1c68)
+        {
+            return convolution::bindings(ex, insns, u, &srvs[0]);
         }
         if sharpen
             || (ex.psv_threads == Some([256, 1, 1])

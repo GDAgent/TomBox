@@ -34,6 +34,7 @@ fn shader(stage: Stage, words: &[u32], input_sig: Vec<SigElement>, output_sig: V
         shader_model: (6, 0),
         bitcode_stripped: true,
         fspx_config: None,
+        ps09_pixel_inputs: None,
         fssm: Vec::new(),
         entry: Some("main".into()),
         isa_data: isa.clone(),
@@ -516,4 +517,21 @@ fn keep_matching_producer_when_pixel_shader_reads_a_subset() {
     assert!(!has_packing_mismatch(&ordinary, &ps_code));
     assert_eq!(texcoord1_location(&linked, b"OSG1"), (1, 0b1100));
     assert!(has_packing_mismatch(&linked, &ps_code));
+}
+
+#[test]
+fn two_forward_branches_to_one_target_reevaluate_the_inner_guard() {
+    let words = [
+        0xbf84_0003, // s_cbranch_scc0 -> ENDPGM
+        0xbf00_8080, // s_cmp_eq_i32 0, 0
+        0xbf85_0001, // s_cbranch_scc1 -> same ENDPGM
+        0xbe84_0381, // s_mov_b32 s4, 1; skipped by either branch
+        S_ENDPGM,
+    ];
+    let mut ex = shader(Stage::Compute, &words, vec![], vec![], None);
+    ex.psv_threads = Some([1, 1, 1]);
+    let h = translate(&ex).unwrap().hlsl;
+    let inner = h.split_once("// 0x0008 s_cbranch_scc1").unwrap().1;
+    let before_mov = inner.split_once("// 0x000c s_mov_b32").unwrap().0;
+    assert!(before_mov.contains("if (!(j4))"), "{before_mov}");
 }

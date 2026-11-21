@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -eu
-if [[ ${1:-} == --gamechat-test || ${1:-} == --bvh-sort-test || ${1:-} == --fsr-postpass-test || ${1:-} == --fsr-prepass-test || ${1:-} == --fsr-sharpen-test ]]; then
+if [[ ${1:-} == --gamechat-test || ${1:-} == --bvh-sort-test || ${1:-} == --fsr-postpass-test || ${1:-} == --fsr-prepass-test || ${1:-} == --fsr-sharpen-test || ${1:-} == --fsr-exposure-test || ${1:-} == --fsr-convolution-test ]]; then
     if [[ $# != 2 || ! -f $2 ]]; then
         echo "Usage: $0 $1 path-to-retail-library.dll" >&2
         exit 2
@@ -62,7 +62,7 @@ if [[ ${1:-} == --scarlett-libraries-test ]]; then
 fi
 if [[ ${1:-} == --bvh-sort-test ]]; then
     required+=(bvh_sort_probe.exe bvh_commands.dll)
-elif [[ ${1:-} == --fsr-prepass-test || ${1:-} == --fsr-sharpen-test ]]; then
+elif [[ ${1:-} == --fsr-prepass-test || ${1:-} == --fsr-sharpen-test || ${1:-} == --fsr-exposure-test || ${1:-} == --fsr-convolution-test ]]; then
     required+=(fsr_prepass_probe.exe d3d12_xs.dll)
 elif [[ ${1:-} == --fsr-postpass-test ]]; then
     required+=(fsr_postpass_probe.exe d3d12_xs.dll)
@@ -161,7 +161,7 @@ case "${1:-}" in
     --scarlett-libraries-test)
         exec python3 "$repo/tools/homebrew/scarlett_libraries.py" "$library_dir"
         ;;
-    --bvh-sort-test|--fsr-postpass-test|--fsr-prepass-test|--fsr-sharpen-test)
+    --bvh-sort-test|--fsr-postpass-test|--fsr-prepass-test|--fsr-sharpen-test|--fsr-exposure-test|--fsr-convolution-test)
         export TOMBOX_DXC_DIR="${TOMBOX_DXC_DIR:-Z:$PWD}"
         if [[ $1 == --bvh-sort-test ]]; then
             export TOMBOX_BVH_LIBRARY="Z:$library_path"
@@ -170,6 +170,8 @@ case "${1:-}" in
             export TOMBOX_FSR_LIBRARY="Z:$library_path"
             case $1 in
                 --fsr-prepass-test) probe=fsr_prepass_probe.exe ;;
+                --fsr-convolution-test) probe="fsr_prepass_probe.exe --convolution" ;;
+                --fsr-exposure-test) probe="fsr_prepass_probe.exe --exposure" ;;
                 --fsr-sharpen-test) probe="fsr_prepass_probe.exe --sharpen" ;;
                 --fsr-postpass-test) probe=fsr_postpass_probe.exe ;;
             esac

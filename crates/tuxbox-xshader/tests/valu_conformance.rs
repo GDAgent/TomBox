@@ -31,6 +31,8 @@ use tuxbox_xshader::dxc;
 
 #[cfg(windows)]
 const NV: u32 = 4; // v0..v2 = sources, v3 = destination (also loaded: MAC-style ops read it)
+#[path = "valu_conformance/compare64.rs"]
+mod compare64;
 #[path = "valu_conformance/observed.rs"]
 mod observed;
 
@@ -636,6 +638,10 @@ fn cases() -> Vec<Case> {
     let mut cnd = case("v_cndmask_b32", vop3(0x101, 2, m0, 3, Some(VCC_LO)), [I, I, I], |a, b2, _, vcc| Want::U(if vcc & 1 != 0 { b2 } else { a }));
     cnd.vcc_in = true;
     c.push(cnd);
+    let mut signed_cnd = case("v_cndmask_b32 modified data", vop3(0x101, 2, Mods { abs: 2, neg: 3, ..m0 }, 3, Some(VCC_LO)),
+        [I; 3], |a, b, _, vcc| Want::U(if vcc & 1 != 0 { b | 0x80000000 } else { a ^ 0x80000000 }));
+    signed_cnd.vcc_in = true;
+    c.push(signed_cnd);
     // --- carry arithmetic (VOP3B, carry-out in VCC)
     for (n, op, cin) in [("v_add_co_u32", 0x30fu32, false), ("v_sub_co_u32", 0x310, false), ("v_subrev_co_u32", 0x319, false), ("v_add_co_ci_u32", 0x128, true), ("v_sub_co_ci_u32", 0x129, true), ("v_subrev_co_ci_u32", 0x12a, true)] {
         let words = vop3b(op, cin);
@@ -691,6 +697,26 @@ fn cases() -> Vec<Case> {
         c.push(Case { out: Out::Vcc, ..case(&format!("v_cmp_{cc}_f16"), vopc(hop), [H, H, I], move |a, b2, _, _| Want::U(hfun(a, b2) as u32)) });
         c.push(Case { out: Out::Exec, vcc_in: true, ..case(&format!("v_cmpx_{cc}_f16"), vopc(hop + 0x10), [H, H, I], move |a, b2, _, _| Want::U(hfun(a, b2) as u32)) });
     }
+    // S_DENORM_MODE controls half and single input flushing independently.
+    for (ty, opcode, sign, min_normal, mode_bit) in [
+        ("f16", 0xca, 0x8000u32, 0x400, 4), ("f32", 2, 0x8000_0000, 0x80_0000, 1)
+    ] {
+        for mode in [0, 1, 4, 15] {
+            let keep = mode & mode_bit != 0;
+            for cmpx in [false, true] {
+                let op = opcode + 16 * u32::from(cmpx);
+                let words = vec![0xbfa5_0000 | mode, 0x7c00_0080 | op << 17, S_ENDPGM];
+                let name = if cmpx { "v_cmpx" } else { "v_cmp" };
+                c.push(Case {
+                    out: if cmpx { Out::Exec } else { Out::Vcc }, vcc_in: true,
+                    ..case(&format!("{name}_eq_{ty} denorm mode {mode}"), words, [I; 3], move |a, _, _, _| {
+                        let magnitude = a & (sign - 1);
+                        Want::U((magnitude == 0 || (!keep && magnitude < min_normal)) as u32)
+                    })
+                });
+            }
+        }
+    }
     // The FSR prepass uses both equality and ordered comparisons against abs(src1).
     for (cc, opcode, pred) in [("eq", 2, fcmp[2].1), ("ge", 6, fcmp[6].1)] {
         c.push(Case { out: Out::Vcc, ..case(&format!("v_cmp_{cc}_f32 abs(src1)"), vop3(opcode, 2, Mods { abs: 2, ..m0 }, VCC_LO, None),
@@ -740,6 +766,42 @@ fn cases() -> Vec<Case> {
     for (name, word, out) in [("v_cmp_lt_i16", 0x7d12_02f9, Out::Vcc), ("v_cmpx_lt_i16", 0x7d32_02f9, Out::Exec)] {
         c.push(Case { out, vcc_in: true, ..case(&format!("{name} sdwa"), vec![word, 0x0405_0000, S_ENDPGM], [I, I, I], |a, b, _, _| {
             Want::U((((a >> 16) as i16) < b as i16) as u32)
+        }) });
+    }
+    // PS09 shaders 899/2522 use SDWA classification with integer masks, explicit
+    // scalar destinations and CMPX. Read the scalar destination back through v3.
+    c.push(case("v_cmp_class_f32 sdwa negative zero", vec![0x7d10_02f9, 0x0396_9680, 0x7e06_0216, S_ENDPGM],
+        [I; 3], |_, b, _, _| Want::U((b >> 29) & 1)));
+    c.push(case("v_cmp_class_f16 sdwa negative subnormal or zero", vec![0x7d1f_60f9, 0x8635_c400, 0x7e06_0244, S_ENDPGM],
+        [H2, I, I], |a, _, _, _| Want::U(u32::from((a >> 16) & 0x7fff < 0x400))));
+    c.push(Case { out: Out::Exec, vcc_in: true, ..case("v_cmpx_class_f32 sdwa negative subnormal",
+        vec![0x7d30_00f9, 0x0396_0081, S_ENDPGM], [I; 3], |a, _, _, _| Want::U((a >> 28) & 1)) });
+    c.push(Case { out: Out::Vcc, ..case("v_cmp_lt_f16 sdwa -abs(high), -low", vec![0x7d92_02f9, 0x1435_0000, S_ENDPGM],
+        [H2, H2, I], |a, b, _, _| Want::U(u32::from(-f16_to(a >> 16).abs() < -f16_to(b & 0xffff)))) });
+    // BYTE_1 of the half-precision inline 1.0 (0x3c00) is 0x3c.
+    c.push(Case { out: Out::Vcc, ..case("v_cmp_eq_f16 sdwa inline byte", vec![0x7d94_02f9, 0x0081_00f2, S_ENDPGM],
+        [I; 3], |_, b, _, _| Want::U(u32::from(b & 0xff == 0x3c))) });
+    for (name, op, out, absolute_negative) in [
+        ("v_cmp_class_f16", 0x8f, Out::Vcc, false),
+        ("v_cmpx_class_f16", 0x9f, Out::Exec, false),
+        ("v_cmp_class_f16", 0x8f, Out::Vcc, true),
+    ] {
+        // PS09 shader 2027 also uses an e64 classification with -abs(src0).
+        let words = if absolute_negative {
+            vop3(op, 2, Mods { abs: 1, neg: 1, ..m0 }, VCC_LO, None)
+        } else { vopc(op) };
+        c.push(Case { out, vcc_in: true, float_in: false, ..case(name, words, [H, I, I], move |a, b, _, _| {
+            let h = a as u16;
+            let negative = absolute_negative || h & 0x8000 != 0;
+            let class = match h & 0x7fff {
+                0 => if negative { 5 } else { 6 },
+                1..=0x03ff => if negative { 4 } else { 7 },
+                0x0400..=0x7bff => if negative { 3 } else { 8 },
+                0x7c00 => if negative { 2 } else { 9 },
+                0x7c01..=0x7dff => 0,
+                _ => 1,
+            };
+            Want::U((b >> class) & 1)
         }) });
     }
     for (name, op, out) in [("v_cmp_class_f32", 0x88, Out::Vcc), ("v_cmpx_class_f32", 0x98, Out::Exec)] {
@@ -877,29 +939,38 @@ fn cases() -> Vec<Case> {
         });
         c.push(p);
     }
-    for (op, cc) in [(0xe2,"eq"), (0xe3,"le"), (0xe4,"gt"), (0xe5,"ne"),
-                      (0xf2,"eq"), (0xf4,"gt"), (0xf5,"ne")] {
-        let cmpx = op >= 0xf0;
-        for e64 in [false, true] {
-            // v[0:1] = (a,b), v[4:5] = (c,a).
-            let mut words = vec![0x7e08_0302, 0x7e0a_0300];
-            if e64 {
-                words.extend([0xd400_0000 | op << 16 | if cmpx {126} else {106}, 0x0002_0900]);
-            } else {
-                words.push(0x7c00_0900 | op << 17);
+    for base in [0xa0u32, 0xb0, 0xe0, 0xf0] {
+        let signed = base < 0xe0;
+        let ty = if signed { "i64" } else { "u64" };
+        let cmpx = base & 0x10 != 0;
+        for (pred, cc) in ["f", "lt", "eq", "le", "gt", "ne", "ge", "t"].iter().enumerate() {
+            let op = base + pred as u32;
+            for e64 in [false, true] {
+                // v[0:1] = (a,b), v[4:5] = (c,a).
+                let mut words = vec![0x7e08_0302, 0x7e0a_0300];
+                if e64 {
+                    words.extend([0xd400_0000 | op << 16 | if cmpx {126} else {106}, 0x0002_0900]);
+                } else {
+                    words.push(0x7c00_0900 | op << 17);
+                }
+                words.push(S_ENDPGM);
+                let name = format!("v_{}_{cc}_{ty} e{}", if cmpx { "cmpx" } else { "cmp" }, if e64 { 64 } else { 32 });
+                c.push(Case { out: if cmpx {Out::Exec} else {Out::Vcc}, vcc_in: true,
+                    ..case(&name, words, [I; 3], move |a,b,c,_| {
+                        let lhs = u64::from(a) | u64::from(b) << 32;
+                        let rhs = u64::from(c) | u64::from(a) << 32;
+                        let order = if signed { (lhs as i64).cmp(&(rhs as i64)) } else { lhs.cmp(&rhs) };
+                        Want::U(u32::from(match pred {
+                            0 => false, 1 => order.is_lt(), 2 => order.is_eq(), 3 => order.is_le(),
+                            4 => order.is_gt(), 5 => order.is_ne(), 6 => order.is_ge(), 7 => true,
+                            _ => unreachable!(),
+                        }))
+                    })
+                });
             }
-            words.push(S_ENDPGM);
-            let name = format!("v_{}_{cc}_u64 e{}", if cmpx { "cmpx" } else { "cmp" }, if e64 { 64 } else { 32 });
-            c.push(Case { out: if cmpx {Out::Exec} else {Out::Vcc}, vcc_in: true,
-                ..case(&name, words, [I; 3], move |a,b,c,_| {
-                    let lhs = u64::from(a) | u64::from(b) << 32;
-                    let rhs = u64::from(c) | u64::from(a) << 32;
-                    Want::U(u32::from(match cc { "eq" => lhs == rhs, "ne" => lhs != rhs,
-                        "gt" => lhs > rhs, "le" => lhs <= rhs, _ => unreachable!() }))
-                })
-            });
         }
     }
+    c.extend(compare64::cases());
     // --- packed half floats (VOP3P, default op_sel)
     let pk: [(&str, u32, usize, fn(f32, f32, f32) -> f32); 5] = [
         ("v_pk_fma_f16", 0x0e, 3, |a, b, c| ((a as f64) * (b as f64) + c as f64) as f32),
@@ -928,10 +999,14 @@ fn cases() -> Vec<Case> {
 }
 
 fn case_vectors(c: &Case, index: usize) -> Vec<[u32; 4]> {
-    vectors(&c.doms, c.vcc_in, 0x9e37_79b9_7f4a_7c15 ^ index as u64)
+    let mut inputs: Vec<_> = vectors(&c.doms, c.vcc_in, 0x9e37_79b9_7f4a_7c15 ^ index as u64)
         .into_iter()
         .filter(|v| !(c.float_in && v[..3].iter().any(|&x| is_denorm(x))))
-        .collect()
+        .collect();
+    if c.name.starts_with("v_cmp") && c.name.split_whitespace().next().unwrap().ends_with("_f64") {
+        inputs.extend(compare64::edge_cases());
+    }
+    inputs
 }
 
 fn check_result(c: &Case, v: &[u32; 4], result: u32, vcc: u32, exec: u32) -> (bool, Want, u32) {
@@ -996,6 +1071,8 @@ fn coin_scalar_arithmetic() -> Vec<Case> {
         ("s_xnor_b32", sop2(0x1c), |a,b,_| (!(a ^ b), !(a ^ b) != 0)),
         ("s_lshl3_add_u32", sop2(0x30), |a,b,_| (a << 3).overflowing_add(b)),
         ("s_pack_ll_b32_b16", sop2(0x32), |a,b,scc| (a & 65535 | b << 16, scc)),
+        ("s_pack_lh_b32_b16", sop2(0x33), |a,b,scc| (a & 65535 | b & 0xffff_0000, scc)),
+        ("s_pack_hh_b32_b16", sop2(0x34), |a,b,scc| (a >> 16 | b & 0xffff_0000, scc)),
         ("s_flbit_i32_b32", 0xbe90_1511, |_,b,scc| (if b == 0 { u32::MAX } else { b.leading_zeros() }, scc)),
         ("s_wqm_b32", 0xbe90_0911, |_,b,_| {
             let mask = (0..8).filter(|k| b & (15 << (4*k)) != 0).fold(0, |m,k| m | (15 << (4*k)));
@@ -1384,6 +1461,8 @@ fn coin_run_valu_conformance() {
     let retail: BTreeSet<_> = include_str!("../../../tools/progress/mnemonics.txt")
         .lines().chain(include_str!("../../../tools/progress/bvh-mnemonics.txt").lines())
         .chain(include_str!("../../../tools/progress/fsr-mnemonics.txt").lines())
+        .chain(include_str!("../../../tools/progress/scarlett-vopc-candidates.tsv").lines()
+            .filter(|row| row.starts_with("v_cmp")))
         .filter_map(|line| line.split_whitespace().next()).filter(|name| !name.contains('<')).collect();
     let names: BTreeSet<_> = exercised.iter().map(String::as_str).chain(memory.iter().copied()).chain(graphics.iter().copied()).chain(cache_checks.keys().map(String::as_str)).chain(retail.iter().copied()).collect();
     let mut coverage = BufWriter::new(File::create(dir.join("coverage.tsv")).unwrap());

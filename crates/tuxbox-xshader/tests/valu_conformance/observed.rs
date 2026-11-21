@@ -118,6 +118,21 @@ fn lds_cases(cases: &mut Vec<Case>) {
         cases.push(case(&format!("ds_write_b128 word {k}"), words, [Dom::I; 3],
             move |a, b, c, _| Want::U([a, b, c, 29][k as usize])));
     }
+    // D16 inserts a halfword from LDS into the selected half of v3; v2
+    // seeds the other half so a zero-extending load cannot pass.
+    for (name, op) in [("ds_read_u16_d16", 0xa6), ("ds_read_u16_d16_hi", 0xa7)] {
+        for offset in [0, 2] {
+            let mut words = vec![base, vmov(3, 258)];
+            words.extend(ds(0x0d, 0, 8, 0, 0, 0));
+            words.push(WAIT);
+            words.extend(ds(op, offset, 8, 0, 0, 3));
+            words.extend([WAIT, S_ENDPGM]);
+            cases.push(case(&format!("{name} byte {offset}"), words, [Dom::I; 3], move |a, _, c, _| {
+                let field = (a >> (offset * 8)) & 0xffff;
+                Want::U(if op == 0xa6 { (c & 0xffff_0000) | field } else { (c & 0xffff) | (field << 16) })
+            }));
+        }
+    }
     for (name, op, width, store, signed) in [
         ("ds_read_u16", 0x3c, 2, false, false), ("ds_read_i16", 0x3b, 2, false, true),
         ("ds_read_i8", 0x39, 1, false, true), ("ds_read_u8", 0x3a, 1, false, false),
@@ -199,6 +214,22 @@ fn code_loads(cases: &mut Vec<Case>) {
 pub(super) fn cases() -> Vec<Case> {
     let mut cases = Vec::new();
     lds_cases(&mut cases);
+    // Exact results from compact GFX1036 instructions. Seed v3 so these check
+    // the preserved upper half, NaN payloads, and the sign of zero as well.
+    for (input, sine, cosine) in [
+        (0x0000, 0x0000, 0x3c00), (0x8000, 0x8000, 0x3c00),
+        (0x0001, 0x0006, 0x3c00), (0x8001, 0x8006, 0x3c00),
+        (0x1234, 0x1cdf, 0x3c00), (0x3400, 0x3c00, 0x0000),
+        (0xb400, 0xbc00, 0x0000), (0x3800, 0x0000, 0xbc00),
+        (0xba00, 0x3c00, 0x0000), (0xfbff, 0, 0x3c00),
+        (0xfc00, 0xfe00, 0xfe00), (0x7c43, 0x7e43, 0x7e43),
+    ] {
+        for (name, op, expected) in [("v_sin_f16", 0x60, sine), ("v_cos_f16", 0x61, cosine)] {
+            let words = vec![vmov(0, 255), input, vmov(3, 258), 0x7e06_0100 | (op << 9), S_ENDPGM];
+            cases.push(case(&format!("{name} {input:#06x}"), words, [Dom::I; 3],
+                move |_, _, c, _| Want::U((c & 0xffff_0000) | expected)));
+        }
+    }
     code_loads(&mut cases);
     control_cases(&mut cases);
     group_cases(&mut cases);

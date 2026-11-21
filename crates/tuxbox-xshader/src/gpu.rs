@@ -59,6 +59,7 @@ const CL_BARRIER: usize = 26;
 const CL_SET_HEAPS: usize = 28;
 const CL_SET_COMPUTE_ROOTSIG: usize = 29;
 const CL_SET_COMPUTE_TABLE: usize = 31;
+const CL_SET_COMPUTE_ROOT_CONSTANTS: usize = 35;
 const CL_SET_COMPUTE_ROOT_UAV: usize = 41;
 // ID3D12CommandQueue
 const Q_EXECUTE: usize = 10;
@@ -375,6 +376,21 @@ impl Gpu {
         samplers: &[Sampler],
         uav: &mut [Binding],
     ) -> Result<(), String> {
+        self.run_bound_with_constants(dxil, data, groups, srv, samplers, uav, &[])
+    }
+
+    /// The same descriptor tables and output UAV as `run_bound`, optionally
+    /// followed by a root-constants parameter for a guest constant buffer.
+    pub fn run_bound_with_constants(
+        &self,
+        dxil: &[u8],
+        data: &mut [u32],
+        groups: u32,
+        srv: &[Binding],
+        samplers: &[Sampler],
+        uav: &mut [Binding],
+        constants: &[u32],
+    ) -> Result<(), String> {
         let descriptor_tables = !(srv.is_empty() && samplers.is_empty() && uav.is_empty());
         unsafe {
             let bytes = (data.len() * 4).max(4) as u64;
@@ -440,6 +456,11 @@ impl Gpu {
             let va: unsafe extern "system" fn(*mut c_void) -> u64 = slot(gpu_buf.0, R_GPUVA);
             let f: unsafe extern "system" fn(*mut c_void, u32, u64) = slot(self.list, CL_SET_COMPUTE_ROOT_UAV);
             f(self.list, if descriptor_tables { 3 } else { 0 }, va(gpu_buf.0));
+            if !constants.is_empty() {
+                let f: unsafe extern "system" fn(*mut c_void, u32, u32, *const u32, u32) =
+                    slot(self.list, CL_SET_COMPUTE_ROOT_CONSTANTS);
+                f(self.list, if descriptor_tables { 4 } else { 1 }, constants.len().try_into().map_err(|_| "too many root constants")?, constants.as_ptr(), 0);
+            }
             let f: unsafe extern "system" fn(*mut c_void, u32, u32, u32) = slot(self.list, CL_DISPATCH);
             f(self.list, groups, 1, 1);
             self.barrier(gpu_buf.0, STATE_UAV, STATE_COPY_SOURCE);

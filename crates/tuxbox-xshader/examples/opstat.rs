@@ -3,9 +3,24 @@
 //! what real shaders contain. MIMG instructions that set a bit changing their operand or
 //! result layout are listed separately, tagged `[d16 a16 unorm tfe lwe]`; MUBUF likewise
 //! (`[lds tfe]`).
+#[path = "opstat/ps09.rs"]
+mod ps09;
+
 use std::collections::BTreeMap;
 use tuxbox_xshader::{extract, rdna2::{disassemble, Enc}};
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--ps09-vopc") {
+        let selected: Result<Vec<usize>, _> = std::env::args().skip(2).map(|arg| arg.parse()).collect();
+        let selected = selected.unwrap_or_else(|_| {
+            eprintln!("PS09 shader indices must be nonnegative integers");
+            std::process::exit(1);
+        });
+        if let Err(error) = ps09::scan(&selected) {
+            eprintln!("PS09 scan failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let mut c: BTreeMap<(String, u32, String), usize> = BTreeMap::new();
     let mut n = 0;
     for p in std::env::args().skip(1) {

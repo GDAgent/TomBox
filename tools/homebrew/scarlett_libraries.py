@@ -79,6 +79,8 @@ def main(source, runtime, user_test):
         failures.append("--scarlett-import-test")
     for mode, name in [("--bvh-sort-test", "xboxbvhbuilder.dll"),
                        ("--fsr-postpass-test", "amd_fidelityfx_upscaler_xbox.dll"),
+                       ("--fsr-convolution-test", "amd_fidelityfx_upscaler_xbox.dll"),
+                       ("--fsr-exposure-test", "amd_fidelityfx_upscaler_xbox.dll"),
                        ("--fsr-sharpen-test", "amd_fidelityfx_upscaler_xbox.dll"),
                        ("--fsr-prepass-test", "amd_fidelityfx_upscaler_xbox.dll")]:
         if subprocess.run([HOMEBREW / "play-coins.sh", mode, libraries[name]]).returncode:

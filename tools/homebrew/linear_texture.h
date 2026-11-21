@@ -1,33 +1,32 @@
 #pragma once
 #include "graphics.h"
+#include <vector>
 
-// Upload the independently verified, row-major BC1 stream to a committed PC
-// texture. Sampling both textures on the same GPU keeps BC1 interpolation
-// identical across drivers without adding a tolerance to the pixel comparison.
-struct Bc1Reference {
+// Upload row-major texture data through the Xbox command-list copy slot.
+struct LinearTexture {
     ComPtr<ID3D12Resource> texture, upload;
 
-    int init(Frame& frame, const unsigned char* blocks, size_t size) {
-        constexpr UINT levels = 9;
+    int init(Frame& frame, const unsigned char* blocks, size_t size, DXGI_FORMAT format, UINT16 levels) {
         D3D12_RESOURCE_DESC d = {};
         d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         d.Width = d.Height = 256;
         d.MipLevels = levels;
         d.DepthOrArraySize = d.SampleDesc.Count = 1;
-        d.Format = DXGI_FORMAT_BC1_UNORM;
+        d.Format = format;
         D3D12_HEAP_PROPERTIES heap = {};
         heap.CreationNodeMask = heap.VisibleNodeMask = 1;
         heap.Type = D3D12_HEAP_TYPE_DEFAULT;
         CHECK(frame.dev->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &d,
               D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&texture)));
 
-        D3D12_PLACED_SUBRESOURCE_FOOTPRINT layouts[levels];
-        UINT rows[levels];
-        UINT64 row_bytes[levels], bytes;
-        frame.dev->GetCopyableFootprints(&d, 0, levels, 0, layouts, rows, row_bytes, &bytes);
+        std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> layouts(levels);
+        std::vector<UINT> rows(levels);
+        std::vector<UINT64> row_bytes(levels);
+        UINT64 bytes;
+        frame.dev->GetCopyableFootprints(&d, 0, levels, 0, layouts.data(), rows.data(), row_bytes.data(), &bytes);
         size_t needed = 0;
         for (UINT mip = 0; mip < levels; ++mip) needed += rows[mip] * row_bytes[mip];
-        if (size != needed) { std::fputs("Invalid linear BC1 reference size\n", stderr); return 1; }
+        if (size != needed) { std::fputs("Invalid linear upload size\n", stderr); return 1; }
 
         heap.Type = D3D12_HEAP_TYPE_UPLOAD;
         d.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;

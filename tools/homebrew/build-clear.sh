@@ -75,6 +75,8 @@ build_pe "$build/bvh_sort_probe.exe" tools/homebrew/bvh_sort_probe.cpp "$build/d
 build_pe "$build/fsr_prepass_probe.exe" tools/homebrew/fsr_prepass_probe.cpp "$build/d3d12_xs.dll.lib" d3d12.lib
 build_pe "$build/fsr_postpass_probe.exe" tools/homebrew/fsr_postpass_probe.cpp "$build/d3d12_xs.dll.lib" d3d12.lib
 build_pe "$build/fidelityfx_probe.exe" tools/homebrew/fidelityfx_probe.cpp "$build/d3d12_xs.dll.lib"
+build_pe "$build/ps09_depth_probe.exe" tools/homebrew/ps09_depth_probe.cpp "$build/d3d12_xs.dll.lib" d3d12.lib
+build_pe "$build/ps09_raster_probe.exe" tools/homebrew/ps09_raster_probe.cpp "$build/d3d12_xs.dll.lib" d3d12.lib
 build_pe "$build/clear_pixel.exe" tools/homebrew/clear_pixel.cpp "$build/d3d12_xs.dll.lib"
 build_pe "$build/coin_window.exe" tools/homebrew/coin_window.cpp "$build/d3d12_xs.dll.lib" "$build/examples/coin_rules.lib" "$build/xmem.dll.lib" \
     /subsystem:windows /entry:mainCRTStartup user32.lib ole32.lib xinput.lib ntdll.lib advapi32.lib userenv.lib ws2_32.lib bcrypt.lib

@@ -135,10 +135,11 @@ struct Frame {
     }
 
     // Copy one frame-sized, four-byte-per-pixel texture already in COPY_SOURCE.
-    void copy_to_readback(ID3D12Resource* resource, DXGI_FORMAT format) {
+    void copy_to_readback(ID3D12Resource* resource, DXGI_FORMAT format, UINT64 offset = 0) {
         D3D12_TEXTURE_COPY_LOCATION dst = {}, src = {};
         dst.pResource = readback.Get();
         dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        dst.PlacedFootprint.Offset = offset;
         dst.PlacedFootprint.Footprint = {format, width, height, 1, pitch};
         src.pResource = resource;
         src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
@@ -183,7 +184,7 @@ struct Mesh {
     int init(ID3D12Device* dev, D3D12_SHADER_BYTECODE vs, D3D12_SHADER_BYTECODE ps,
              const D3D12_INPUT_ELEMENT_DESC* inputs, UINT input_count, UINT bytes,
              const D3D12_ROOT_PARAMETER* tables = nullptr, UINT table_count = 0, bool with_depth = false,
-             D3D12_SHADER_BYTECODE gs = {}) {
+             D3D12_SHADER_BYTECODE gs = {}, bool second_target = false) {
         D3D12_ROOT_SIGNATURE_DESC sig = {};
         sig.NumParameters = table_count;
         sig.pParameters = tables;
@@ -211,7 +212,8 @@ struct Mesh {
             pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
             pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
         }
-        pso.NumRenderTargets = 1;
+        pso.NumRenderTargets = second_target ? 2 : 1;
+        if (second_target) pso.RTVFormats[1] = DXGI_FORMAT_R8G8B8A8_UNORM;
         pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
         pso.SampleMask = UINT_MAX;
         pso.SampleDesc.Count = 1;

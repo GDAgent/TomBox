@@ -16,7 +16,7 @@ Microsoft’s public GDK samples guide platform testing. The audit compares spec
 
 [![Progress map for observed imports, Direct3D methods, shader instructions and package assets](docs/img/progress.svg)](docs/img/progress.svg)
 
-**Reading the map.** Each import square represents one DLL and symbol across the recorded title and 16 Scarlett libraries. Green requires a behavior check for that pair. An observed import or resolved export with unverified behavior is amber. Missing exports are grey. Hover for the callers and evidence. Direct3D green counts implemented or forwarded slots. RDNA2 green requires successful translation of every scanned retail shader containing the instruction. [Compatibility matrix](docs/COMPATIBILITY.md) · [Known limitations](docs/TECHNICAL_DEBT.md)
+**Reading the map.** Each import square represents one DLL and symbol across the recorded title and 16 Scarlett libraries. Green requires a behavior check for that pair. An observed import or resolved export with unverified behavior is amber. Missing exports are grey. Hover for the callers and evidence. Direct3D green counts implemented or forwarded slots. RDNA2 green requires successful translation in the full retail shader audits. For comparisons found only in the Scarlett PS09 cache, every containing shader must pass GPU readback. [Compatibility matrix](docs/COMPATIBILITY.md) · [Known limitations](docs/TECHNICAL_DEBT.md)
 
 ## Try Coin Run on Linux
 

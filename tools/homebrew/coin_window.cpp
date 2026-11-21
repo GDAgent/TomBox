@@ -7,7 +7,7 @@
 #include "coin_controller.h"
 #include "coin_audio.h"
 #include "scarlett_libraries.h"
-#include "bc1_reference.h"
+#include "linear_texture.h"
 #include <vector>
 #include <algorithm>
 #include <memory>
@@ -794,6 +794,44 @@ static int check_streamed_mips(const char* path) {
     return 0;
 }
 
+// Single-mip R8G8B8A8_UNORM, TTPF mode 0: 128x128 texels per 64 KiB tile.
+// Walk physical order and scatter into a row-major upload. The host verifier
+// independently checks the sampled image against the reference decoder's hash.
+static int sample_ttpf_texture(const char* source, const char* result) {
+    constexpr unsigned side = 256;
+    std::vector<Color> pixels(side * side), sampled(side * side);
+    std::ifstream input(source, std::ios::binary);
+    for (unsigned tile = 0; tile < 4; ++tile) {
+        std::array<Color, 128 * 128> physical;
+        if (!input.read(reinterpret_cast<char*>(physical.data()), sizeof(physical))) return 1;
+        for (unsigned i = 0; i < physical.size(); ++i) {
+            unsigned x = (i & 3) | ((i >> 2) & 4);
+            unsigned y = ((i >> 2) & 3) | ((i >> 3) & 4);
+            for (unsigned bit = 3; bit < 7; ++bit) {
+                x |= ((i >> (2 * bit + 1)) & 1) << bit;
+                y |= ((i >> (2 * bit)) & 1) << bit;
+            }
+            pixels[(tile / 2 * 128 + y) * side + tile % 2 * 128 + x] = physical[i];
+        }
+    }
+    if (input.peek() != EOF || input.bad()) return 1;
+    BoardRenderer renderer;
+    LinearTexture linear;
+    auto& frame = renderer.frame;
+    if (frame.init(side, side) ||
+        linear.init(frame, pixels.front().data(), pixels.size() * sizeof(Color), DXGI_FORMAT_R8G8B8A8_UNORM, 1))
+        return 1;
+    renderer.atlas.texture = linear.texture;
+    if (renderer.atlas.create_views(frame) || renderer.init_mesh(6) ||
+        frame.begin({0,0,0,1}) || frame.finish() ||
+        sample_mip(renderer, linear.texture.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, 0, sampled.data()))
+        return 1;
+    std::ofstream out(result, std::ios::binary);
+    out.write(reinterpret_cast<const char*>(sampled.data()), sampled.size() * sizeof(Color));
+    out.close();
+    return !out.good();
+}
+
 struct ReferenceCase {
     const char* option;
     UINT width, height;
@@ -839,7 +877,7 @@ static int check_reference(const char* path, const ReferenceCase& ref) {
     for (UINT mip = 0; mip < levels; ++mip) slice_pixels += mip_pixels(mip);
     const size_t pixels = slice_pixels * ref.slices;
     std::vector<Color> expected(pixels);
-    Bc1Reference linear;
+    LinearTexture linear;
     std::vector<unsigned char> blocks(ref.compare_committed_bc1 ? 43704 : 0); // 5,463 row-major BC1 blocks.
     void* reference_data = ref.compare_committed_bc1 ? static_cast<void*>(blocks.data()) : expected.data();
     size_t reference_bytes = ref.compare_committed_bc1 ? blocks.size() : pixels * sizeof(Color);
@@ -848,7 +886,7 @@ static int check_reference(const char* path, const ReferenceCase& ref) {
         std::fputs("Invalid tiled reference fixture length\n", stderr);
         return 1;
     }
-    if (ref.compare_committed_bc1 && linear.init(frame, blocks.data(), blocks.size())) return 1;
+    if (ref.compare_committed_bc1 && linear.init(frame, blocks.data(), blocks.size(), ref.format, levels)) return 1;
     if (frame.begin({0,0,0,1}) || frame.finish(true)) return 1;
     if (ref.compare_committed_bc1) {
         size_t start = 0;
@@ -915,6 +953,7 @@ static HWND game_window() {
 }
 
 int main(int argc, char** argv) {
+    if (argc == 4 && !std::strcmp(argv[1], "--ttpf-texture")) return sample_ttpf_texture(argv[2], argv[3]);
     if (argc == 2 && !std::strcmp(argv[1], "--gamechat-test")) return !scarlett_libraries::check_game_chat();
     if (argc == 2 && !std::strcmp(argv[1], "--scarlett-libraries-test")) return scarlett_libraries::run();
     if (argc == 2 && !std::strcmp(argv[1], "--command-list-test")) return check_command_list_diagnostics();

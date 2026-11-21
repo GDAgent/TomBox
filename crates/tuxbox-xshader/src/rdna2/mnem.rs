@@ -43,7 +43,7 @@ pub fn vop1(op: u32) -> Option<&'static str> {
         0x42 => "v_movreld_b32", 0x43 => "v_movrels_b32", 0x44 => "v_movrelsd_b32",
         0x50 => "v_cvt_f16_u16", 0x51 => "v_cvt_f16_i16", 0x52 => "v_cvt_u16_f16", 0x53 => "v_cvt_i16_f16",
         0x54 => "v_rcp_f16", 0x55 => "v_sqrt_f16", 0x56 => "v_rsq_f16", 0x5b => "v_floor_f16",
-        0x5c => "v_ceil_f16", 0x5d => "v_trunc_f16", 0x5e => "v_rndne_f16", 0x5f => "v_fract_f16",
+        0x5c => "v_ceil_f16", 0x5d => "v_trunc_f16", 0x5e => "v_rndne_f16", 0x5f => "v_fract_f16", 0x60 => "v_sin_f16", 0x61 => "v_cos_f16",
         _ => return None,
     })
 }
@@ -63,6 +63,18 @@ pub fn vopc(op: u32) -> Option<&'static str> {
         "v_cmpx_lg_f32", "v_cmpx_ge_f32", "v_cmpx_o_f32", "v_cmpx_u_f32", "v_cmpx_nge_f32",
         "v_cmpx_nlg_f32", "v_cmpx_ngt_f32", "v_cmpx_nle_f32", "v_cmpx_neq_f32", "v_cmpx_nlt_f32",
         "v_cmpx_tru_f32",
+    ];
+    const D: [&str; 16] = [
+        "v_cmp_f_f64", "v_cmp_lt_f64", "v_cmp_eq_f64", "v_cmp_le_f64", "v_cmp_gt_f64",
+        "v_cmp_lg_f64", "v_cmp_ge_f64", "v_cmp_o_f64", "v_cmp_u_f64", "v_cmp_nge_f64",
+        "v_cmp_nlg_f64", "v_cmp_ngt_f64", "v_cmp_nle_f64", "v_cmp_neq_f64", "v_cmp_nlt_f64",
+        "v_cmp_tru_f64",
+    ];
+    const DX: [&str; 16] = [
+        "v_cmpx_f_f64", "v_cmpx_lt_f64", "v_cmpx_eq_f64", "v_cmpx_le_f64", "v_cmpx_gt_f64",
+        "v_cmpx_lg_f64", "v_cmpx_ge_f64", "v_cmpx_o_f64", "v_cmpx_u_f64", "v_cmpx_nge_f64",
+        "v_cmpx_nlg_f64", "v_cmpx_ngt_f64", "v_cmpx_nle_f64", "v_cmpx_neq_f64", "v_cmpx_nlt_f64",
+        "v_cmpx_tru_f64",
     ];
     const H: [&str; 16] = [
         "v_cmp_f_f16", "v_cmp_lt_f16", "v_cmp_eq_f16", "v_cmp_le_f16", "v_cmp_gt_f16",
@@ -92,17 +104,38 @@ pub fn vopc(op: u32) -> Option<&'static str> {
         "v_cmpx_f_u32", "v_cmpx_lt_u32", "v_cmpx_eq_u32", "v_cmpx_le_u32", "v_cmpx_gt_u32",
         "v_cmpx_ne_u32", "v_cmpx_ge_u32", "v_cmpx_t_u32",
     ];
+    const I64: [&str; 8] = [
+        "v_cmp_f_i64", "v_cmp_lt_i64", "v_cmp_eq_i64", "v_cmp_le_i64",
+        "v_cmp_gt_i64", "v_cmp_ne_i64", "v_cmp_ge_i64", "v_cmp_t_i64",
+    ];
+    const I64X: [&str; 8] = [
+        "v_cmpx_f_i64", "v_cmpx_lt_i64", "v_cmpx_eq_i64", "v_cmpx_le_i64",
+        "v_cmpx_gt_i64", "v_cmpx_ne_i64", "v_cmpx_ge_i64", "v_cmpx_t_i64",
+    ];
+    const U64: [&str; 8] = [
+        "v_cmp_f_u64", "v_cmp_lt_u64", "v_cmp_eq_u64", "v_cmp_le_u64",
+        "v_cmp_gt_u64", "v_cmp_ne_u64", "v_cmp_ge_u64", "v_cmp_t_u64",
+    ];
+    const U64X: [&str; 8] = [
+        "v_cmpx_f_u64", "v_cmpx_lt_u64", "v_cmpx_eq_u64", "v_cmpx_le_u64",
+        "v_cmpx_gt_u64", "v_cmpx_ne_u64", "v_cmpx_ge_u64", "v_cmpx_t_u64",
+    ];
     Some(match op {
         0x00..=0x0f => F[op as usize],
         0x10..=0x1f => FX[(op - 0x10) as usize],
+        0x20..=0x2f => D[(op - 0x20) as usize],
+        0x30..=0x3f => DX[(op - 0x30) as usize],
         0x80..=0x87 => I[(op - 0x80) as usize],
         0x88 => "v_cmp_class_f32",
         0x89 => "v_cmp_lt_i16", 0x8a => "v_cmp_eq_i16", 0x8b => "v_cmp_le_i16",
-        0x8c => "v_cmp_gt_i16", 0x8d => "v_cmp_ne_i16", 0x8e => "v_cmp_ge_i16",
+        0x8c => "v_cmp_gt_i16", 0x8d => "v_cmp_ne_i16", 0x8e => "v_cmp_ge_i16", 0x8f => "v_cmp_class_f16",
         0x90..=0x97 => IX[(op - 0x90) as usize],
         0x98 => "v_cmpx_class_f32",
         0x99 => "v_cmpx_lt_i16", 0x9a => "v_cmpx_eq_i16", 0x9b => "v_cmpx_le_i16",
-        0x9c => "v_cmpx_gt_i16", 0x9d => "v_cmpx_ne_i16", 0x9e => "v_cmpx_ge_i16",
+        0x9c => "v_cmpx_gt_i16", 0x9d => "v_cmpx_ne_i16", 0x9e => "v_cmpx_ge_i16", 0x9f => "v_cmpx_class_f16",
+        0xa0..=0xa7 => I64[(op - 0xa0) as usize],
+        0xb0..=0xb7 => I64X[(op - 0xb0) as usize],
+        0xa8 => "v_cmp_class_f64", 0xb8 => "v_cmpx_class_f64",
         0xa9 => "v_cmp_lt_u16", 0xaa => "v_cmp_eq_u16", 0xab => "v_cmp_le_u16",
         0xac => "v_cmp_gt_u16", 0xad => "v_cmp_ne_u16", 0xae => "v_cmp_ge_u16",
         0xb9 => "v_cmpx_lt_u16", 0xba => "v_cmpx_eq_u16", 0xbb => "v_cmpx_le_u16",
@@ -111,8 +144,8 @@ pub fn vopc(op: u32) -> Option<&'static str> {
         0xc8..=0xcf => H[(op - 0xc8) as usize],
         0xd0..=0xd7 => UX[(op - 0xd0) as usize],
         0xd8..=0xdf => HX[(op - 0xd8) as usize],
-        0xe2 => "v_cmp_eq_u64", 0xe3 => "v_cmp_le_u64", 0xe4 => "v_cmp_gt_u64", 0xe5 => "v_cmp_ne_u64",
-        0xf2 => "v_cmpx_eq_u64", 0xf4 => "v_cmpx_gt_u64", 0xf5 => "v_cmpx_ne_u64",
+        0xe0..=0xe7 => U64[(op - 0xe0) as usize],
+        0xf0..=0xf7 => U64X[(op - 0xf0) as usize],
         0xe8..=0xef => H[(op - 0xe8 + 8) as usize],
         0xf8..=0xff => HX[(op - 0xf8 + 8) as usize],
         _ => return None,
@@ -141,7 +174,7 @@ pub fn vop3(op: u32) -> Option<&'static str> {
         0x169 => "v_mul_lo_u32", 0x16a => "v_mul_hi_u32", 0x16c => "v_mul_hi_i32",
         0x176 => "v_mad_u64_u32", 0x311 => "v_pack_b32_f16",
         0x178 => "v_xor3_b32", 0x345 => "v_xad_u32", 0x346 => "v_lshl_add_u32", 0x347 => "v_add_lshl_u32",
-        0x36d => "v_add3_u32", 0x36f => "v_lshl_or_b32", 0x371 => "v_and_or_b32", 0x372 => "v_or3_b32",
+        0x369 => "v_cvt_pknorm_u16_f32", 0x36d => "v_add3_u32", 0x36f => "v_lshl_or_b32", 0x371 => "v_and_or_b32", 0x372 => "v_or3_b32",
         0x30f => "v_add_co_u32", 0x310 => "v_sub_co_u32", 0x319 => "v_subrev_co_u32",
         0x344 => "v_perm_b32", 0x351 => "v_min3_f16", 0x354 => "v_max3_f16", 0x357 => "v_med3_f16",
         0x378 => "v_permlanex16_b32",
@@ -171,7 +204,7 @@ pub fn sop2(op: u32) -> Option<&'static str> {
         0x26 => "s_mul_i32", 0x27 => "s_bfe_u32", 0x28 => "s_bfe_i32", 0x29 => "s_bfe_u64",
         0x2a => "s_bfe_i64", 0x2c => "s_absdiff_i32", 0x2e => "s_lshl1_add_u32",
         0x2f => "s_lshl2_add_u32", 0x30 => "s_lshl3_add_u32", 0x31 => "s_lshl4_add_u32",
-        0x32 => "s_pack_ll_b32_b16", 0x35 => "s_mul_hi_u32", 0x36 => "s_mul_hi_i32",
+        0x32 => "s_pack_ll_b32_b16", 0x33 => "s_pack_lh_b32_b16", 0x34 => "s_pack_hh_b32_b16", 0x35 => "s_mul_hi_u32", 0x36 => "s_mul_hi_i32",
         _ => return None,
     })
 }
@@ -260,6 +293,7 @@ pub fn mubuf(op: u32) -> Option<&'static str> {
         0x00 => "buffer_load_format_x", 0x01 => "buffer_load_format_xy",
         0x02 => "buffer_load_format_xyz", 0x03 => "buffer_load_format_xyzw",
         0x04 => "buffer_store_format_x", 0x07 => "buffer_store_format_xyzw",
+        0x87 => "buffer_store_format_d16_xyzw",
         0x08 => "buffer_load_ubyte", 0x09 => "buffer_load_sbyte", 0x0a => "buffer_load_ushort",
         0x0b => "buffer_load_sshort", 0x0c => "buffer_load_dword", 0x0d => "buffer_load_dwordx2",
         0x0e => "buffer_load_dwordx4", 0x0f => "buffer_load_dwordx3", 0x18 => "buffer_store_byte",
@@ -316,6 +350,7 @@ pub fn lookup(enc: Enc, op: u32) -> Option<&'static str> {
             0x0f => Some("ds_write2st64_b32"),
             0x4d => Some("ds_write_b64"), 0x4e => Some("ds_write2_b64"),
             0x1e => Some("ds_write_b8"), 0x1f => Some("ds_write_b16"),
+            0xa6 => Some("ds_read_u16_d16"), 0xa7 => Some("ds_read_u16_d16_hi"),
             0x39 => Some("ds_read_i8"), 0x3a => Some("ds_read_u8"), 0x3b => Some("ds_read_i16"), 0x3c => Some("ds_read_u16"),
             _ => None,
         },

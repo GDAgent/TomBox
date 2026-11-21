@@ -161,7 +161,7 @@ pub fn disassemble(isa: &[u8]) -> Vec<Insn> {
 }
 
 /// Walk instruction boundaries lazily so extraction can stop before padding and constant tables.
-pub(crate) fn instructions(isa: &[u8]) -> impl Iterator<Item = Insn> + '_ {
+pub fn instructions(isa: &[u8]) -> impl Iterator<Item = Insn> + '_ {
     let mut offset = 0;
     std::iter::from_fn(move || {
         let bytes = &isa[offset..];

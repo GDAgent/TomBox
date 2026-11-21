@@ -19,15 +19,15 @@ def signature(*elements):
     # Each 32-byte ISG1/OSG1 entry describes a float4 in the next register.
     entries = bytearray()
     names = bytearray()
-    for register, (name, system_value, read_mask) in enumerate(elements):
+    for register, (name, system_value, read_mask, *index) in enumerate(elements):
         offset = 8 + 32 * len(elements) + len(names)
-        entries.extend(words(0, offset, 0, system_value, 3, register))
+        entries.extend(words(0, offset, index[0] if index else 0, system_value, 3, register))
         entries.extend(bytes([15, read_mask, 0, 0]) + words(0))
         names.extend(name.encode() + b"\0")
     return words(len(elements), 8) + entries + names
 
 
-def shader(stage, instructions, inputs, outputs, root=None, threads=(0, 0, 0), psv=None):
+def shader(stage, instructions, inputs, outputs, root=None, threads=(0, 0, 0), psv=None, ps09_graphics=None):
     # The compute preamble with explicit dimensions is followed by a driver v_nop marker.
     marker = (0xD5800000, 0x03FE0000, 0) if any(threads) else ()
     code = words(16, *threads, *marker, *instructions)
@@ -40,6 +40,8 @@ def shader(stage, instructions, inputs, outputs, root=None, threads=(0, 0, 0), p
             + b"DXIL" + words(0x100, 16 + len(body) - 4, 4) + body)
 
     chunks = [(b"ISG1", inputs), (b"OSG1", outputs), (b"DXIL", dxil)]
+    if ps09_graphics is not None:
+        chunks.append((b"TBGP", ps09_graphics))
     if psv is not None:
         chunks.append((b"PSV0", psv))
     if root is not None:
@@ -70,6 +72,21 @@ if __name__ == "__main__":
         0xF80008CF, 0x07060504,  # exp pos0 v4, v5, v6, v7 done
         end,
     ], signature(("POSITION", 0, 15)), signature(("SV_Position", 1, 0))))
+    emit("cache_grid_vs", shader(1, [
+        0xF80000CF, 0x07060504,  # pos0
+        0xF800020F, 0x0B0A0908,  # param0
+        0xF8000A1F, 0x0F0E0D0C,  # param1, done
+        end,
+    ], signature(("POSITION", 0, 15), ("COLOR", 0, 15), ("TEXCOORD", 0, 15)),
+       signature(("SV_Position", 1, 0), ("COLOR", 0, 0), ("TEXCOORD", 0, 0))))
+    emit("cache_mrt_vs", shader(1, [
+        0xF80000CF, 0x07060504,  # pos0
+        0xF800020F, 0x0B0A0908,  # param0
+        0xF800021F, 0x0F0E0D0C,  # param1
+        0xF8000A2F, 0x13121110,  # param2, done
+        end,
+    ], signature(("POSITION", 0, 15), ("COLOR", 0, 15), ("TEXCOORD", 0, 15), ("NORMAL", 0, 15)),
+       signature(("SV_Position", 1, 0), ("COLOR", 0, 0), ("TEXCOORD", 0, 0), ("NORMAL", 0, 0))))
     emit("triangle_ps", shader(0, [
         0x7E000280,              # v_mov_b32 v0, 0
         0x7E0202F2,              # v_mov_b32 v1, 1.0

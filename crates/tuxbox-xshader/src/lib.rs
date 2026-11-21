@@ -122,6 +122,9 @@ pub struct ShaderExtract {
     pub bitcode_stripped: bool,
     /// Compute configuration from section 0 of an ACCC/FSPX executable, when present.
     pub fspx_config: Option<[u32; 7]>,
+    /// SPI_PS_INPUT_ENA from the original PS09 graphics configuration when
+    /// a homebrew DXBC carrier supplies its TBGP chunk.
+    pub ps09_pixel_inputs: Option<u32>,
     /// Inflated FSSM container bytes (empty for FSPX).
     pub fssm: Vec<u8>,
     /// Entry-point name recovered from FSSM, if found.
@@ -191,6 +194,13 @@ pub fn extract(dxbc: &[u8]) -> Result<ShaderExtract, String> {
         shader_model: sm,
         bitcode_stripped,
         fspx_config,
+        ps09_pixel_inputs: match chunk_body(b"TBGP") {
+            Some(body) if stage == Stage::Pixel && body.len() == 380 => {
+                Some(u32::from_le_bytes(body[88..92].try_into().unwrap()))
+            }
+            Some(_) => return Err("unrecognized PS09 graphics configuration".into()),
+            None => None,
+        },
         entry,
         isa,
         isa_offset_in_fssm: isa_off,

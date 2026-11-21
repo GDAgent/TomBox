@@ -4,11 +4,13 @@ import csv
 import hashlib
 import json
 import subprocess
+import zlib
 from collections import Counter, defaultdict
 from pathlib import Path, PureWindowsPath
 import xml.etree.ElementTree as ET
 
 from package_assets import audit_assets, probe_reads
+from package_gpu import probe_package_gpu
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -58,7 +60,7 @@ def file_hash(path):
     return digest.hexdigest()
 
 
-def audit_package(root, tool, probe_asset_io=False):
+def audit_package(root, tool, probe_asset_io=False, probe_asset_gpu=False):
     files = {}
     for entry in root.rglob("*"):
         if entry.is_file():
@@ -122,6 +124,8 @@ def audit_package(root, tool, probe_asset_io=False):
     assets = audit_assets(root, archives)
     if probe_asset_io and archives:
         assets["proton_win32_reads"] = probe_reads(REPO, root, archives)
+    if probe_asset_gpu:
+        assets["gpu_readback"] = probe_package_gpu(REPO, root)
     return {
         "assets": assets, "identity": identity.attrib, "appx_identity": appx_identity.attrib,
         "title_id": config.findtext("TitleId"),
@@ -142,9 +146,10 @@ if __name__ == "__main__":
     parser.add_argument("package", type=Path)
     parser.add_argument("--pe-inspect", type=Path, default=REPO / "target/release/pe-inspect")
     parser.add_argument("--probe-asset-io", action="store_true", help="compare Win32 reads under Proton with host archive bytes")
+    parser.add_argument("--probe-asset-gpu", action="store_true", help="render the pinned Scarlett texture and PS09 shader references under Proton")
     args = parser.parse_args()
     try:
-        report = audit_package(args.package.resolve(), args.pe_inspect.resolve(), args.probe_asset_io)
-    except (OSError, KeyError, ValueError, ET.ParseError, subprocess.SubprocessError) as error:
+        report = audit_package(args.package.resolve(), args.pe_inspect.resolve(), args.probe_asset_io, args.probe_asset_gpu)
+    except (OSError, KeyError, ValueError, ET.ParseError, zlib.error, subprocess.SubprocessError) as error:
         parser.exit(1, f"Package inspection failed: {error}\n")
     print(json.dumps(report, indent=2))

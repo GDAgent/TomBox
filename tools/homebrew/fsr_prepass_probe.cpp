@@ -405,11 +405,281 @@ int run_sharpen(D3D12_SHADER_BYTECODE shader, float strength, UINT groups_x, UIN
     if (mismatches) std::fprintf(stderr, "%u channel mismatches\n", mismatches);
     return mismatches != 0;
 }
+
+// The SPD pass consumes 64x64 input tiles. Its sixth mip stores a group mean
+// of natural-log luminance; for larger inputs the final group reduces those
+// texels and publishes the exposure alongside the previous frame's value.
+int run_exposure(D3D12_SHADER_BYTECODE shader, UINT mips, UINT groups, UINT expected_groups) {
+    const UINT pixels = 64 * groups;
+    const UINT rgba_pitch = pixels * sizeof(Pixel), coarse_pitch = 256;
+    const UINT coarse_bytes = groups * coarse_pitch;
+    const UINT counter_offset = 0, coarse_offset = 512, constants_offset = 1536, raw_offset = 1792;
+    const UINT input_offset = 2048;
+    constexpr float previous = 19.f, guard_value = -53.f, pre_exposure = 2.f;
+    Frame frame;
+    if (frame.init(1, 1, false, input_offset)) return 1;
+    auto dev = frame.dev.Get();
+    auto list = frame.list.Get();
+    ComPtr<ID3D12RootSignature> root;
+    ComPtr<ID3D12PipelineState> pso;
+    if (create_pipeline(dev, shader, root, pso)) return 1;
+    D3D12_HEAP_PROPERTIES hp{};
+    hp.CreationNodeMask = hp.VisibleNodeMask = 1;
+    hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+    auto buffer = frame.readback->GetDesc();
+    buffer.Width = input_offset + pixels * rgba_pitch;
+    ComPtr<ID3D12Resource> upload, raw;
+    CHECK(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_GENERIC_READ,
+                                       nullptr, IID_PPV_ARGS(&upload)));
+    void* data;
+    CHECK(upload->Map(0, nullptr, &data));
+    auto bytes = static_cast<BYTE*>(data);
+    std::memset(bytes, 0, size_t(buffer.Width));
+    double group_log[4]{};
+    for (UINT y = 0; y < pixels; ++y) {
+        for (UINT x = 0; x < pixels; ++x) {
+            const UINT g = (y / 64) * groups + x / 64;
+            const float value = float(1u << g) * (1 + ((x ^ y) & 1));
+            Pixel p{value, 3 * value, 0.5f * value, 1};
+            auto pos = input_offset + y * rgba_pitch + x * sizeof(Pixel);
+            std::memcpy(bytes + pos, p.data(), sizeof(p));
+            group_log[g] += std::log((.2126 * p[0] + .7152 * p[1] + .0722 * p[2]) / pre_exposure) / 4096;
+        }
+    }
+    std::fill_n(reinterpret_cast<float*>(bytes + coarse_offset), coarse_bytes / 4, guard_value);
+    const UINT constants[] = {mips, expected_groups, 0, 0, 0, 0, bits(pre_exposure)};
+    std::memcpy(bytes + constants_offset, constants, sizeof(constants));
+    float initial[4] = {previous, guard_value, guard_value, guard_value};
+    std::memcpy(bytes + raw_offset, initial, sizeof(initial));
+    upload->Unmap(0, nullptr);
+    hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+    buffer.Width = sizeof(initial);
+    buffer.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    CHECK(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                       IID_PPV_ARGS(&raw)));
+    list->CopyBufferRegion(raw.Get(), 0, upload.Get(), raw_offset, sizeof(initial));
+    barrier(list, raw.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 4, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE};
+    ComPtr<ID3D12DescriptorHeap> views;
+    CHECK(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&views)));
+    using Handle = UINT64(WINAPI*)(ID3D12DescriptorHeap*);
+    auto base = xbox_method<Handle>(views.Get(), 9)(views.Get());
+    auto gpu = xbox_method<Handle>(views.Get(), 10)(views.Get());
+    const UINT step = dev->GetDescriptorHandleIncrementSize(hd.Type);
+    auto cpu = [&](UINT slot) { return D3D12_CPU_DESCRIPTOR_HANDLE{SIZE_T(base + slot * step)}; };
+    D3D12_UNORDERED_ACCESS_VIEW_DESC raw_view{};
+    raw_view.Format = DXGI_FORMAT_R32_TYPELESS;
+    raw_view.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    raw_view.Buffer.NumElements = 4;
+    raw_view.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+    dev->CreateUnorderedAccessView(raw.Get(), nullptr, &raw_view, cpu(2));
+    std::array<ComPtr<ID3D12Resource>, 3> textures;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp[] = {
+        {counter_offset, {DXGI_FORMAT_R32_UINT, 1, 1, 1, 256}},
+        {coarse_offset, {DXGI_FORMAT_R32_FLOAT, groups, groups, 1, coarse_pitch}},
+        {input_offset, {DXGI_FORMAT_R32G32B32A32_FLOAT, pixels, pixels, 1, rgba_pitch}},
+    };
+    auto copy = [&](UINT n, bool initialize) {
+        D3D12_TEXTURE_COPY_LOCATION t{}, b{};
+        t.pResource = textures[n].Get();
+        b.pResource = initialize ? upload.Get() : frame.readback.Get();
+        b.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        b.PlacedFootprint = fp[n];
+        using Copy = void(WINAPI*)(ID3D12GraphicsCommandList*, const D3D12_TEXTURE_COPY_LOCATION*, UINT, UINT, UINT,
+                                    const D3D12_TEXTURE_COPY_LOCATION*, const D3D12_BOX*, UINT);
+        xbox_method<Copy>(list, 83)(list, initialize ? &t : &b, 0, 0, 0, initialize ? &b : &t, nullptr, 0);
+    };
+    for (UINT i = 0; i < textures.size(); ++i) {
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        desc.Format = fp[i].Footprint.Format;
+        desc.Width = fp[i].Footprint.Width;
+        desc.Height = fp[i].Footprint.Height;
+        desc.DepthOrArraySize = desc.MipLevels = desc.SampleDesc.Count = 1;
+        if (i < 2) desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        CHECK(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
+                                           nullptr, IID_PPV_ARGS(&textures[i])));
+        copy(i, true);
+        barrier(list, textures[i].Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                i < 2 ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        if (i < 2) dev->CreateUnorderedAccessView(textures[i].Get(), nullptr, nullptr, cpu(i));
+        else dev->CreateShaderResourceView(textures[i].Get(), nullptr, cpu(3));
+    }
+    using Heaps = void(WINAPI*)(ID3D12GraphicsCommandList*, UINT, ID3D12DescriptorHeap* const*);
+    using Root = void(WINAPI*)(ID3D12GraphicsCommandList*, ID3D12RootSignature*);
+    using Table = void(WINAPI*)(ID3D12GraphicsCommandList*, UINT, D3D12_GPU_DESCRIPTOR_HANDLE);
+    using Address = void(WINAPI*)(ID3D12GraphicsCommandList*, UINT, D3D12_GPU_VIRTUAL_ADDRESS);
+    xbox_method<Heaps>(list, 32)(list, 1, views.GetAddressOf());
+    xbox_method<Root>(list, 33)(list, root.Get());
+    xbox_method<Table>(list, 35)(list, 0, {gpu});
+    xbox_method<Table>(list, 35)(list, 1, {gpu + 3 * step});
+    xbox_method<Address>(list, 41)(list, 2, upload->GetGPUVirtualAddress() + constants_offset);
+    list->SetPipelineState(pso.Get());
+    list->Dispatch(groups, groups, 1);
+    for (UINT i = 0; i < 2; ++i) {
+        barrier(list, textures[i].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        copy(i, false);
+    }
+    barrier(list, raw.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    list->CopyBufferRegion(frame.readback.Get(), raw_offset, raw.Get(), 0, sizeof(initial));
+    CHECK(list->Close());
+    ID3D12CommandList* lists[] = {list};
+    frame.queue->ExecuteCommandLists(1, lists);
+    if (frame.wait_for_gpu()) return 1;
+    CHECK(frame.readback->Map(0, nullptr, &data));
+    bytes = static_cast<BYTE*>(data);
+    int mismatches = 0;
+    auto check = [&](const char* name, double actual, double expected) {
+        if (!(std::abs(actual - expected) < .00015)) {
+            std::fprintf(stderr, "mip %u %s expected %.7g got %.7g\n", mips, name, expected, actual);
+            ++mismatches;
+        }
+    };
+    const bool final_group = groups * groups == expected_groups;
+    check("counter", *reinterpret_cast<UINT*>(bytes), mips >= 7 && !final_group ? groups * groups : 0);
+    double mean = 0;
+    for (UINT y = 0; y < groups; ++y) for (UINT x = 0; x < groups; ++x) {
+        auto expected = group_log[y * groups + x];
+        mean += expected / (groups * groups);
+        check("coarse", reinterpret_cast<float*>(bytes + coarse_offset + y * coarse_pitch)[x],
+              mips >= 6 ? expected : guard_value);
+    }
+    const bool output = mips < 6 || (mips >= 7 && final_group);
+    // With a 2x2 coarse UAV, higher levels include out-of-bounds (zero) log texels.
+    if (mips > 7) mean /= std::pow(4.0, int(mips - 7));
+    const auto out = reinterpret_cast<float*>(bytes + raw_offset);
+    check("exposure", out[0], output ? 5.0 / (48 * std::exp(mean)) : previous);
+    check("history", out[1], output ? previous : guard_value);
+    check("guard[2]", out[2], guard_value);
+    check("guard[3]", out[3], guard_value);
+    frame.readback->Unmap(0, nullptr);
+    return mismatches != 0;
+}
+
+// A stride-two quantized convolution: four adjacent 16-channel int8 feature
+// vectors feed two 16-channel output planes. The entire weight matrix is a SRV.
+int run_convolution(D3D12_SHADER_BYTECODE shader) {
+    constexpr UINT width = 35, height = 3, input_pitch = 0x3c20, output_pitch = 0x1e20;
+    constexpr UINT planes[] = {0x1001100, 0x1201300};
+    constexpr UINT tensor_bytes = planes[1] + (height + 2) * output_pitch;
+    constexpr UINT weight_start = 0x2180, bias_start = 0x2980, constants = 0x2b00, tensor_start = 0x3000;
+    Frame frame;
+    if (frame.init(1, 1, false, tensor_bytes))
+        return 1;
+    auto dev = frame.dev.Get();
+    auto list = frame.list.Get();
+    ComPtr<ID3D12RootSignature> root;
+    ComPtr<ID3D12PipelineState> pso;
+    if (create_pipeline(dev, shader, root, pso))
+        return 1;
+    D3D12_HEAP_PROPERTIES hp{};
+    hp.CreationNodeMask = hp.VisibleNodeMask = 1;
+    hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+    auto desc = frame.readback->GetDesc();
+    desc.Width = tensor_start + tensor_bytes;
+    ComPtr<ID3D12Resource> upload, tensor;
+    CHECK(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ,
+                                       nullptr, IID_PPV_ARGS(&upload)));
+    void* map;
+    CHECK(upload->Map(0, nullptr, &map));
+    auto bytes = static_cast<BYTE*>(map);
+    std::memset(bytes, 0, tensor_start);
+    std::vector<BYTE> expected(tensor_bytes, 0xda);
+    auto sample = [](UINT x, UINT y, UINT c) { return int((x * 43 + y * 71 + c * 19 + x * c * 7) % 101) - 50; };
+    auto weight = [](UINT tap, UINT out, UINT in) {
+        return int((tap * 13 + out * 17 + in * 7 + out * in * 3) % 31) - 15;
+    };
+    auto bias = [](UINT c) { return (int(c) - 16) * 291; };
+    for (UINT y = 1; y <= 2 * height; ++y)
+        for (UINT x = 1; x <= 2 * width; ++x)
+            for (UINT c = 0; c < 16; ++c)
+                expected[y * input_pitch + x * 16 + c] = BYTE(sample(x, y, c));
+    std::memcpy(bytes + tensor_start, expected.data(), tensor_bytes);
+    for (UINT tap = 0; tap < 4; ++tap)
+        for (UINT c = 0; c < 32; ++c)
+            for (UINT k = 0; k < 16; ++k)
+                bytes[weight_start + (tap * 32 + c) * 16 + k] = BYTE(weight(tap, c, k));
+    for (UINT c = 0; c < 32; ++c) {
+        int value = bias(c);
+        std::memcpy(bytes + bias_start + 4 * c, &value, 4);
+    }
+    const UINT dimensions[] = {width, height};
+    std::memcpy(bytes + constants + 64, dimensions, sizeof(dimensions));
+    upload->Unmap(0, nullptr);
+    hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+    desc.Width = tensor_bytes;
+    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    CHECK(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
+                                       nullptr, IID_PPV_ARGS(&tensor)));
+    list->CopyBufferRegion(tensor.Get(), 0, upload.Get(), tensor_start, tensor_bytes);
+    barrier(list, tensor.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 34,
+                                  D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE};
+    ComPtr<ID3D12DescriptorHeap> views;
+    CHECK(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&views)));
+    using Handle = UINT64(WINAPI*)(ID3D12DescriptorHeap*);
+    auto cpu = xbox_method<Handle>(views.Get(), 9)(views.Get()),
+         gpu = xbox_method<Handle>(views.Get(), 10)(views.Get());
+    UINT step = dev->GetDescriptorHandleIncrementSize(hd.Type);
+    D3D12_UNORDERED_ACCESS_VIEW_DESC u{};
+    u.Format = DXGI_FORMAT_R32_TYPELESS;
+    u.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    u.Buffer.NumElements = tensor_bytes / 4;
+    u.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+    dev->CreateUnorderedAccessView(tensor.Get(), nullptr, &u, {SIZE_T(cpu + 11 * step)});
+    D3D12_SHADER_RESOURCE_VIEW_DESC s{};
+    s.Format = DXGI_FORMAT_R32_TYPELESS;
+    s.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    s.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    s.Buffer.NumElements = constants / 4;
+    s.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+    dev->CreateShaderResourceView(upload.Get(), &s, {SIZE_T(cpu + (13 + 18) * step)});
+    using Heaps = void(WINAPI*)(ID3D12GraphicsCommandList*, UINT, ID3D12DescriptorHeap* const*);
+    using Root = void(WINAPI*)(ID3D12GraphicsCommandList*, ID3D12RootSignature*);
+    using Table = void(WINAPI*)(ID3D12GraphicsCommandList*, UINT, D3D12_GPU_DESCRIPTOR_HANDLE);
+    using Address = void(WINAPI*)(ID3D12GraphicsCommandList*, UINT, D3D12_GPU_VIRTUAL_ADDRESS);
+    xbox_method<Heaps>(list, 32)(list, 1, views.GetAddressOf());
+    xbox_method<Root>(list, 33)(list, root.Get());
+    xbox_method<Table>(list, 35)(list, 0, {gpu});
+    xbox_method<Table>(list, 35)(list, 1, {gpu + 13 * step});
+    xbox_method<Address>(list, 41)(list, 2, upload->GetGPUVirtualAddress() + constants);
+    list->SetPipelineState(pso.Get());
+    list->Dispatch((width + 31) / 32, height + 1, 1);
+    barrier(list, tensor.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    list->CopyBufferRegion(frame.readback.Get(), 0, tensor.Get(), 0, tensor_bytes);
+    CHECK(list->Close());
+    ID3D12CommandList* lists[] = {list};
+    frame.queue->ExecuteCommandLists(1, lists);
+    if (frame.wait_for_gpu())
+        return 1;
+    CHECK(frame.readback->Map(0, nullptr, &map));
+    for (UINT y = 0; y < height; ++y)
+        for (UINT x = 0; x < width; ++x)
+            for (UINT c = 0; c < 32; ++c) {
+                int sum = bias(c);
+                for (UINT tap = 0; tap < 4; ++tap)
+                    for (UINT k = 0; k < 16; ++k)
+                        sum += sample(2 * x + 1 + tap % 2, 2 * y + 1 + tap / 2, k) * weight(tap, c, k);
+                const int quantized = int(std::nearbyint(sum / 128.f));
+                expected[planes[c / 16] + (y + 1) * output_pitch + (x + 1) * 16 + c % 16] =
+                    BYTE(std::clamp(quantized, -128, 127));
+            }
+    const auto actual = static_cast<const BYTE*>(map);
+    unsigned mismatches = 0;
+    for (UINT i = 0; i < tensor_bytes; ++i)
+        if (actual[i] != expected[i] && mismatches++ < 8)
+            std::fprintf(stderr, "convolution byte %#x expected %d got %d\n", i, int(int8_t(expected[i])),
+                         int(int8_t(actual[i])));
+    frame.readback->Unmap(0, nullptr);
+    return mismatches != 0;
+}
 } // namespace
 
 int wmain(int argc, wchar_t** argv) {
     const bool sharpen = argc == 2 && !std::wcscmp(argv[1], L"--sharpen");
-    if (argc != 1 && !sharpen) return 2;
+    const bool exposure = argc == 2 && !std::wcscmp(argv[1], L"--exposure");
+    const bool convolution = argc == 2 && !std::wcscmp(argv[1], L"--convolution");
+    if (argc != 1 && !sharpen && !exposure && !convolution) return 2;
     const auto path = _wgetenv(L"TOMBOX_FSR_LIBRARY");
     if (!path)
         return 2;
@@ -427,10 +697,22 @@ int wmain(int argc, wchar_t** argv) {
         uint64_t h = 0xcbf29ce484222325ULL;
         for (UINT j = 0; j < size; ++j)
             h = (h ^ uint8_t(p[j])) * 0x100000001b3ULL;
-        if (h != (sharpen ? 0x627f8369a1fe920dULL : 0xa2c897d4756321ddULL))
+        if (h != (convolution ? 0xe7454aa7e6231accULL : exposure ? 0x5d40ed57f6fe7dc1ULL : sharpen ? 0x627f8369a1fe920dULL : 0xa2c897d4756321ddULL))
             continue;
         // CreateRootSignature accepts the complete container carrying the RTS0 chunk.
         D3D12_SHADER_BYTECODE shader{p, size};
+        if (convolution) {
+            if (run_convolution(shader)) return 1;
+            std::puts("Retail convolution matched all 3,360 signed output channels and tensor guards.");
+            return 0;
+        }
+        if (exposure) {
+            for (UINT mips = 1; mips <= 6; ++mips) if (run_exposure(shader, mips, 1, 1)) return 1;
+            if (run_exposure(shader, 7, 2, 5)) return 1;
+            for (UINT mips = 7; mips <= 12; ++mips) if (run_exposure(shader, mips, 2, 4)) return 1;
+            std::puts("Retail exposure passed per-mip, group-ticket, luminance and previous-frame readbacks.");
+            return 0;
+        }
         if (sharpen) {
             if (run_sharpen(shader, 0.f, 2, 1) || run_sharpen(shader, 1.f, 1, 2)) return 1;
             std::puts("Retail sharpening passed two strengths, exposure scaling and guard-texel readback.");

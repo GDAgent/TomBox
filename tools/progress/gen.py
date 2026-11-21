@@ -172,6 +172,23 @@ def d3d12x():
             labels[name].append(f"{name} slot {slot}: {evidence}")
     return groups, labels
 
+def ps09_readbacks():
+    with open(os.path.join(here, "scarlett-assets.json"), encoding="utf-8") as source:
+        gpu = json.load(source)["assets"].get("gpu_readback", {})
+    rows = ([gpu["pixel_shader"]] if "pixel_shader" in gpu else [])
+    rows += gpu.get("pixel_compare_shaders", []) + gpu.get("compute_shaders", [])
+    seen, compares = set(), {}
+    for result in rows:
+        index = result["shader_index"]
+        if (index in seen or not re.fullmatch(r"[a-f0-9]{64}", result["record_sha256"])
+                or not (result.get("matched_pixels", 0) or result.get("matched_dwords", 0))):
+            raise ValueError(f"Invalid or duplicate PS09 reference for shader {index}")
+        seen.add(index)
+        for name in result.get("vopc", []):
+            compares.setdefault(name, set()).add(index)
+    return compares, len(seen), gpu["ps09_cache_sha256"]
+
+
 def instructions():
     src = open(os.path.join(root, "crates", "tuxbox-xshader", "src", "rdna2", "mnem.rs"), encoding="utf-8").read()
     used = {}
@@ -193,6 +210,16 @@ def instructions():
     memory = {r["mnemonic"] for r in results if r["memory_probe"] == "true"}
     graphics = {r["mnemonic"] for r in results if r["graphics_probe"] == "true"}
     cache = {r["mnemonic"]: r["cache_probe"] for r in results if r["cache_probe"] != "-"}
+    verified, cache_shaders, digest = ps09_readbacks()
+    with open(os.path.join(here, "scarlett-vopc-candidates.tsv"), encoding="utf-8") as f:
+        if not re.fullmatch(r"[a-f0-9]{64}", digest) or f.readline().strip() != "# ps09_sha256 " + digest:
+            raise ValueError("PS09 inventory and whole-program readbacks must identify the same cache")
+        candidates = {r["mnemonic"]: r for r in csv.DictReader(f, delimiter="\t")}
+    for name, indices in verified.items():
+        if name not in candidates or len(indices) > int(candidates[name]["shaders"]):
+            raise ValueError(f"PS09 readbacks exceed the inventory for {name}")
+        if len(indices) == int(candidates[name]["shaders"]):
+            used.setdefault(name, {})["Scarlett PS09"] = (len(indices), len(indices))
     probed = vector | game | memory | graphics
     families, cur = {}, None
     for line in src.split("\n"):
@@ -210,13 +237,31 @@ def instructions():
         families.setdefault(n, "MIMG" if n.startswith("image_") else "OTHER")
     if probed - families.keys():
         raise ValueError(f"GPU results outside tracked instructions: {sorted(probed - families.keys())}")
+    native = {}
+    with open(os.path.join(here, "native-vopc.tsv"), encoding="utf-8") as f:
+        for row in csv.DictReader(f, delimiter="\t"):
+            name, gpu, count = row["mnemonic"], row["native_gpu"], int(row["matched_vectors"])
+            if name in native or count <= 0 or not re.fullmatch(r"gfx103[0-6]", gpu):
+                raise ValueError(f"Invalid native VOPC result for {name}")
+            native[name] = (gpu, count)
+    if set(native) != {n for n, family in families.items() if family == "VOPC"}:
+        raise ValueError("Native VOPC results differ from the tracked comparison instructions")
     groups, labels = {}, {}
     for n, family in families.items():
         counts = used.get(n, {})
         complete = counts and all(ok == seen for seen, ok in counts.values())
-        state = "done" if complete else "partial" if counts or n in probed else "none"
+        state = "done" if complete else "partial" if counts or n in candidates or n in probed else "none"
         groups.setdefault(family, []).append(state)
         evidence = [f"{ok}/{seen} {source} shaders translated" for source, (seen, ok) in counts.items()]
+        if n in candidates:
+            row = candidates[n]
+            tested = sorted(verified.get(n, ()))
+            evidence.append(f'PS09 GPU readback {len(tested)}/{row["shaders"]} containing this instruction'
+                            + (f' (verified shader indices {", ".join(map(str, tested))})' if tested else "")
+                            + f'; first occurrence shader {row["first_shader"]}, ISA byte {row["byte_offset_after_prologue"]}')
+        if n in native:
+            gpu, count = native[n]
+            evidence.append(f"{count:,} VCC/EXEC vectors matched native {gpu} under five encoding/mode combinations")
         if n in vector:
             evidence.append("vector ALU GPU probe passed")
         if n in game:
@@ -238,15 +283,19 @@ def instructions():
         if scope and n in probed:
             evidence.append(scope)
         labels.setdefault(family, []).append(f"{n}: {', '.join(evidence) or 'no retail or GPU probe evidence'}")
-    detail = (f" · GPU checks {len(probed & used.keys())}/{len(used)} retail"
-              f" · {len(cache)} cache probes · {len(probed - used.keys())} others checked")
+    observed = used.keys() | candidates.keys()
+    reported = {r["mnemonic"] for r in results if r["retail_observed"] == "true"}
+    if observed != reported:
+        raise ValueError(f"Refresh the Coin Run retail inventory: {sorted(observed ^ reported)}")
+    detail = (f" · GPU checks {len(probed & observed)}/{len(observed)} retail"
+              f" · {len(cache)} cache probes · {len(probed - observed)} others checked")
     tag_groups, tag_labels = {}, {}
     for tag, counts in sorted(unknown.items()):
         family = tag.split("<", 1)[0].upper()
         evidence = ", ".join(f"{ok}/{seen} {source} shaders translated" for source, (seen, ok) in counts.items())
         tag_groups.setdefault(family, []).append("none")
         tag_labels.setdefault(family, []).append(f"{tag}: unidentified; {evidence}")
-    return groups, labels, detail, tag_groups, tag_labels
+    return groups, labels, detail, tag_groups, tag_labels, cache_shaders, len(native)
 
 # ---- drawing ------------------------------------------------------------------------
 def squarify(items, x, y, w, h):
@@ -326,6 +375,9 @@ def asset_checks():
     files, verified = assets["files"], assets["verified"]
     reads = assets.get("proton_win32_reads", {})
     formats, headers = assets["texture_format_counts"], assets["ps09_headers"]
+    gpu = assets.get("gpu_readback", {})
+    textures = gpu.get("textures", [])
+    shader = gpu.get("pixel_shader", {})
     groups, labels = {}, {}
 
     def check(group, label, passed=0, total=1):
@@ -350,10 +402,15 @@ def asset_checks():
             samples = assets["stores_with_zlib_sample"]
             check(group, f"One complete zlib chunk inflated to the declared size in {samples}/{count} stores", samples, count)
             check(group, "Decode a retail BCPack texture payload against reference output")
-            check(group, "Upload and sample a retail tiled texture with verified GPU readback")
+            pixels = sum(t["pixels"] for t in textures)
+            check(group, f"Upload and sample retail tiled RGBA8 textures: {pixels:,} reference pixels matched",
+                  int(any(t["pixels"] > 0 and t["rgba_sha256"] for t in textures)))
     binaries = sum(h["shader_binaries"] for h in headers)
     check("PSO cache", f"Locate PS09 header in shaders.rpf: {binaries:,} declared shader binaries", bool(headers))
-    check("PSO cache", "Translate a shader from this cache and verify its GPU output")
+    pixel_count = shader.get("matched_pixels", 0) + sum(
+        s.get("matched_pixels", 0) for s in gpu.get("pixel_compare_shaders", []))
+    check("PSO cache", f"Translate and render retail cache pixel shaders: {pixel_count} reference pixels matched",
+          int(pixel_count > 0))
     check("Title storage", "Observe the retail executable open an archive and complete an asset request")
     return groups, labels, snapshot["package_version"]
 
@@ -365,7 +422,7 @@ import_groups, import_labels, import_detail, runtime_summary = imports()
 y, a_done, a_n = section(o, y, "Observed title and middleware imports", import_groups, 300, import_detail, import_labels, captions={"C/C++ runtime": runtime_summary})
 d3d_groups, d3d_labels = d3d12x()
 y, b_done, b_n = section(o, y, "Direct3D 12.x interface methods", d3d_groups, 170, labels=d3d_labels)
-isa_groups, isa_labels, isa_detail, tag_groups, tag_labels = instructions()
+isa_groups, isa_labels, isa_detail, tag_groups, tag_labels, cache_shaders, native_count = instructions()
 kernel_results = []
 for library, counts in cfg["audited_compute_shaders"].items():
     passed, total = counts["readback"], counts["observed"]
@@ -373,7 +430,8 @@ for library, counts in cfg["audited_compute_shaders"].items():
         raise ValueError(f"Invalid compute shader counts for {library}")
     kernel_results.append(f"{library} {passed}/{total}")
 y, c_done, c_n = section(o, y, "RDNA2 in translated retail shaders", isa_groups, 260,
-                         isa_detail, isa_labels, subtitle="Retail compute shaders passing GPU readback · " + " · ".join(kernel_results))
+                         isa_detail, isa_labels, subtitle="GPU readbacks · " + " · ".join(kernel_results)
+                         + f" · Scarlett PS09 {cache_shaders} shaders · {native_count} VOPC matched native RDNA2")
 if tag_groups:
     y, _, _ = section(o, y, "Unidentified retail opcode tags", tag_groups, 55, labels=tag_labels, show_progress=False)
 asset_groups, asset_labels, version = asset_checks()

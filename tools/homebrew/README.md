@@ -324,15 +324,83 @@ Package preflight inspects RPF9 signatures, scans `shaders.rpf` for the first ch
 For the Win32 check, use the same Linux cross-build environment as Coin Run and set `PROTON` to the desired Proton executable. The probe opens each file by its package-relative path and compares its size, first and last bytes, and a 64-byte read across the 4 GiB boundary wherever it fits. The expected bytes and comparison result live in a temporary directory. The package is opened read-only.
 
 ```sh
-python3 tools/homebrew/package_preflight.py /path/to/package --probe-asset-io > package-preflight.json
+python3 tools/homebrew/package_preflight.py /path/to/package --probe-asset-io --probe-asset-gpu > package-preflight.json
 jq '.assets' package-preflight.json
 ```
+
+The optional `--probe-asset-gpu` checks hash-pinned assets in package 1.0.2.1. Coin Run untiles graphics-store descriptors 234 and 765, uploads them through the translated texture-copy path and samples both 256×256 textures. All RGBA bytes must match the independent 6Stars reference hashes. [Reference texture implementation](https://github.com/Ahmet-Dedeler/6Stars/blob/eb65e94e0169b5bedf294466c1b9bf2561cb7591/src/tex.rs)
+
+The PS09 tests follow original PSO references and use the complete retail instruction streams with homebrew pipeline inputs. Pixel tests cover triangle boundaries, compare-driven discard, material depth, front and back faces, simultaneous color and normal exports, and lighting lookup tables. Each grid checks all 256 fragments. The lighting and normal references apply the Direct3D float-to-UNORM conversion tolerance per channel. Compute tests dispatch the translated programs on D3D12 with test resources and compare their outputs and guard words. [Measured results by shader](../progress/scarlett-assets.json) · [Direct3D conversion rules](https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm#FLOATtoUNORM)
 
 To refresh the measured snapshot for the audited Scarlett package and redraw the map, run the following after reviewing the file counts and inspection errors.
 
 ```sh
 jq '{package_version: .identity.Version, assets}' package-preflight.json > tools/progress/scarlett-assets.json
 python3 tools/progress/gen.py
+```
+
+The asset GPU probe includes eight compute shaders from the 1.0.2.1 cache.
+
+| Compute PSO / shader | Guarded GPU reference |
+| --- | --- |
+| 438 / 1235 and 521 / 1318 | Three 32-thread groups write selected words of a 128-dword UAV. The reference checks every changed and untouched word. |
+| 205 / 1009 | A 1,024-thread group copies two input vectors to `u11` through a packed FP16 store. Changing a command from `0x10000` to `0x10001` enables four writes of `0x5678` at `u6[3]`. Both dispatches check all 256 dwords of the two outputs. |
+| 439 / 1236 | Five 8×8 RG32 visibility tiles exercise zero and high-word-only IDs, two material bins, a lone active lane 63, and clipped 5×4 bounds. A CPU reference checks every counter, list entry and guard word. All 640 words also matched the original wave64 program on native GFX1036. |
+| 1230 / 2027 and 1231 / 2028 | Each 8×8 filter runs three depth and opacity patterns. The CPU checks an unchanged ramp, a nine-tap blur, and a blur with full-opacity neighboring tiles. The second shader packs adjacent results into two nibbles. Each dispatch checks all 1,024 dwords of its output texture. |
+| 1430 / 2227 and 1431 / 2228 | A 64-thread group rasterizes a line segment into a 2×2 RG32_UINT visibility image using a two-word unsigned comparison and atomic maximum. Three dispatches test clear pixels, same-depth tie breaking and an empty material. All 12 texels, including the bottom-row guards, must match the original shaders on RDNA2. |
+
+The two visibility rasterizer probes require SM 6.6 typed-resource 64-bit atomics. TuxBox recognizes both measured programs and their exact descriptor layouts. A scalar UAV cannot represent this 64-bit visibility value. On Linux with a physical RDNA2 GPU, LLVM with the AMDGPU backend and a ROCr installation with image support, run the native reference against the local cache.
+
+```sh
+python3 tools/homebrew/ps09_raster_native.py /path/to/package/shaders.rpf --gpu gfx1036 --rocm /opt/rocm
+```
+
+The reference runner verifies each code record and descriptor layout, initializes the guest input registers and executes the original machine instructions. It reads back the image via ROCr. The Proton check uses TuxBox's translated shader and compares each texel. [Shader Model 6.6 typed-resource atomics](https://microsoft.github.io/DirectX-Specs/d3d/HLSL_SM_6_6_Int64_and_Float_Atomics.html)
+
+To inspect the original thread counts and descriptor mappings used by the compute probes, run `python3 tools/homebrew/ps09_compute.py /path/to/package/shaders.rpf 205 438 439 521 1230 1231 1430 1431`.
+
+The native opcode inventory walks instruction boundaries in the PS09 cache and records a shader index and program-relative byte offset for each named VOPC candidate. It includes the extended VOP3 form of the same compare operations. The scanner counts each mnemonic once per shader. A missing program boundary fails the census. The inventory and GPU report include the SHA-256 of the same uncompressed cache. This inventory can be run without Proton.
+
+```sh
+python3 tools/homebrew/package_gpu.py /path/to/package/shaders.rpf > scarlett-vopc-candidates.tsv
+```
+
+To refresh the tooltips, review the scan summary, copy the TSV to `tools/progress/scarlett-vopc-candidates.tsv` and regenerate the map. Each tooltip includes the number of verified cache shaders alongside the total containing that instruction. A cache-only comparison earns green once all its occurrences have passed whole-program readback. A partial cache inventory adds evidence to the existing Fortnite and middleware audit results. [Package 1.0.2.1 inventory](../progress/scarlett-vopc-candidates.tsv)
+
+Graphics PSO 12178 identifies tagged-depth pixel shader 5192 and its binding metadata. The package GPU probe verifies both records and supplies a two-table desktop root signature plus an inline material tag. Forty 336-byte records exercise indices spanning both halves of a packed pixel ID. The test compares all 256 D32 depth values bit-for-bit, including pixels discarded because the ID is zero or the tag does not match.
+
+PSO 14459 selects shader 8604. Its graphics configuration enables the line-stipple and front-face pixel inputs. The latter occupies v1 and the shader compares it with zero. Two pairs of triangles use opposite winding. The probe checks all 128 front-facing and 128 back-facing pixels against their distinct packed-half colours. [AMD’s pixel shader register reference](https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/programmer-references/CIK_3D_registers_v2.pdf)
+
+### Compare VOPC with native RDNA2 hardware
+
+On a Linux host with a ROCr-accessible RDNA2 GPU, LLVM with the AMDGPU target, a C++17 compiler and the Coin Run Proton environment, run:
+
+```sh
+python3 tools/homebrew/native_vopc.py --gpu gfx1036 --rocm /opt/rocm > native-vopc.tsv
+```
+
+LLVM identifies every compact opcode for GFX10.3. The probe assembles native comparisons independently and runs the same inputs through TuxBox. It checks VCC and EXEC, including preservation of the incoming VCC for CMPX. Both encodings, five combinations of encoding and denormal mode, extended sign modifiers, integer boundaries, NaNs and subnormals contribute to each row. The reference GPU and the Proton renderer can be different devices. The TSV is written after every case passes. Copy it to `tools/progress/native-vopc.tsv` to refresh the tooltips. Retail translation and whole-program readbacks determine the green squares.
+
+Run the supplementary SDWA check to compare all seven byte, half-word and full-word selectors, source sign modifiers and inline 1.0. It exercises binary16 and binary32 comparisons and classification with 108,248 vectors across 182 encodings. Its report is separate from the full opcode inventory.
+
+```sh
+python3 tools/homebrew/native_vopc.py --sdwa --gpu gfx1036 --rocm /opt/rocm
+```
+
+### Retail FidelityFX convolution
+
+The stride-two pass in the October upscaler multiplies a 2×2 neighbourhood of 16 signed input channels by 2,048 signed weights and adds 32 per-channel biases. A CPU reference compares all 3,360 output bytes over a 35×3 dispatch domain, including its partial right edge. The probe checks both output planes and every input and guard byte in the tensor.
+
+```sh
+tools/homebrew/play-coins.sh --fsr-convolution-test /path/to/amd_fidelityfx_upscaler_xbox.dll
+```
+
+### Retail FidelityFX exposure
+
+The 256-thread luminance pass in the October upscaler reduces a checkerboard at each of its 12 mip levels. The probe checks the per-group logarithmic means, the completion counter, exposure, previous-frame value and guard words. A four-group dispatch with a declared fifth group verifies that early finishers leave exposure and history untouched.
+
+```sh
+tools/homebrew/play-coins.sh --fsr-exposure-test /path/to/amd_fidelityfx_upscaler_xbox.dll
 ```
 
 ### Retail FidelityFX prepass
@@ -371,19 +439,21 @@ ordinary padding and the right and bottom limits.
 tools/homebrew/play-coins.sh --fsr-postpass-test /path/to/amd_fidelityfx_upscaler_xbox.dll
 ```
 
-### Retail BVH radix sort
+### Retail BVH copies and radix sort
 
 With a wave64-capable shader model 6.6 device and the GXDK 250405 BVH builder,
-run the four translated compute kernels as a full sort under Proton.
+run the two strided-copy kernels and the four radix-sort kernels under Proton.
 
 ```bash
 tools/homebrew/build-clear.sh
 tools/homebrew/play-coins.sh --bvh-sort-test /path/to/XboxBvhBuilder.dll
 ```
 
-Use the same `PROTON` and DXC setup as for `--rdna2-test`. The probe reads four
+Use the same `PROTON` and DXC setup as for `--rdna2-test`. The probe reads six
 shader containers from the supplied file and creates their pipelines through
-TuxBox. It sorts 16,384 keys in four byte passes on the GPU. After each pass it
+TuxBox. It copies 3-node and 87-node inputs through both UAV and SRV source
+bindings, checks the optional node-bounds reset, and verifies every destination
+word including the unwritten tail. It then sorts 16,384 keys in four byte passes on the GPU. After each pass it
 compares keys and original indices with a stable CPU sort and checks the guards
 on both buffers. The three-group homebrew prefix tests above run independently
 of the supplied library.

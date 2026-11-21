@@ -557,6 +557,28 @@ fn buffer_cases(c: &mut Vec<Case>) {
         });
     }
 
+    // The four D16 components occupy v8.xy and v9.xy. Distinct signs,
+    // destination elements and untouched sentinels make the packing observable.
+    let mut words = prologue(None, None, Some(0));
+    words.extend(mubuf(0x87, 0, false, true, 0, 8, U_SGPR));
+    words.push(S_ENDPGM);
+    c.push(Case {
+        name: "buffer_store_format_d16_xyzw".into(), words, srv: vec![], samplers: vec![],
+        uav: vec![Binding::Buffer(BufferData {
+            data: vec![0x55; 48], format: RGBA32F, format_bytes: 16, stride: 0,
+        })],
+        inputs: vec![([1, 0, 0, 0], [0xc000_3c00, 0xc400_4200, 0xdead_beef, 0xfeed_face])],
+        want: Box::new(|_, _| packed([0; 4], 0)),
+        uav_check: Some(Box::new(|binding| {
+            let Binding::Buffer(buffer) = binding else { return Err("expected a buffer".into()) };
+            let mut expected = vec![0x55; 48];
+            expected[16..32].copy_from_slice(&words_le(&[f(1.0), f(-2.0), f(3.0), f(-4.0)]));
+            if buffer.data != expected { return Err(format!("unexpected D16 store: {:x?}", buffer.data)); }
+            Ok(())
+        })),
+        sm66: false,
+    });
+
     for (name, op, width, signed) in [
         ("buffer_load_ubyte",8,1,false), ("buffer_load_sbyte",9,1,true),
         ("buffer_load_ushort",10,2,false), ("buffer_load_sshort",11,2,true),
@@ -1543,6 +1565,13 @@ fn mem_conformance() {
 /// translated approximately.
 #[test]
 fn mem_probe_refusals() {
+    // Without a proven 64-bit view a two-word atomic must never silently
+    // truncate the operand and destination to a scalar uint.
+    let mut wide = prologue(None, None, Some(0));
+    wide.extend(mimg(0x17, D2, 3, 0, 4, U_SGPR, 0, Flags { unorm: true, ..Default::default() }));
+    wide.push(S_ENDPGM);
+    assert!(matches!(translate_mem_probe(&wide, NV), Err(e) if e.contains("DMASK")));
+
     let refuse = |op: u32, dim: u32, fl: Flags, sampler: bool, why: &str| {
         let mut words = prologue(Some(0), sampler.then_some(0), None);
         words.extend(mimg(op, dim, 0xf, 0, DATA as u32, T_SGPR, S_SGPR, fl));

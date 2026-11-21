@@ -22,7 +22,8 @@ struct Kernel {
     ComPtr<ID3D12PipelineState> pipeline;
 };
 
-int find_kernels(const std::vector<char>& dll, std::array<Kernel, 4>& kernels) {
+template<size_t N>
+int find_kernels(const std::vector<char>& dll, std::array<Kernel, N>& kernels) {
     for (size_t i = 0; i + 32 <= dll.size(); ++i) {
         if (std::memcmp(dll.data() + i, "DXBC", 4)) continue;
         UINT size;
@@ -44,11 +45,12 @@ int find_kernels(const std::vector<char>& dll, std::array<Kernel, 4>& kernels) {
     return 0;
 }
 
-int make_root(ID3D12Device* dev, UINT uavs, UINT constants, ID3D12RootSignature** root) {
+int make_root(ID3D12Device* dev, UINT uavs, UINT constants, ID3D12RootSignature** root, bool source_srv = false) {
     std::vector<D3D12_ROOT_PARAMETER> params(uavs + 1);
     for (UINT i = 0; i < uavs; ++i) {
         params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-        params[i].Descriptor.ShaderRegister = i;
+        if (source_srv && i == 0) params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        params[i].Descriptor.ShaderRegister = source_srv && i > 0 ? i - 1 : i;
     }
     params.back().ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params.back().Constants = {0, 0, constants};
@@ -64,6 +66,84 @@ void transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource,
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Transition = {resource, 0, before, after};
     list->ResourceBarrier(1, &barrier);
+}
+
+// Vary the node count independently of the number of dispatch threads so the
+// first bounds check, the backedge and its last partial wave all take both paths.
+int copy_nodes(Kernel& kernel, bool source_srv, UINT nodes, UINT reset_bounds) {
+    constexpr UINT threads = 64, capacity = 1600, byte_size = capacity * sizeof(UINT);
+    const UINT copied = nodes * 16;
+    Frame frame;
+    if (frame.init(1, 1, false, byte_size)) return 1;
+    auto* dev = frame.dev.Get();
+    auto* list = frame.list.Get();
+    ComPtr<ID3D12RootSignature> root;
+    if (make_root(dev, 2, 16, &root, source_srv)) return 1;
+    ComPtr<ID3D12PipelineState> pipeline;
+    D3D12_COMPUTE_PIPELINE_STATE_DESC pso{};
+    pso.pRootSignature = root.Get();
+    pso.CS = kernel.code;
+    using Create = HRESULT (WINAPI*)(ID3D12Device*, const D3D12_COMPUTE_PIPELINE_STATE_DESC*,
+                                     UINT, const void*, REFIID, void**);
+    CHECK(xbox_method<Create>(dev, 62)(dev, &pso, 0, nullptr, IID_PPV_ARGS(&pipeline)));
+
+    auto desc = frame.readback->GetDesc();
+    desc.Width = byte_size * 2;
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    heap.CreationNodeMask = heap.VisibleNodeMask = 1;
+    ComPtr<ID3D12Resource> upload, source, dest;
+    CHECK(dev->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ,
+                                       nullptr, IID_PPV_ARGS(&upload)));
+    std::vector<UINT> initial(capacity * 2, guard);
+    for (UINT i = 0; i < capacity; ++i) initial[i] = i * 2246822519u + 67u;
+    initial[1] = nodes - 1;
+    void* ptr;
+    CHECK(upload->Map(0, nullptr, &ptr));
+    std::memcpy(ptr, initial.data(), size_t(desc.Width));
+    upload->Unmap(0, nullptr);
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    desc.Width = byte_size;
+    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    for (auto* data : {source.GetAddressOf(), dest.GetAddressOf()}) {
+        CHECK(dev->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
+                                           nullptr, IID_PPV_ARGS(data)));
+    }
+    const auto source_state = source_srv ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    list->CopyBufferRegion(source.Get(), 0, upload.Get(), 0, byte_size);
+    list->CopyBufferRegion(dest.Get(), 0, upload.Get(), byte_size, byte_size);
+    transition(list, source.Get(), D3D12_RESOURCE_STATE_COPY_DEST, source_state);
+    transition(list, dest.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    using Root = void (WINAPI*)(ID3D12GraphicsCommandList*, ID3D12RootSignature*);
+    using Address = void (WINAPI*)(ID3D12GraphicsCommandList*, UINT, D3D12_GPU_VIRTUAL_ADDRESS);
+    using Constants = void (WINAPI*)(ID3D12GraphicsCommandList*, UINT, UINT, const void*, UINT);
+    xbox_method<Root>(list, 33)(list, root.Get());
+    list->SetPipelineState(pipeline.Get());
+    xbox_method<Address>(list, source_srv ? 43 : 45)(list, 0, source->GetGPUVirtualAddress());
+    xbox_method<Address>(list, 45)(list, 1, dest->GetGPUVirtualAddress());
+    UINT values[16] = {threads, reset_bounds};
+    xbox_method<Constants>(list, 39)(list, 2, 16, values, 0);
+    list->Dispatch(threads / 32, 1, 1);
+    transition(list, dest.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    list->CopyBufferRegion(frame.readback.Get(), 0, dest.Get(), 0, byte_size);
+    CHECK(list->Close());
+    ID3D12CommandList* lists[] = {list};
+    frame.queue->ExecuteCommandLists(1, lists);
+    if (frame.wait_for_gpu()) return 1;
+    CHECK(frame.readback->Map(0, nullptr, &ptr));
+    bool ok = true;
+    for (UINT i = 0; i < capacity; ++i) {
+        UINT expected = i < copied ? initial[i] : guard;
+        if (reset_bounds && i >= 4 && i <= 9) expected = i < 7 ? 0x7f7fffffu : 0xff7fffffu;
+        if (static_cast<const UINT*>(ptr)[i] != expected) {
+            std::fprintf(stderr, "%s nodes=%u reset=%u word %u expected %08x got %08x\n", kernel.name,
+                         nodes, reset_bounds, i, expected, static_cast<const UINT*>(ptr)[i]);
+            ok = false;
+            break;
+        }
+    }
+    frame.readback->Unmap(0, nullptr);
+    return ok ? 0 : 1;
 }
 
 int sort(std::array<Kernel, 4>& kernels, void (*order)(ID3D12GraphicsCommandList*)) {
@@ -187,7 +267,16 @@ int wmain(int argc, wchar_t** argv) {
         {"block totals scan", 0xca71137d2e45e851ULL, 5072},
         {"scatter", 0xfa8828838850c8e0ULL, 16184},
     }};
-    if (find_kernels(dll, kernels)) return 1;
+    std::array<Kernel, 2> copies{{
+        {"BVH UAV copy", 0x9e3107c7a215e9e9ULL, 4404},
+        {"BVH SRV copy", 0x83225f64b531e807ULL, 4716},
+    }};
+    if (find_kernels(dll, kernels) || find_kernels(dll, copies)) return 1;
+    for (UINT nodes : {3u, 87u}) {
+        if (copy_nodes(copies[0], false, nodes, 0) || copy_nodes(copies[1], true, nodes, 0)
+            || copy_nodes(copies[1], true, nodes, 1)) return 1;
+    }
+    std::puts("BVH strided copies verified both source bindings, node-bounds reset and destination guards.");
     HMODULE module = LoadLibraryW(L"bvh_commands.dll");
     auto order = module ? reinterpret_cast<void (*)(ID3D12GraphicsCommandList*)>(
         GetProcAddress(module, "order_compute_writes")) : nullptr;

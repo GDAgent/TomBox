@@ -84,23 +84,38 @@ def inspect_store(source, size):
     return virtual, codecs, formats, zlib_span is not None
 
 
-def shader_header(source):
-    # Locate a zlib member by signature without assuming a particular archive offset.
-    # Validate the checksum of the complete first cache block before reporting its fields.
-    with mmap.mmap(source.fileno(), 0, access=mmap.ACCESS_READ) as data:
-        for match in re.finditer(rb"\x78[\x01\x5e\x9c\xda]", data):
-            pos = match.start()
-            try:
-                prefix = zlib.decompressobj().decompress(data[pos:pos + 128], 4)
-                if prefix != b"PS\x00\x09":
-                    continue
-                stream = zlib.decompressobj()
-                block = stream.decompress(data[pos:pos + 65536 + 128], 65537)
-            except zlib.error:
+def locate_shader_cache(data):
+    # Validate the checksum of the complete first cache block.
+    for match in re.finditer(rb"\x78[\x01\x5e\x9c\xda]", data):
+        pos = match.start()
+        try:
+            prefix = zlib.decompressobj().decompress(data[pos:pos + 128], 4)
+            if prefix != b"PS\x00\x09":
                 continue
-            if stream.eof and len(block) == 65536:
-                return dict(zip(("graphics_psos", "compute_psos", "metadata_records", "shader_binaries"),
-                                struct.unpack_from("<IIII", block, 0x50)))
+            block, _ = cache_block(data, pos)
+        except (ValueError, zlib.error):
+            continue
+        if len(block) == 65536:
+            return pos, block
+    return None
+
+
+def cache_block(data, pos):
+    compressed = data[pos:pos + 65536 + 128]
+    stream = zlib.decompressobj()
+    block = stream.decompress(compressed, 65537)
+    if not stream.eof or not 0 < len(block) <= 65536:
+        raise ValueError("incomplete or oversized PS09 cache block")
+    used = len(compressed) - len(stream.unused_data)
+    return block, (pos + used + 15) & ~15
+
+
+def shader_header(source):
+    with mmap.mmap(source.fileno(), 0, access=mmap.ACCESS_READ) as data:
+        located = locate_shader_cache(data)
+        if located:
+            return dict(zip(("graphics_psos", "compute_psos", "metadata_records", "shader_binaries"),
+                            struct.unpack_from("<IIII", located[1], 0x50)))
 
 
 def audit_assets(root, paths):
