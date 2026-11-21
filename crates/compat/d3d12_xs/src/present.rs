@@ -652,3 +652,91 @@ pub fn apply_queue_vtable(queue: *mut c_void) {
         }
     }
 }
+
+#[cfg(test)]
+mod close_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn SendMessageW(h: *mut c_void, msg: u32, w: usize, l: isize) -> isize;
+        fn PostMessageW(h: *mut c_void, msg: u32, w: usize, l: isize) -> i32;
+    }
+
+    const CHILD: &str = "TUXBOX_CLOSE_TEST_CHILD";
+    const WM_APP: u32 = 0x8000;
+    static SEEN: AtomicU32 = AtomicU32::new(0);
+
+    /// Stands in for a title's window procedure that ignores WM_CLOSE.
+    unsafe extern "system" fn title_proc(h: *mut c_void, msg: u32, w: usize, l: isize) -> isize {
+        match msg {
+            WM_APP => {
+                SEEN.fetch_add(1, Ordering::SeqCst);
+                0x5a
+            }
+            WM_CLOSE => 0,
+            _ => DefWindowProcW(h, msg, w, l),
+        }
+    }
+
+    /// Child process: every path that does not end through the hook exits with a nonzero code.
+    unsafe fn child() -> ! {
+        let class = wide("tuxbox-close-test");
+        let wc = WndClassExW {
+            size: core::mem::size_of::<WndClassExW>() as u32,
+            style: 0,
+            wndproc: title_proc,
+            cls_extra: 0,
+            wnd_extra: 0,
+            instance: GetModuleHandleW(core::ptr::null()),
+            icon: core::ptr::null_mut(),
+            cursor: core::ptr::null_mut(),
+            background: core::ptr::null_mut(),
+            menu_name: core::ptr::null(),
+            class_name: class.as_ptr(),
+            icon_sm: core::ptr::null_mut(),
+        };
+        if RegisterClassExW(&wc) == 0 {
+            std::process::exit(2);
+        }
+        let hwnd = CreateWindowExW(
+            0, class.as_ptr(), class.as_ptr(), 0, 0, 0, 64, 64,
+            core::ptr::null_mut(), core::ptr::null_mut(), wc.instance, core::ptr::null_mut(),
+        );
+        if hwnd.is_null() {
+            std::process::exit(2);
+        }
+        close_ends_title(hwnd as usize);
+        // Other messages still reach the title's procedure, with its result.
+        if SendMessageW(hwnd, WM_APP, 0, 0) != 0x5a || SEEN.load(Ordering::SeqCst) != 1 {
+            std::process::exit(4);
+        }
+        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        let mut msg = [0u8; 48];
+        while GetMessageW(&mut msg, core::ptr::null_mut(), 0, 0) > 0 {
+            DispatchMessageW(&msg);
+            if SEEN.load(Ordering::SeqCst) == 1 && msg[8..12] == WM_CLOSE.to_le_bytes() {
+                std::process::exit(3); // WM_CLOSE was dispatched and the process survived
+            }
+        }
+        std::process::exit(5);
+    }
+
+    #[test]
+    fn close_message_ends_the_title_process() {
+        if std::env::var_os(CHILD).is_some() {
+            unsafe { child() }
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["present::close_tests::close_message_ends_the_title_process", "--exact", "--test-threads=1", "--nocapture"])
+            .env(CHILD, "1")
+            .env("TOMBOX_LOG", std::env::temp_dir().join("tuxbox_close_test.log"))
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(out.status.code(), Some(0), "child exit; stdout: {stdout}");
+        // TerminateProcess ends the child before the harness can print its summary.
+        assert!(!stdout.contains("test result"), "child finished normally: {stdout}");
+    }
+}
