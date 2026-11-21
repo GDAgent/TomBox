@@ -226,3 +226,9 @@
 - **UNORM sampling** normalises by mip 0 of the view; the console's behaviour for
   unnormalised coordinates on mipped views, and samplers that force unnormalised
   coordinates through the S#, are not modelled.
+
+## Map of GPU-only resources (2026-11-21)
+- Only subresource 0 maps: the console returns an offset in its tiled layout for others.
+- CPU writes to a GPU-only resource are not uploaded; only the all-zero first fill of a
+  committed resource is known to match. Other writes are logged as not transferred.
+- A CPU read through the shadow sees zeros, not the GPU contents.
