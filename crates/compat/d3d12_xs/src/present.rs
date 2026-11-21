@@ -64,6 +64,10 @@ extern "system" {
     fn AdjustWindowRectEx(r: *mut [i32; 4], style: u32, menu: i32, ex: u32) -> i32;
     fn SetWindowPos(h: *mut c_void, after: *mut c_void, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
     fn GetSystemMetrics(i: i32) -> i32;
+    fn SetWindowLongPtrW(h: *mut c_void, idx: i32, v: isize) -> isize;
+    fn CallWindowProcW(prev: isize, h: *mut c_void, msg: u32, w: usize, l: isize) -> isize;
+    fn GetCurrentProcess() -> *mut c_void;
+    fn TerminateProcess(p: *mut c_void, code: u32) -> i32;
 }
 
 /// Give the title's window a client area with the back buffer's aspect ratio (the swap
@@ -133,8 +137,47 @@ struct WndClassExW {
     icon_sm: *mut c_void,
 }
 
+const WM_CLOSE: u32 = 0x0010;
+
+/// Closing the game window (its close button, Alt+F4) ends the title, as closing a game does on
+/// the console. Console titles have no reason to handle WM_CLOSE (observed: one ignores it, so
+/// the window could not be closed), and destroying the window would leave the title running
+/// without one. The title gets no suspend/exit notification first; unsaved progress is lost.
+unsafe fn end_title_on_close() -> ! {
+    record("d3d12_xs", "window", "close requested: ending the title");
+    TerminateProcess(GetCurrentProcess(), 0);
+    unreachable!("TerminateProcess(self) returned")
+}
+
 unsafe extern "system" fn wndproc(h: *mut c_void, msg: u32, w: usize, l: isize) -> isize {
+    if msg == WM_CLOSE {
+        end_title_on_close();
+    }
     DefWindowProcW(h, msg, w, l)
+}
+
+static TITLE_WNDPROC: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+unsafe extern "system" fn title_wndproc(h: *mut c_void, msg: u32, w: usize, l: isize) -> isize {
+    if msg == WM_CLOSE {
+        end_title_on_close();
+    }
+    CallWindowProcW(TITLE_WNDPROC.load(std::sync::atomic::Ordering::Relaxed), h, msg, w, l)
+}
+
+/// Route WM_CLOSE of the title's own window to `end_title_on_close`; every other message still
+/// reaches the title's window procedure.
+unsafe fn close_ends_title(hwnd: usize) {
+    if TITLE_WNDPROC.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+        return;
+    }
+    const GWLP_WNDPROC: i32 = -4;
+    let prev = SetWindowLongPtrW(hwnd as *mut c_void, GWLP_WNDPROC, title_wndproc as *const () as isize);
+    if prev == 0 {
+        record("d3d12_xs", "window", "could not hook the title window's close button");
+        return;
+    }
+    TITLE_WNDPROC.store(prev, std::sync::atomic::Ordering::Relaxed);
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -249,6 +292,7 @@ unsafe fn init(queue: *mut c_void, src: *mut c_void) -> Result<State, String> {
     let mut hwnd = if own { 0 } else { find_title_window() };
     if hwnd != 0 {
         (cw, ch) = fit_window_to_aspect(hwnd, width, height);
+        close_ends_title(hwnd);
         let mut cls = [0u16; 128];
         let n = GetClassNameW(hwnd as *mut c_void, cls.as_mut_ptr(), 128).max(0) as usize;
         record("d3d12_xs", "PresentX", &format!(
