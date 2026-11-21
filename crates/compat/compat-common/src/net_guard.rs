@@ -585,7 +585,9 @@ pub fn ensure() {
         // Process-wide one-time setup that is not network policy: the local Xbox user.
         crate::gdk_user::install();
         // Optional `locale=` override (user language reported to the title).
-        crate::locale::install();
+        if let Some(locale) = crate::cfg("locale").filter(|v| !v.is_empty()) {
+            crate::locale::install(&locale);
+        }
 
         if std::env::var_os("TOMBOX_ALLOW_NETWORK").map(|v| v == "1").unwrap_or(false) {
             let _ = TARGET.set(None);

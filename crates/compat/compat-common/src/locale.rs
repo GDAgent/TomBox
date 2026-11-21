@@ -89,13 +89,8 @@ fn active() -> &'static Locale {
 }
 
 unsafe extern "system" fn get_user_default_locale_name(buf: *mut u16, cch: i32) -> i32 {
-    match put(&active().name, 1, buf, cch.max(0) as usize) {
-        (n, true) => n as i32,
-        _ => {
-            SetLastError(ERROR_INSUFFICIENT_BUFFER);
-            0
-        }
-    }
+    // Use the host's size-query, terminator and short-buffer semantics for this LCID.
+    unsafe { LCIDToLocaleName(active().lcid, buf, cch, 0) }
 }
 
 unsafe extern "system" fn get_user_default_lcid() -> u32 {
@@ -140,12 +135,9 @@ unsafe fn patch_fits(p: *mut u8) -> bool {
     bytes[0] == 0xE9 && bytes[5..].iter().all(|&b| b == 0xCC)
 }
 
-/// Install the hooks if `tuxbox.cfg` asks for a locale. Called once per process.
-pub fn install() {
-    let Some(configured) = crate::cfg("locale").filter(|v| !v.trim().is_empty()) else {
-        return; // default: the host user's language
-    };
-    let loc = match resolve(&configured) {
+/// Install the configured locale override during process-wide setup.
+pub fn install(configured: &str) {
+    let loc = match resolve(configured) {
         Ok(l) => l,
         Err(e) => {
             crate::record_raw("locale", "config", &format!("locale={configured} ignored: {e}; the host language stays in effect"));
