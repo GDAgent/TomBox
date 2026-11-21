@@ -64,6 +64,12 @@ pub(crate) const XUSER_DEVICE: Iface = Iface {
     guid: hex16(b"9749827ddc10ab4586b72737767c0bf1"),
     iid: hex16(b"9749827ddc10ab4586b72737767c0bf1"),
 };
+/// The device-association interface again, under the IID a later GDK passes (observed in a
+/// second title: same GUID, same slots 0x18/0x20/0x28 and argument shapes as `XUSER_DEVICE`).
+pub(crate) const XUSER_DEVICE_V2: Iface = Iface {
+    guid: hex16(b"9749827ddc10ab4586b72737767c0bf1"),
+    iid: hex16(b"56a9c60ce1e7df4f93419d5da649ebc8"),
+};
 /// `XAsync*`.
 pub(crate) const XASYNC: Iface = Iface {
     guid: hex16(b"cb7d3b07cf1f304094bee3c9eb623428"),
@@ -132,8 +138,9 @@ pub(crate) fn analyse(code: &[u8], rva: u32, read16: &dyn Fn(u32) -> Option<[u8;
     found
 }
 
-/// Every wrapper of one of `ifaces` in a mapped PE image (`image` = SizeOfImage bytes from
-/// the image base). Returns `None` if the headers or the exception directory are malformed.
+/// Every wrapper of an object (GUID) named in `ifaces` in a mapped PE image (`image` =
+/// SizeOfImage bytes from the image base), whatever IID it passes, so a caller can report
+/// interface versions it does not know. Returns `None` if the headers or the exception directory are malformed.
 pub(crate) fn scan(image: &[u8], ifaces: &[Iface]) -> Option<Vec<Wrapper>> {
     let rd32 = |o: usize| image.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
     let rd16 = |o: usize| image.get(o..o + 2).map(|b| u16::from_le_bytes(b.try_into().unwrap()));
@@ -156,7 +163,7 @@ pub(crate) fn scan(image: &[u8], ifaces: &[Iface]) -> Option<Vec<Wrapper>> {
         }
         let Some(code) = image.get(begin as usize..end as usize) else { continue };
         if let Some((iface, slot)) = analyse(code, begin, &read16) {
-            if ifaces.contains(&iface) {
+            if ifaces.iter().any(|k| k.guid == iface.guid) {
                 out.push(Wrapper { iface, slot, rva: begin });
             }
         }
@@ -267,6 +274,13 @@ mod tests {
         assert_eq!(found, vec![Wrapper { iface: XUSER, slot: 0x40, rva: 0x1000 }]);
         assert_eq!(scan(&img, &[XASYNC]).unwrap(), vec![], "only requested interfaces");
         assert!(scan(&img[..0x40], &[XUSER]).is_none(), "truncated headers");
+
+        // Another IID of a requested object is returned (so it can be reported), keyed by
+        // what the wrapper passes: here the later device-association interface version.
+        img[0x2000..0x2010].copy_from_slice(&XUSER_DEVICE.guid);
+        img[0x2010..0x2020].copy_from_slice(&XUSER_DEVICE_V2.iid);
+        assert_eq!(scan(&img, &[XUSER_DEVICE]).unwrap(), vec![Wrapper { iface: XUSER_DEVICE_V2, slot: 0x40, rva: 0x1000 }]);
+        assert_eq!(scan(&img, &[XUSER]).unwrap(), vec![], "other objects stay out");
     }
 
     /// Opt-in check against a real title: `TOMBOX_FORTNITE_EXE=<path to

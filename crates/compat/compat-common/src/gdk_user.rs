@@ -46,7 +46,24 @@ const E_NOT_FOUND: i32 = 0x8007_0490u32 as i32; // HRESULT_FROM_WIN32(ERROR_NOT_
 /// whose addresses are still build-specific).
 const BUILD_TIMESTAMP: u32 = 0x5f9b_76c4;
 
-use crate::gdk_wrappers::{Iface, XASYNC, XUSER, XUSER_DEVICE, XUSER_V2};
+use crate::gdk_wrappers::{Iface, XASYNC, XUSER, XUSER_DEVICE, XUSER_DEVICE_V2, XUSER_V2};
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// Interface versions that share a table entry: same object, same slots and arguments.
+fn versions(iface: Iface) -> &'static [Iface] {
+    if iface == XUSER_DEVICE {
+        &[XUSER_DEVICE, XUSER_DEVICE_V2]
+    } else if iface == XUSER {
+        &[XUSER]
+    } else if iface == XUSER_V2 {
+        &[XUSER_V2]
+    } else {
+        &[XASYNC]
+    }
+}
 
 // The title's XAsync wrappers (absolute addresses), found at install.
 static XASYNC_BEGIN: AtomicUsize = AtomicUsize::new(0);
@@ -533,7 +550,7 @@ pub fn install() {
         };
         // name -> unique RVA; missing and ambiguous names are reported, never guessed.
         let unique = |iface: Iface, slot: u32| -> Result<usize, usize> {
-            let hits: Vec<u32> = found.iter().filter(|w| w.iface == iface && w.slot == slot).map(|w| w.rva).collect();
+            let hits: Vec<u32> = found.iter().filter(|w| versions(iface).contains(&w.iface) && w.slot == slot).map(|w| w.rva).collect();
             if hits.len() == 1 { Ok(hits[0] as usize) } else { Err(hits.len()) }
         };
         let mut problems = Vec::new();
@@ -580,10 +597,10 @@ pub fn install() {
         }
         // Wrappers of these interfaces with slots this module does not implement keep
         // calling the real runtime, which does not know the local user handle.
-        let known: Vec<(Iface, u32)> = table.iter().map(|w| (w.1, w.2)).collect();
+        let known: Vec<(Iface, u32)> = table.iter().flat_map(|w| versions(w.1).iter().map(move |v| (*v, w.2))).collect();
         let mut other: Vec<String> = found.iter()
             .filter(|w| w.iface != XASYNC && !known.contains(&(w.iface, w.slot)))
-            .map(|w| format!("{}slot {:#x} @ {:#x}", if w.iface == XUSER { "" } else { "other-IID " }, w.slot, w.rva))
+            .map(|w| format!("{}slot {:#x} @ {:#x}", if w.iface == XUSER { String::new() } else { format!("IID {} ", hex(&w.iface.iid)) }, w.slot, w.rva))
             .collect();
         other.sort();
         other.dedup();
