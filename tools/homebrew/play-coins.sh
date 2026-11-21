@@ -7,7 +7,13 @@ if [[ ${1:-} == --gamechat-test || ${1:-} == --bvh-sort-test || ${1:-} == --fsr-
     fi
     library_path=$(realpath -- "$2")
 fi
-if [[ ${1:-} == --scarlett-libraries-test ]]; then
+if [[ ${1:-} == --scarlett-http-test || ${1:-} == --scarlett-user-test ]]; then
+    [[ $# == 3 && -d $2 && -f $3/bin/x64/xgameruntime.dll ]] || {
+        echo "Usage: $0 $1 PACKAGE GDK_WINDOWS_DIRECTORY" >&2; exit 2;
+    }
+    gdk_windows=$(realpath -- "$3")
+    library_dir=$(realpath -- "$2")
+elif [[ ${1:-} == --scarlett-libraries-test ]]; then
     [[ $# == 2 && -d $2 ]] || { echo "Usage: $0 $1 DIRECTORY" >&2; exit 2; }
     library_dir=$(realpath -- "$2")
 fi
@@ -17,6 +23,15 @@ build="$PWD/target/x86_64-pc-windows-msvc/release"
 required=(coin_window.exe)
 case ${1:-} in
     --gamechat-test) tools/homebrew/build-clear.sh ;;
+    --scarlett-import-test)
+        [[ $# == 1 ]] || exit 2
+        tools/homebrew/build-clear.sh "$1"
+        required=(scarlett_import_probe.exe)
+        ;;
+    --scarlett-http-test|--scarlett-user-test)
+        tools/homebrew/build-clear.sh "$1" "$gdk_windows"
+        required=(scarlett_startup_probe.exe)
+        ;;
     --rdna2-test|--command-list-test|--device-diagnostics-test|--scarlett-libraries-test)
         [[ $1 == --scarlett-libraries-test || $# == 1 ]] || exit 2
         # Run these coverage checks against the current game, fixture DLLs and translator.
@@ -60,6 +75,19 @@ export TOMBOX_LOG="${TOMBOX_LOG:-coin-window.log}"
 # The Windows GUI executable has no console of its own. Capture its scripted
 # checks through cmd so Linux callers see pixel mismatches and the exit status.
 case "${1:-}" in
+    --scarlett-import-test)
+        scratch=$(mktemp -d "$build/import-check.XXXXXXXX")
+        trap 'rm -rf -- "$scratch"' EXIT
+        cp scarlett_import_probe.exe "$scratch/"
+        (cd "$scratch" && "$PROTON" run cmd.exe /d /c 'scarlett_import_probe.exe coin-import 17 > checked.tsv 2> errors.txt') || {
+            cat "$scratch/errors.txt" >&2
+            exit 1
+        }
+        tr -d '\r' < "$scratch/checked.tsv" > "$scratch/report.tsv"
+        mv "$scratch/report.tsv" "$build/scarlett-import-checks.tsv"
+        echo "Verified import report written to $build/scarlett-import-checks.tsv"
+        exit 0
+        ;;
     --gamechat-test)
         # Reproduce app-local loading by basename with the caller's selected provider.
         scratch=$(mktemp -d gamechat-check.XXXXXXXX)
@@ -71,9 +99,14 @@ case "${1:-}" in
         cat "$scratch/chat.log"
         exit "$status"
         ;;
+    --scarlett-user-test)
+        exec python3 "$repo/tools/homebrew/scarlett_libraries.py" "$library_dir" --user-runtime "$gdk_windows/bin/x64/xgameruntime.dll"
+        ;;
+    --scarlett-http-test)
+        exec python3 "$repo/tools/homebrew/scarlett_libraries.py" "$library_dir" --http-runtime "$gdk_windows/bin/x64/xgameruntime.dll"
+        ;;
     --scarlett-libraries-test)
-        python3 "$repo/tools/homebrew/scarlett_libraries.py" "$library_dir"
-        exit $?
+        exec python3 "$repo/tools/homebrew/scarlett_libraries.py" "$library_dir"
         ;;
     --bvh-sort-test|--fsr-postpass-test|--fsr-prepass-test|--fsr-sharpen-test)
         export TOMBOX_DXC_DIR="${TOMBOX_DXC_DIR:-Z:$PWD}"

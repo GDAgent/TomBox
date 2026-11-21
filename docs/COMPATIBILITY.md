@@ -74,7 +74,9 @@ across 61 modules with `LoadLibraryExA` and `GetProcAddress` under Proton
 Experimental `experimental-11.0-20261027b`. This checks symbol availability.
 Coin Run also exercised the local libraries and dispatched the embedded shaders separately. The progress map merges these imports with Fortnite’s by dependency DLL and exact symbol name or ordinal. [Reproduce the library checks](../tools/homebrew/README.md#local-scarlett-libraries) · [Audit snapshot](../tools/progress/scarlett-dll-imports.tsv) · [Progress map](img/progress.svg)
 
-**All 611 distinct static imports resolve.** Coin Run checks the BVH builder’s `xmem!XMemVirtualQuery` against reserved and committed process memory, including an invalid-handle case. The shim returns host memory state and protection, and reports zero for the console GPU-access fields. The upscaler’s `XMemGetWorkingSetStatistics` still returns `E_NOTIMPL`. Coin Run uses `GetModuleHandleExW` to recover the owning module from an export address and `GetModuleFileNameW` to check that module’s on-disk path. The Scarlett atomic wait DLL calls the host’s `WaitOnAddress` and `WakeByAddressSingle` during the timeout, unequal-value and cross-thread notification checks.
+**All 611 distinct static imports resolve.** The standalone homebrew probe exercised 208 of the 492 host imports under Proton Experimental. It allocated an embedded-NUL string through OLE ordinal 4 and freed it through ordinal 6, read back CRT and Win32 file data, checked synchronization across threads and read a marshaled COM stream from a second thread. The report identifies the exact DLL, symbol and passing scenario. Retail caller behavior needs a separate title run. [Host-import results](../tools/progress/scarlett-import-checks.tsv)
+
+Coin Run checks the BVH builder’s `xmem!XMemVirtualQuery` against reserved and committed process memory, including an invalid-handle case. The shim returns host memory state and protection, and reports zero for the console GPU-access fields. The upscaler’s `XMemGetWorkingSetStatistics` still returns `E_NOTIMPL`. Coin Run uses `GetModuleHandleExW` to recover the owning module from an export address and `GetModuleFileNameW` to check that module’s on-disk path. The Scarlett atomic wait DLL calls the host’s `WaitOnAddress` and `WakeByAddressSingle` during the timeout, unequal-value return and cross-thread notification checks.
 
 | Supplied DLL | Import entries | Exports | Translation evidence and open work |
 |---|---:|---:|---|
@@ -82,7 +84,7 @@ Coin Run also exercised the local libraries and dispatched the embedded shaders 
 | `amd_fidelityfx_upscaler_xbox.dll` | 86 | 5 | The same four queries passed directly on the provider. Fifteen of 29 embedded kernels pass GPU readback, including the sharpening pass. Fourteen kernels and full-frame upscaling remain open. The model-specific DLL name is the provider’s own PE export name. |
 | `XboxBvhBuilder.dll` | 57 | 12 | Sixteen of 52 embedded kernels pass GPU readback. Four of them also complete a stable radix sort of 16,384 key/index pairs. The native DLL loads and its validator export resolves. A complete acceleration-structure build remains unverified. |
 | `Bink2Scarlett.dll` | 60 | 74 | Coin Run set and retrieved a Bink error string. The host resolves the XAudio2 ordinal. Synchronized audio and video playback remains unverified. |
-| `libHttpClient.GDK.dll` | 198 | 129 | Coin Run queried the library version. WinHTTP and Crypt32 imports resolve. The DLL names `xgameruntime.dll` and `QueryApiImpl`. GDK service, HTTP and WebSocket calls remain unverified. |
+| `libHttpClient.GDK.dll` | 198 | 129 | The version query and offline HTTP request setup passed under Proton. The startup probe initializes the public desktop Gaming Runtime before calling `HCInitialize`. Network transfers and WebSocket sessions remain unverified. |
 | `XCurl.dll` | 140 | 61 | URL decoding returned three bytes including an embedded NUL, and the DLL freed the result. Strings name `xgameruntime.dll`, `gameplatformservices.dll`, `QueryApiImpl` and a URL-security query. Network transfers and these dynamic lookups remain unverified. |
 | `concrt140.dll` | 103 | 291 | The native concurrency runtime reported an available processor count within the host system limit. |
 | `msvcp140.dll` | 187 | 1493 | The native library reported zero uncaught exceptions outside an exception handler. The binary also names `appmodel.dll`. |
@@ -101,6 +103,14 @@ are satisfied by the supplied runtimes and host APIs. DLL and function names in
 strings identify candidates for dynamic lookup. Whether an application takes
 those paths, uses a fallback or requires a particular GDK service depends on
 the workload. [GPU readback procedures](../tools/homebrew/README.md#retail-fidelityfx-prepass)
+
+### Package startup evidence
+
+For the inspected Scarlett package version 1.0.2.1, both manifests name `game_scarlett_master.exe` at the package root. The install layout lists 104 file entries across 25 chunks. The executable in chunk 1001 is the sole absent entry. All 16 libraries in chunk 1002 match the audit by dependency and exact import name or ordinal. This inventory checks file presence. The layout provides no content hashes for the listed assets.
+
+The homebrew startup probe ran on Proton Experimental with Microsoft.GDK.Windows 2610.0.9661. The desktop Gaming Runtime accepted the package’s `MicrosoftGame.Config` and returned the declared title ID through `XGameGetXboxTitleId`. The staged Scarlett HTTP client then initialized, created a request, returned the expected method and URL, and released the handle. The same request passed with default runtime initialization. Calling `HCInitialize` in the original 16-DLL environment returned `E_GAMERUNTIME_DLL_NOT_FOUND`. The package declares multiple-user support, advanced Series X and S memory profiles, SMT, and 2,048 MB of persistent local storage. Memory profiles, SMT and storage still need runtime tests. The existing Fortnite-specific user and store integration is gated on its executable build. [Reproduce the startup checks](../tools/homebrew/README.md#scarlett-package-startup) · [Gaming Runtime error codes](https://learn.microsoft.com/en-us/xbox/gdk/docs/reference/errorcodes)
+
+With that same config, the desktop runtime reported a maximum of one user for this session. User-change registration and unregistration both succeeded. A silent default-user request reached its completion callback and returned `E_GAMEUSER_NO_DEFAULT_USER` with no handle. The probe observed zero user-change notifications. Signed-in identity lookup and delivery of a real account transition still need a session with a user. [GDK silent user selection](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/xuser/enums/xuseraddoptions)
 
 ### Scarlett command-list UAV clears
 

@@ -260,9 +260,36 @@ and instruction-fetch distance remain unmeasured. [Recorded results](../progress
 
 ### Local Scarlett libraries
 
+To reproduce the host-import checks on Linux, set `PROTON` to the Proton Experimental executable and run the command below. The standalone homebrew probe uses the DLL names and ordinals from the Scarlett audit. It needs no game files. On success it writes `target/x86_64-pc-windows-msvc/release/scarlett-import-checks.tsv` with the scenario that exercised each import. Copy that report to `tools/progress/` and run `python3 tools/progress/gen.py` to refresh the map.
+
+```sh
+tools/homebrew/play-coins.sh --scarlett-import-test
+```
+
 Pass the directory containing all 16 DLLs from the audit. The launcher stages the local libraries in a temporary directory and selects their native versions under Proton. Coin Run checks the module path before probing each runtime or middleware DLL. The BVH builder loads through the XMem shim. Coin Run checks the memory query against reserved and committed regions and verifies the failure path. The FidelityFX probe sends four render-resolution queries through the loader and directly to the upscaler. The remaining GPU checks use the actual programs embedded in the upscaler and BVH builder. The four-pass BVH radix sort requires a wave64-capable device. The launcher reports failures after running the independent probes. [Per-DLL operations and limits](../../docs/COMPATIBILITY.md#scarlett-dll-audit)
 
 Fortnite delay-loads `GameChat2.dll` separately. The optional `--gamechat-test` passed with the x64 desktop provider from Microsoft.GDK.Windows 2610.0.9661. It tests local loading and thread configuration. Voice chat and Fortnite’s delay-load path need a title run. [Microsoft GDK package](https://www.nuget.org/packages/Microsoft.GDK.Windows/2610.0.9661)
+
+### Scarlett package startup
+
+From Linux, inventory an extracted package with its game config and Appx manifest. The report checks literal install-layout destinations, records DLL hashes and compares each DLL’s import table with the checked-in audit. Once a declared executable is present, the same command records its PE headers, TLS summary, ordinary and delay-loaded symbols, and the exact imports absent from the existing Scarlett and Fortnite snapshots. An unfamiliar symbol needs provider and behavior checks. Dynamic lookups appear only in runtime tests or further analysis.
+
+```sh
+cargo build --locked --release -p tombox-cli
+python3 tools/homebrew/package_preflight.py /path/to/package > package-preflight.json
+```
+
+For the offline HTTP startup test, use the extracted package directory, set `PROTON`, and pass the desktop GDK’s Windows directory containing `include/`, `lib/x64/` and `bin/x64/`. The tested NuGet package provides it under `native/261000/windows`. The launcher stages the supplied Scarlett HTTP client and its imported package DLLs alongside the matching desktop `xgameruntime.dll` in a temporary directory. Two processes test the default initialization and the package config. The latter reads back the title ID before exercising the HTTP client. Both check the origin of the loaded modules, set and read back a POST URL, and close the request without sending traffic. [Microsoft.GDK.Windows 2610.0.9661](https://www.nuget.org/packages/Microsoft.GDK.Windows/2610.0.9661) · [Gaming Runtime initialization](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/xgameruntimeinit/functions/xgameruntimeinitialize) · [Microsoft HTTP client](https://github.com/microsoft/libHttpClient)
+
+```sh
+tools/homebrew/play-coins.sh --scarlett-http-test /path/to/package /path/to/native/261000/windows
+```
+
+The user startup probe needs only the package’s `MicrosoftGame.config` and the same GDK. It registers for user changes and dispatches the completion of a silent default-user request. It accepts the documented no-default-user result or checks that a returned signed-in user can be found by its local ID. It reports the observed notification count after unregistering. [GDK user selection](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/xuser/enums/xuseraddoptions)
+
+```sh
+tools/homebrew/play-coins.sh --scarlett-user-test /path/to/package /path/to/native/261000/windows
+```
 
 ### Retail FidelityFX prepass
 

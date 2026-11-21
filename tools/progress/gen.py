@@ -4,6 +4,7 @@ docs/img/progress.svg is a map with one square per item (green = done, amber = p
 grey = not done), grouped the way the data is grouped:
   * imports from the test title and the Scarlett DLL audit, keyed by (module, symbol).
     Refresh scarlett-dll-imports.tsv from the per-import audit report after auditing a new build.
+    Refresh scarlett-import-checks.tsv from the passing --scarlett-import-test report.
   * Direct3D 12.x interface methods (slot ranges in progress.json)
   * RDNA2 instructions: named opcode table entries plus retail scan observations. Green
     requires every scanned retail shader using the instruction to translate. Each source
@@ -61,6 +62,15 @@ def imports():
             names.setdefault(mod, row["dependency"])
             sources.setdefault(key, set()).add(source)
 
+    host_checks = {}
+    with open(os.path.join(here, "scarlett-import-checks.tsv"), encoding="utf-8") as f:
+        for row in csv.DictReader(f, delimiter="\t"):
+            key = (row["dependency"].lower(), row["symbol"])
+            evidence = row["evidence"].strip()
+            if key in host_checks or not evidence or audited.get(key) != ("Proton Experimental", "resolved"):
+                raise ValueError(f"Duplicate, undocumented or unaudited host import check: {key}")
+            host_checks[key] = evidence
+
     groups, labels = {}, {}
     for key, callers in sorted(sources.items()):
         mod, symbol = key
@@ -72,7 +82,7 @@ def imports():
             group = names[mod].rsplit(".", 1)[0]
         # Preserve the title's statuses. A successful export lookup alone
         # establishes an unverified binding for a newly observed DLL import.
-        state = "done" if "Fortnite" in callers else "partial"
+        state = "done" if "Fortnite" in callers or key in host_checks else "partial"
         state = pair_states.get(key, ov.get(symbol, module_states.get(mod, state)))
         evidence = []
         if key in audited:
@@ -80,6 +90,8 @@ def imports():
             evidence.append(f"{provider} export {resolution}")
             if resolution == "missing":
                 state = "none"
+        if key in host_checks:
+            evidence.append("homebrew host-import test passed: " + host_checks[key])
         evidence.append({"done": "covered", "partial": "partial or unverified", "none": "unavailable"}[state])
         note = cfg["import_notes"].get(f"{mod}!{symbol}")
         if note:

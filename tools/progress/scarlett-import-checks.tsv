@@ -1,0 +1,209 @@
+dependency	symbol	evidence
+advapi32.dll	RegCloseKey	Windows directory registry value through both open-key contracts
+advapi32.dll	RegOpenKeyExW	Windows directory registry value through both open-key contracts
+advapi32.dll	RegOpenKeyW	Windows directory registry value through both open-key contracts
+advapi32.dll	RegQueryValueExW	Windows directory registry value through both open-key contracts
+api-ms-win-core-com-l1-1-0.dll	CoAddRefServerProcess	COM server references and cross-thread stream readback
+api-ms-win-core-com-l1-1-0.dll	CoGetApartmentType	WinRT MTA initialization, context and balanced teardown
+api-ms-win-core-com-l1-1-0.dll	CoGetContextToken	WinRT MTA initialization, context and balanced teardown
+api-ms-win-core-com-l1-1-0.dll	CoGetInterfaceAndReleaseStream	COM server references and cross-thread stream readback
+api-ms-win-core-com-l1-1-0.dll	CoGetObjectContext	WinRT MTA initialization, context and balanced teardown
+api-ms-win-core-com-l1-1-0.dll	CoMarshalInterThreadInterfaceInStream	COM server references and cross-thread stream readback
+api-ms-win-core-com-l1-1-0.dll	CoReleaseServerProcess	COM server references and cross-thread stream readback
+api-ms-win-core-fibers-l1-1-0.dll	FlsAlloc	fiber storage pointer round trip and cleanup callback
+api-ms-win-core-fibers-l1-1-0.dll	FlsFree	fiber storage pointer round trip and cleanup callback
+api-ms-win-core-fibers-l1-1-0.dll	FlsGetValue	fiber storage pointer round trip and cleanup callback
+api-ms-win-core-fibers-l1-1-0.dll	FlsSetValue	fiber storage pointer round trip and cleanup callback
+api-ms-win-core-file-l1-1-0.dll	GetDiskFreeSpaceExW	temporary directory, hard-link visibility and independent file copy
+api-ms-win-core-file-l1-1-0.dll	GetFileAttributesW	file contents, offsets and duplicate-handle lifetime
+api-ms-win-core-file-l1-1-0.dll	GetFileInformationByHandle	file contents, offsets and duplicate-handle lifetime
+api-ms-win-core-file-l1-1-0.dll	SetFilePointerEx	file contents, offsets and duplicate-handle lifetime
+api-ms-win-core-file-l1-2-0.dll	GetTempPathW	temporary directory, hard-link visibility and independent file copy
+api-ms-win-core-file-l2-1-0.dll	CopyFile2	temporary directory, hard-link visibility and independent file copy
+api-ms-win-core-file-l2-1-0.dll	CreateHardLinkW	temporary directory, hard-link visibility and independent file copy
+api-ms-win-core-handle-l1-1-0.dll	DuplicateHandle	file contents, offsets and duplicate-handle lifetime
+api-ms-win-core-heap-l1-1-0.dll	HeapReAlloc	zeroed, resized and aligned allocations with paired release
+api-ms-win-core-heap-l2-1-0.dll	LocalAlloc	zeroed, resized and aligned allocations with paired release
+api-ms-win-core-heap-l2-1-0.dll	LocalFree	zeroed, resized and aligned allocations with paired release
+api-ms-win-core-interlocked-l1-1-0.dll	InterlockedFlushSList	interlocked list depth, pop and flush order
+api-ms-win-core-interlocked-l1-1-0.dll	InterlockedPopEntrySList	interlocked list depth, pop and flush order
+api-ms-win-core-interlocked-l1-1-0.dll	InterlockedPushEntrySList	interlocked list depth, pop and flush order
+api-ms-win-core-interlocked-l1-1-0.dll	QueryDepthSList	interlocked list depth, pop and flush order
+api-ms-win-core-libraryloader-l1-2-0.dll	FindResourceExW	loader handles, ordinal address, image ownership and version resource
+api-ms-win-core-libraryloader-l1-2-0.dll	LoadLibraryExW	loader handles, ordinal address, image ownership and version resource
+api-ms-win-core-libraryloader-l1-2-0.dll	LoadResource	loader handles, ordinal address, image ownership and version resource
+api-ms-win-core-localization-l1-2-0.dll	FormatMessageA	formatted messages, CRT error state and binary Base64 decoding
+api-ms-win-core-localization-l1-2-0.dll	GetCPInfo	UTF-8 round trip, casing and character classification
+api-ms-win-core-localization-l1-2-0.dll	LCMapStringEx	UTF-8 round trip, casing and character classification
+api-ms-win-core-processenvironment-l1-1-0.dll	GetEnvironmentVariableA	Win32 and CRT process environment round trip
+api-ms-win-core-processenvironment-l1-1-0.dll	SetEnvironmentVariableA	Win32 and CRT process environment round trip
+api-ms-win-core-processthreads-l1-1-0.dll	GetExitCodeThread	suspended thread priority, worker exit code and queued event
+api-ms-win-core-processthreads-l1-1-0.dll	GetThreadPriority	suspended thread priority, worker exit code and queued event
+api-ms-win-core-processthreads-l1-1-0.dll	ResumeThread	suspended thread priority, worker exit code and queued event
+api-ms-win-core-processthreads-l1-1-0.dll	SetThreadPriority	suspended thread priority, worker exit code and queued event
+api-ms-win-core-registry-l1-1-0.dll	RegOpenKeyExW	Windows directory registry value through both open-key contracts
+api-ms-win-core-rtlsupport-l1-1-0.dll	RtlPcToFileHeader	loader handles, ordinal address, image ownership and version resource
+api-ms-win-core-string-l1-1-0.dll	CompareStringEx	UTF-8 round trip, casing and character classification
+api-ms-win-core-string-l1-1-0.dll	GetStringTypeExW	UTF-8 round trip, casing and character classification
+api-ms-win-core-string-l1-1-0.dll	GetStringTypeW	UTF-8 round trip, casing and character classification
+api-ms-win-core-string-obsolete-l1-1-0.dll	lstrcmpiW	UTF-8 round trip, casing and character classification
+api-ms-win-core-string-obsolete-l1-1-0.dll	lstrlenW	UTF-8 round trip, casing and character classification
+api-ms-win-core-synch-l1-1-0.dll	CreateSemaphoreExW	event and semaphore counts with single and multiple waits
+api-ms-win-core-synch-l1-1-0.dll	InitializeCriticalSectionEx	critical section recursion and exclusive/shared lock ownership
+api-ms-win-core-synch-l1-1-0.dll	ReleaseSemaphore	event and semaphore counts with single and multiple waits
+api-ms-win-core-synch-l1-1-0.dll	TryAcquireSRWLockExclusive	critical section recursion and exclusive/shared lock ownership
+api-ms-win-core-synch-l1-1-0.dll	TryAcquireSRWLockShared	critical section recursion and exclusive/shared lock ownership
+api-ms-win-core-synch-l1-1-0.dll	WaitForMultipleObjectsEx	event and semaphore counts with single and multiple waits
+api-ms-win-core-synch-l1-2-0.dll	InitOnceExecuteOnce	one-time initialization and condition variable wakeups
+api-ms-win-core-synch-l1-2-0.dll	InitializeConditionVariable	one-time initialization and condition variable wakeups
+api-ms-win-core-synch-l1-2-0.dll	SleepConditionVariableCS	one-time initialization and condition variable wakeups
+api-ms-win-core-synch-l1-2-0.dll	SleepConditionVariableSRW	one-time initialization and condition variable wakeups
+api-ms-win-core-synch-l1-2-0.dll	WakeAllConditionVariable	one-time initialization and condition variable wakeups
+api-ms-win-core-synch-l1-2-0.dll	WakeConditionVariable	one-time initialization and condition variable wakeups
+api-ms-win-core-synch-l1-2-1.dll	WaitForMultipleObjects	event and semaphore counts with single and multiple waits
+api-ms-win-core-sysinfo-l1-1-0.dll	GetLogicalProcessorInformationEx	processor core topology and monotonic and system clocks
+api-ms-win-core-sysinfo-l1-1-0.dll	GetTickCount	processor core topology and monotonic and system clocks
+api-ms-win-core-sysinfo-l1-1-0.dll	GetTickCount64	processor core topology and monotonic and system clocks
+api-ms-win-core-sysinfo-l1-2-0.dll	GetNativeSystemInfo	processor core topology and monotonic and system clocks
+api-ms-win-core-sysinfo-l1-2-0.dll	GetSystemTimePreciseAsFileTime	processor core topology and monotonic and system clocks
+api-ms-win-core-threadpool-l1-2-0.dll	CloseThreadpoolTimer	thread pool work, one-shot timer and signaled wait callbacks
+api-ms-win-core-threadpool-l1-2-0.dll	CloseThreadpoolWait	thread pool work, one-shot timer and signaled wait callbacks
+api-ms-win-core-threadpool-l1-2-0.dll	CloseThreadpoolWork	thread pool work, one-shot timer and signaled wait callbacks
+api-ms-win-core-threadpool-l1-2-0.dll	CreateThreadpoolTimer	thread pool work, one-shot timer and signaled wait callbacks
+api-ms-win-core-threadpool-l1-2-0.dll	CreateThreadpoolWait	thread pool work, one-shot timer and signaled wait callbacks
+api-ms-win-core-threadpool-l1-2-0.dll	CreateThreadpoolWork	thread pool work, one-shot timer and signaled wait callbacks
+api-ms-win-core-threadpool-l1-2-0.dll	SetThreadpoolTimer	thread pool work, one-shot timer and signaled wait callbacks
+api-ms-win-core-threadpool-l1-2-0.dll	SetThreadpoolWait	thread pool work, one-shot timer and signaled wait callbacks
+api-ms-win-core-threadpool-l1-2-0.dll	SubmitThreadpoolWork	thread pool work, one-shot timer and signaled wait callbacks
+api-ms-win-core-threadpool-l1-2-0.dll	WaitForThreadpoolTimerCallbacks	thread pool work, one-shot timer and signaled wait callbacks
+api-ms-win-core-threadpool-l1-2-0.dll	WaitForThreadpoolWaitCallbacks	thread pool work, one-shot timer and signaled wait callbacks
+api-ms-win-core-threadpool-l1-2-0.dll	WaitForThreadpoolWorkCallbacks	thread pool work, one-shot timer and signaled wait callbacks
+api-ms-win-core-threadpool-legacy-l1-1-0.dll	QueueUserWorkItem	suspended thread priority, worker exit code and queued event
+api-ms-win-core-util-l1-1-0.dll	DecodePointer	fiber storage pointer round trip and cleanup callback
+api-ms-win-core-util-l1-1-0.dll	EncodePointer	fiber storage pointer round trip and cleanup callback
+api-ms-win-core-winrt-l1-1-0.dll	RoGetApartmentIdentifier	WinRT MTA initialization, context and balanced teardown
+api-ms-win-core-winrt-l1-1-0.dll	RoInitialize	WinRT MTA initialization, context and balanced teardown
+api-ms-win-core-winrt-l1-1-0.dll	RoUninitialize	WinRT MTA initialization, context and balanced teardown
+api-ms-win-core-winrt-string-l1-1-0.dll	WindowsCompareStringOrdinal	owned and referenced WinRT strings with embedded NUL
+api-ms-win-core-winrt-string-l1-1-0.dll	WindowsCreateString	owned and referenced WinRT strings with embedded NUL
+api-ms-win-core-winrt-string-l1-1-0.dll	WindowsCreateStringReference	owned and referenced WinRT strings with embedded NUL
+api-ms-win-core-winrt-string-l1-1-0.dll	WindowsDeleteString	owned and referenced WinRT strings with embedded NUL
+api-ms-win-core-winrt-string-l1-1-0.dll	WindowsDuplicateString	owned and referenced WinRT strings with embedded NUL
+api-ms-win-core-winrt-string-l1-1-0.dll	WindowsGetStringLen	owned and referenced WinRT strings with embedded NUL
+api-ms-win-core-winrt-string-l1-1-0.dll	WindowsGetStringRawBuffer	owned and referenced WinRT strings with embedded NUL
+api-ms-win-core-winrt-string-l1-1-0.dll	WindowsIsStringEmpty	owned and referenced WinRT strings with embedded NUL
+api-ms-win-core-winrt-string-l1-1-0.dll	WindowsStringHasEmbeddedNull	owned and referenced WinRT strings with embedded NUL
+api-ms-win-crt-convert-l1-1-0.dll	_itow_s	numeric conversions and signed floating-point reference values
+api-ms-win-crt-convert-l1-1-0.dll	atol	numeric conversions and signed floating-point reference values
+api-ms-win-crt-convert-l1-1-0.dll	btowc	numeric conversions and signed floating-point reference values
+api-ms-win-crt-convert-l1-1-0.dll	strtof	numeric conversions and signed floating-point reference values
+api-ms-win-crt-convert-l1-1-0.dll	wcstombs	numeric conversions and signed floating-point reference values
+api-ms-win-crt-convert-l1-1-0.dll	wcstombs_s	numeric conversions and signed floating-point reference values
+api-ms-win-crt-convert-l1-1-0.dll	wcstoull	numeric conversions and signed floating-point reference values
+api-ms-win-crt-environment-l1-1-0.dll	_putenv_s	Win32 and CRT process environment round trip
+api-ms-win-crt-environment-l1-1-0.dll	_wgetcwd	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-filesystem-l1-1-0.dll	_wchdir	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-filesystem-l1-1-0.dll	_wremove	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-filesystem-l1-1-0.dll	_wrename	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-filesystem-l1-1-0.dll	_wrmdir	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-heap-l1-1-0.dll	_aligned_free	zeroed, resized and aligned allocations with paired release
+api-ms-win-crt-heap-l1-1-0.dll	_aligned_malloc	zeroed, resized and aligned allocations with paired release
+api-ms-win-crt-heap-l1-1-0.dll	_aligned_offset_malloc	zeroed, resized and aligned allocations with paired release
+api-ms-win-crt-heap-l1-1-0.dll	_calloc_base	zeroed, resized and aligned allocations with paired release
+api-ms-win-crt-heap-l1-1-0.dll	_free_base	zeroed, resized and aligned allocations with paired release
+api-ms-win-crt-heap-l1-1-0.dll	free	C locale numeric formatting, classification and string duplication
+api-ms-win-crt-locale-l1-1-0.dll	___mb_cur_max_func	C locale numeric formatting, classification and string duplication
+api-ms-win-crt-locale-l1-1-0.dll	__pctype_func	C locale numeric formatting, classification and string duplication
+api-ms-win-crt-locale-l1-1-0.dll	localeconv	C locale numeric formatting, classification and string duplication
+api-ms-win-crt-locale-l1-1-0.dll	setlocale	C locale numeric formatting, classification and string duplication
+api-ms-win-crt-math-l1-1-0.dll	_fdsign	numeric conversions and signed floating-point reference values
+api-ms-win-crt-math-l1-1-0.dll	_ldsign	numeric conversions and signed floating-point reference values
+api-ms-win-crt-math-l1-1-0.dll	ceilf	numeric conversions and signed floating-point reference values
+api-ms-win-crt-math-l1-1-0.dll	cosh	numeric conversions and signed floating-point reference values
+api-ms-win-crt-math-l1-1-0.dll	expm1	numeric conversions and signed floating-point reference values
+api-ms-win-crt-math-l1-1-0.dll	log1p	numeric conversions and signed floating-point reference values
+api-ms-win-crt-math-l1-1-0.dll	log2	numeric conversions and signed floating-point reference values
+api-ms-win-crt-math-l1-1-0.dll	sinh	numeric conversions and signed floating-point reference values
+api-ms-win-crt-runtime-l1-1-0.dll	__p___argc	CRT wide argument retrieval and LIFO exit callbacks
+api-ms-win-crt-runtime-l1-1-0.dll	__p___wargv	CRT wide argument retrieval and LIFO exit callbacks
+api-ms-win-crt-runtime-l1-1-0.dll	_beginthreadex	suspended thread priority, worker exit code and queued event
+api-ms-win-crt-runtime-l1-1-0.dll	_configure_wide_argv	CRT wide argument retrieval and LIFO exit callbacks
+api-ms-win-crt-runtime-l1-1-0.dll	_endthreadex	suspended thread priority, worker exit code and queued event
+api-ms-win-crt-runtime-l1-1-0.dll	_errno	formatted messages, CRT error state and binary Base64 decoding
+api-ms-win-crt-runtime-l1-1-0.dll	_execute_onexit_table	CRT wide argument retrieval and LIFO exit callbacks
+api-ms-win-crt-runtime-l1-1-0.dll	_initialize_onexit_table	CRT wide argument retrieval and LIFO exit callbacks
+api-ms-win-crt-runtime-l1-1-0.dll	_register_onexit_function	CRT wide argument retrieval and LIFO exit callbacks
+api-ms-win-crt-runtime-l1-1-0.dll	_set_errno	formatted messages, CRT error state and binary Base64 decoding
+api-ms-win-crt-runtime-l1-1-0.dll	strerror	formatted messages, CRT error state and binary Base64 decoding
+api-ms-win-crt-stdio-l1-1-0.dll	_close	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-stdio-l1-1-0.dll	_fsopen	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-stdio-l1-1-0.dll	_ftelli64	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-stdio-l1-1-0.dll	_lseeki64	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-stdio-l1-1-0.dll	_open	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-stdio-l1-1-0.dll	_read	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-stdio-l1-1-0.dll	_wopen	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-stdio-l1-1-0.dll	_write	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-stdio-l1-1-0.dll	fclose	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-stdio-l1-1-0.dll	fgetwc	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-stdio-l1-1-0.dll	fputs	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-stdio-l1-1-0.dll	fputwc	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-stdio-l1-1-0.dll	ungetwc	CRT file offsets, UTF-8 streams, rename and removal
+api-ms-win-crt-string-l1-1-0.dll	__strncnt	bounded narrow and wide strings and character predicates
+api-ms-win-crt-string-l1-1-0.dll	_wcsdup	C locale numeric formatting, classification and string duplication
+api-ms-win-crt-string-l1-1-0.dll	isalnum	bounded narrow and wide strings and character predicates
+api-ms-win-crt-string-l1-1-0.dll	islower	bounded narrow and wide strings and character predicates
+api-ms-win-crt-string-l1-1-0.dll	isupper	bounded narrow and wide strings and character predicates
+api-ms-win-crt-string-l1-1-0.dll	isxdigit	bounded narrow and wide strings and character predicates
+api-ms-win-crt-string-l1-1-0.dll	strlen	bounded narrow and wide strings and character predicates
+api-ms-win-crt-string-l1-1-0.dll	strncpy_s	bounded narrow and wide strings and character predicates
+api-ms-win-crt-string-l1-1-0.dll	wcscat_s	bounded narrow and wide strings and character predicates
+api-ms-win-crt-string-l1-1-0.dll	wcslen	bounded narrow and wide strings and character predicates
+api-ms-win-crt-string-l1-1-0.dll	wcsncat_s	bounded narrow and wide strings and character predicates
+api-ms-win-crt-string-l1-1-0.dll	wcsncpy_s	bounded narrow and wide strings and character predicates
+api-ms-win-crt-string-l1-1-0.dll	wcsnlen	bounded narrow and wide strings and character predicates
+crypt32.dll	CryptStringToBinaryW	formatted messages, CRT error state and binary Base64 decoding
+kernel32.dll	AcquireSRWLockExclusive	critical section recursion and exclusive/shared lock ownership
+kernel32.dll	CloseHandle	file contents, offsets and duplicate-handle lifetime
+kernel32.dll	CloseThreadpoolTimer	thread pool work, one-shot timer and signaled wait callbacks
+kernel32.dll	CloseThreadpoolWork	thread pool work, one-shot timer and signaled wait callbacks
+kernel32.dll	CreateEventW	event and semaphore counts with single and multiple waits
+kernel32.dll	CreateFileA	file contents, offsets and duplicate-handle lifetime
+kernel32.dll	CreateFileW	file contents, offsets and duplicate-handle lifetime
+kernel32.dll	CreateThreadpoolTimer	thread pool work, one-shot timer and signaled wait callbacks
+kernel32.dll	CreateThreadpoolWork	thread pool work, one-shot timer and signaled wait callbacks
+kernel32.dll	DeleteCriticalSection	critical section recursion and exclusive/shared lock ownership
+kernel32.dll	EnterCriticalSection	critical section recursion and exclusive/shared lock ownership
+kernel32.dll	FreeLibrary	loader handles, ordinal address, image ownership and version resource
+kernel32.dll	GetCurrentProcess	file contents, offsets and duplicate-handle lifetime
+kernel32.dll	GetCurrentProcessId	file contents, offsets and duplicate-handle lifetime
+kernel32.dll	GetCurrentThreadId	processor core topology and monotonic and system clocks
+kernel32.dll	GetFileAttributesW	file contents, offsets and duplicate-handle lifetime
+kernel32.dll	GetLastError	file contents, offsets and duplicate-handle lifetime
+kernel32.dll	GetModuleHandleW	loader handles, ordinal address, image ownership and version resource
+kernel32.dll	GetProcAddress	loader handles, ordinal address, image ownership and version resource
+kernel32.dll	GetSystemTimeAsFileTime	processor core topology and monotonic and system clocks
+kernel32.dll	GlobalFree	zeroed, resized and aligned allocations with paired release
+kernel32.dll	InitializeCriticalSection	critical section recursion and exclusive/shared lock ownership
+kernel32.dll	InitializeSListHead	interlocked list depth, pop and flush order
+kernel32.dll	LeaveCriticalSection	critical section recursion and exclusive/shared lock ownership
+kernel32.dll	LoadLibraryExA	loader handles, ordinal address, image ownership and version resource
+kernel32.dll	LoadLibraryExW	loader handles, ordinal address, image ownership and version resource
+kernel32.dll	LoadLibraryW	loader handles, ordinal address, image ownership and version resource
+kernel32.dll	MultiByteToWideChar	UTF-8 round trip, casing and character classification
+kernel32.dll	QueryPerformanceCounter	processor core topology and monotonic and system clocks
+kernel32.dll	ReadFile	file contents, offsets and duplicate-handle lifetime
+kernel32.dll	ReleaseSRWLockExclusive	critical section recursion and exclusive/shared lock ownership
+kernel32.dll	SetEvent	event and semaphore counts with single and multiple waits
+kernel32.dll	SetFilePointer	file contents, offsets and duplicate-handle lifetime
+kernel32.dll	SetThreadpoolTimer	thread pool work, one-shot timer and signaled wait callbacks
+kernel32.dll	SleepConditionVariableSRW	one-time initialization and condition variable wakeups
+kernel32.dll	SubmitThreadpoolWork	thread pool work, one-shot timer and signaled wait callbacks
+kernel32.dll	WaitForSingleObject	event and semaphore counts with single and multiple waits
+kernel32.dll	WaitForThreadpoolTimerCallbacks	thread pool work, one-shot timer and signaled wait callbacks
+kernel32.dll	WaitForThreadpoolWorkCallbacks	thread pool work, one-shot timer and signaled wait callbacks
+kernel32.dll	WakeAllConditionVariable	one-time initialization and condition variable wakeups
+kernel32.dll	WideCharToMultiByte	UTF-8 round trip, casing and character classification
+kernel32.dll	WriteFile	file contents, offsets and duplicate-handle lifetime
+oleaut32.dll	#4	length-prefixed BSTR with embedded NUL
+oleaut32.dll	#6	length-prefixed BSTR with embedded NUL
+winhttp.dll	WinHttpCrackUrl	offline HTTPS URL component parsing

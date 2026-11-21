@@ -3,12 +3,6 @@ set -eu
 cd "$(dirname "$0")/../.."
 build=target/x86_64-pc-windows-msvc/release
 sdk=${XWIN_SDK_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/cargo-xwin/xwin}
-export RUSTFLAGS="-C target-feature=+crt-static ${RUSTFLAGS:-}"
-cargo xwin build --release --locked \
-    --target x86_64-pc-windows-msvc -p d3d12_xs
-cargo xwin build --release --locked --target x86_64-pc-windows-msvc -p xmem --lib --examples
-cp "$build/examples/coin_run.exe" "$build/"
-python3 tools/homebrew/triangle_shaders.py > "$build/triangle_shaders.h"
 compile_flags=()
 build_pe() {
     local output=$1 source=$2
@@ -20,6 +14,24 @@ build_pe() {
         /link /libpath:"$sdk/crt/lib/x86_64" \
         /libpath:"$sdk/sdk/lib/um/x86_64" /libpath:"$sdk/sdk/lib/ucrt/x86_64" kernel32.lib "$@"
 }
+if [[ ${1:-} == --scarlett-import-test ]]; then
+    mkdir -p "$build"
+    build_pe "$build/scarlett_import_probe.exe" tools/homebrew/scarlett_import_probe.cpp ole32.lib
+    exit 0
+fi
+if [[ ${1:-} == --scarlett-http-test || ${1:-} == --scarlett-user-test ]]; then
+    mkdir -p "$build"
+    compile_flags=("-I$2/include")
+    build_pe "$build/scarlett_startup_probe.exe" tools/homebrew/scarlett_startup_probe.cpp \
+        "$2/lib/x64/xgameruntime.lib" ole32.lib advapi32.lib
+    exit 0
+fi
+export RUSTFLAGS="-C target-feature=+crt-static ${RUSTFLAGS:-}"
+cargo xwin build --release --locked \
+    --target x86_64-pc-windows-msvc -p d3d12_xs
+cargo xwin build --release --locked --target x86_64-pc-windows-msvc -p xmem --lib --examples
+cp "$build/examples/coin_run.exe" "$build/"
+python3 tools/homebrew/triangle_shaders.py > "$build/triangle_shaders.h"
 build_pe "$build/bvh_sort_probe.exe" tools/homebrew/bvh_sort_probe.cpp "$build/d3d12_xs.dll.lib" d3d12.lib
 build_pe "$build/fsr_prepass_probe.exe" tools/homebrew/fsr_prepass_probe.cpp "$build/d3d12_xs.dll.lib" d3d12.lib
 build_pe "$build/fsr_postpass_probe.exe" tools/homebrew/fsr_postpass_probe.cpp "$build/d3d12_xs.dll.lib" d3d12.lib

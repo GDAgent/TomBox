@@ -11,7 +11,7 @@ mod json;
 
 use std::process::ExitCode;
 use tombox_pe::constants as c;
-use tombox_pe::directories::ImportEntry;
+use tombox_pe::directories::{ImportEntry, ImportedDll};
 use tombox_pe::PeFile;
 
 fn main() -> ExitCode {
@@ -306,6 +306,27 @@ fn print_xbox_classification(pe: &PeFile) {
     }
 }
 
+fn push_imports_json(out: &mut String, dlls: &[ImportedDll]) {
+    out.push_str("[\n");
+    for (i, dll) in dlls.iter().enumerate() {
+        if i > 0 {
+            out.push_str(",\n");
+        }
+        out.push_str(&format!("    {{\"module\": {}, \"functions\": [", json::esc(&dll.name)));
+        for (j, entry) in dll.functions.iter().enumerate() {
+            if j > 0 {
+                out.push_str(", ");
+            }
+            match entry {
+                ImportEntry::ByName { name, .. } => out.push_str(&json::esc(name)),
+                ImportEntry::ByOrdinal(ord) => out.push_str(&format!("\"#{ord}\"")),
+            }
+        }
+        out.push_str("]}");
+    }
+    out.push_str("\n  ]");
+}
+
 fn print_json(path: &str, file_len: usize, pe: &PeFile) {
     use json::esc;
     let mut out = String::new();
@@ -332,26 +353,11 @@ fn print_json(path: &str, file_len: usize, pe: &PeFile) {
     }
     out.push_str("  ],\n");
 
-    // imports
-    out.push_str("  \"imports\": [\n");
-    if let Some(imp) = &pe.imports {
-        for (i, d) in imp.dlls.iter().enumerate() {
-            out.push_str(&format!("    {{ \"module\": {}, \"functions\": [", esc(&d.name)));
-            for (j, f) in d.functions.iter().enumerate() {
-                let s = match f {
-                    ImportEntry::ByName { name, .. } => esc(name),
-                    ImportEntry::ByOrdinal(o) => esc(&format!("#{o}")),
-                };
-                out.push_str(&s);
-                if j + 1 < d.functions.len() {
-                    out.push_str(", ");
-                }
-            }
-            out.push_str("] }");
-            out.push_str(if i + 1 < imp.dlls.len() { ",\n" } else { "\n" });
-        }
-    }
-    out.push_str("  ],\n");
+    out.push_str("  \"imports\": ");
+    push_imports_json(&mut out, pe.imports.as_ref().map_or(&[], |i| i.dlls.as_slice()));
+    out.push_str(",\n  \"delay_import_details\": ");
+    push_imports_json(&mut out, pe.delay_imports.as_ref().map_or(&[], |i| i.dlls.as_slice()));
+    out.push_str(",\n");
 
     // delay imports (module names only)
     out.push_str("  \"delay_imports\": [");

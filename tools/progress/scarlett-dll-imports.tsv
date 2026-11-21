@@ -969,8 +969,8 @@ vccorlib140.dll	api-ms-win-crt-stdio-l1-1-0.dll	__stdio_common_vfprintf	Proton E
 vccorlib140.dll	api-ms-win-crt-stdio-l1-1-0.dll	__stdio_common_vswprintf_s	Proton Experimental	resolved
 vccorlib140.dll	api-ms-win-crt-string-l1-1-0.dll	wcscpy_s	Proton Experimental	resolved
 vccorlib140.dll	msvcp140.dll	?_Xlength_error@std@@YAXPEBD@Z	Supplied DLL	resolved
-vccorlib140.dll	oleaut32.dll	SysAllocStringLen	Proton Experimental	resolved
-vccorlib140.dll	oleaut32.dll	SysFreeString	Proton Experimental	resolved
+vccorlib140.dll	oleaut32.dll	#4	Proton Experimental	resolved
+vccorlib140.dll	oleaut32.dll	#6	Proton Experimental	resolved
 vccorlib140.dll	vcruntime140.dll	_CxxThrowException	Supplied DLL	resolved
 vccorlib140.dll	vcruntime140.dll	_SetWinRTOutOfMemoryExceptionCallback	Supplied DLL	resolved
 vccorlib140.dll	vcruntime140.dll	__C_specific_handler	Supplied DLL	resolved
