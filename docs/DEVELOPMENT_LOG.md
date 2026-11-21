@@ -1402,3 +1402,28 @@ r2.x) and the linked pair to match. `cargo test --release` (workspace) passes.
 failed, 6,600 frames presented, title screen reached. The vertex-to-pixel case is covered
 only by the synthetic test. A pixel shader whose inputs are a subset of the producer's
 outputs can still be packed differently. That case is not handled and was not observed.
+
+## 2026-11-21 — Buffer-only resource states on textures
+
+A second GDK title presented three frames, then every `Present` returned
+`DXGI_ERROR_DEVICE_REMOVED`. The debug layer showed the chain: `ResourceBarrier` with
+`VERTEX_AND_CONSTANT_BUFFER | INDEX_BUFFER` on a Texture2D (#528,
+`RESOURCE_BARRIER_INVALID_RESOURCE`), so the list failed to close (#838), and executing it
+removed the device (#232, `DXGI_ERROR_INVALID_CALL`). A barrier trace named the transitions:
+the title's render target goes `RENDER_TARGET <-> 0x8c3`, i.e. `GENERIC_READ` without
+`INDIRECT_ARGUMENT`. The console accepts the two buffer-only bits on a texture.
+
+**Change.** A texture cannot be read as vertex, index or constant data, so `d3d12_xs` drops
+those two bits for non-buffer resources: in transition barriers (the title's barrier array is
+copied only when a barrier changes) and in the initial state of `CreateCommittedResource`,
+`CreatePlacedResource` and `CreatePlacedResourceX`. The remaining read states (shader
+resource, copy source) keep their synchronisation. Buffers are unchanged. The first four
+rewritten barriers are logged.
+
+**Tests.** `device_wrap::state_tests`: the observed state, `GENERIC_READ`, a non-read state, a
+state of only buffer bits, and that buffers keep every bit. `cargo test --release -p d3d12_xs`
+passes.
+
+**In game (native Windows 11; not run under Proton).** No more device removal: one run presented 3,600+ frames in 90 s under the debug
+layer. The remaining debug-layer errors are root CBV addresses not aligned to 256 bytes,
+which this change does not address.

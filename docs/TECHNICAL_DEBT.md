@@ -226,3 +226,8 @@
 - **UNORM sampling** normalises by mip 0 of the view; the console's behaviour for
   unnormalised coordinates on mipped views, and samplers that force unnormalised
   coordinates through the S#, are not modelled.
+
+## Resource states (2026-11-21)
+- Buffer-only read bits are dropped from texture transitions; other console-only state
+  combinations, if any, are not translated. Root constant-buffer views at addresses that
+  are not 256-byte aligned are passed through (accepted by the console, invalid on PC).
