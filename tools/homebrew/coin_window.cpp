@@ -618,7 +618,11 @@ static int check_texture_states() {
     BoardRenderer renderer;
     auto& frame = renderer.frame;
     auto& atlas = renderer.atlas;
-    if (frame.init(32, 32) || atlas.init_cpu(frame, 32, 32, 2, 8192) || renderer.init_mesh(6)) return 1;
+    // Xbox texture read states in this helper include the vertex/index buffer bits.
+    constexpr auto shader_read = static_cast<D3D12_RESOURCE_STATES>(0x83);
+    constexpr auto copy_source = static_cast<D3D12_RESOURCE_STATES>(0x803);
+    if (frame.init(32, 32) || atlas.init_cpu(frame, 32, 32, 2, 8192, DXGI_FORMAT_R8G8B8A8_UNORM, 1, shader_read)
+        || renderer.init_mesh(6)) return 1;
 
     constexpr Color base = {79, 132, 187, 255}, tail = {18, 57, 96, 255}, edit = {255, 93, 28, 255};
     auto* memory = static_cast<unsigned char*>(atlas.placement.get());
@@ -628,20 +632,25 @@ static int check_texture_states() {
     }
     if (frame.begin({0,0,0,1}) || frame.finish(true)) return 1;
 
-    auto transition_mip = [&](ID3D12GraphicsCommandList* list, D3D12_RESOURCE_STATES before,
-                              D3D12_RESOURCE_STATES after) {
+    auto mip_barrier = [&](D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
         D3D12_RESOURCE_BARRIER b = {};
         b.Transition = {atlas.texture.Get(), 1, before, after};
-        list->ResourceBarrier(1, &b);
+        return b;
     };
     // Record the second list first. Only submission order gives COPY_SOURCE.
     CHECK(frame.alloc->Reset());
     ComPtr<ID3D12GraphicsCommandList> second;
     if (frame.create_list(second.GetAddressOf())) return 1;
-    transition_mip(second.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    auto to_source = mip_barrier(D3D12_RESOURCE_STATE_COPY_DEST, copy_source);
+    second->ResourceBarrier(1, &to_source);
     CHECK(second->Close());
     CHECK(frame.list->Reset(frame.alloc.Get(), nullptr));
-    transition_mip(frame.list.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+    auto split = mip_barrier(shader_read, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    split.Flags = D3D12_RESOURCE_BARRIER_FLAG_BEGIN_ONLY;
+    frame.list->ResourceBarrier(1, &split); // entire batch disappears on PC
+    split.Flags = D3D12_RESOURCE_BARRIER_FLAG_END_ONLY;
+    D3D12_RESOURCE_BARRIER batch[] = {split, mip_barrier(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST)};
+    frame.list->ResourceBarrier(2, batch);
     CHECK(frame.list->Close());
     ID3D12CommandList* work[] = {frame.list.Get(), second.Get()};
     frame.queue->ExecuteCommandLists(2, work);

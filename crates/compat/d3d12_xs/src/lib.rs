@@ -14,6 +14,7 @@
 mod device_wrap;
 mod dxgi_device;
 mod heap_wrap;
+mod barriers;
 mod cmdlist_wrap;
 mod gxdk_edition;
 mod shader_xlat;

@@ -241,3 +241,8 @@ resource creation. General CPU access to GPU-only resources still needs synchron
 readback and upload, including Xbox subresource layouts and queue state. The initial
 retail report did not include the executable timestamp and call-site RVAs needed to
 enable and retest the scoped workaround. [Configuration](RUNNING.md#gpu-resource-zero-initialization)
+
+## Resource states (2026-11-21)
+- Buffer-only read bits are dropped from texture transitions; other console-only state
+  combinations, if any, are not translated. Root constant-buffer views at addresses that
+  are not 256-byte aligned are passed through (accepted by the console, invalid on PC).

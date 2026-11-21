@@ -1463,3 +1463,35 @@ copied 64 KiB of nonzero data through a DEFAULT buffer on the GPU and verified e
 via a READBACK buffer. The direct map after GPU use was refused with the workaround both
 enabled and disabled. The retail executable timestamp and call-site RVAs are still
 needed to verify this revision on that title.
+
+## 2026-11-21 — Buffer-only resource states on textures
+
+A second GDK title presented three frames, then every `Present` returned
+`DXGI_ERROR_DEVICE_REMOVED`. The debug layer showed the chain: `ResourceBarrier` with
+`VERTEX_AND_CONSTANT_BUFFER | INDEX_BUFFER` on a Texture2D (#528,
+`RESOURCE_BARRIER_INVALID_RESOURCE`), so the list failed to close (#838), and executing it
+removed the device (#232, `DXGI_ERROR_INVALID_CALL`). A barrier trace named the transitions:
+the title's render target goes `RENDER_TARGET <-> 0x8c3`, i.e. `GENERIC_READ` without
+`INDIRECT_ARGUMENT`. The console accepts the two buffer-only bits on a texture.
+
+**Change.** A texture cannot be read as vertex, index or constant data, so `d3d12_xs` drops
+those two bits for non-buffer resources: in transition barriers (the title's barrier array is
+copied only when a barrier changes) and in the initial state of `CreateCommittedResource`,
+`CreatePlacedResource` and `CreatePlacedResourceX`. The remaining read states (shader
+resource, copy source) keep their synchronisation. Buffers are unchanged. The first four
+rewritten barriers are logged.
+
+When the guest states become identical on PC, the wrapper omits that transition,
+including each half of a split transition. The command list, placed-texture uploader,
+and diagnostic capture all use the resulting host states. Capture reads subresource zero
+and skips it while a split transition is pending.
+
+**Proton verification.** The homebrew state test starts a placed texture in guest state
+`0x83`, submits a split transition that disappears on PC, and then changes mip 1 to
+guest state `0x803`. It checks all six uploader barrier arguments and all 1,280 pixels.
+A separate capture run reported `0x8c0` for both a texture created in `0x8c3` and one
+transitioned to it, and skipped a third texture with a pending split transition.
+
+**Contributor’s retail run (native Windows 11, original PR).** No more device removal: one run presented 3,600+ frames in 90 s under the debug
+layer. The remaining debug-layer errors are root CBV addresses not aligned to 256 bytes,
+which this change does not address.

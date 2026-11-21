@@ -134,22 +134,25 @@ unsafe extern "system" fn release_list(this: *mut c_void) -> u32 {
 }
 
 unsafe extern "system" fn resource_barrier_traced(this: *mut c_void, n: u32, barriers: *const u8) {
-    crate::rtcap::note_barriers(n, barriers);
-    if !barriers.is_null() {
+    let forward: unsafe extern "system" fn(*mut c_void, u32, *const u8) = core::mem::transmute(*REAL_VT_PTR.add(26));
+    if n == 0 || barriers.is_null() {
+        return forward(this, n, barriers);
+    }
+    let guest = core::slice::from_raw_parts(barriers.cast::<crate::barriers::Barrier>(), n as usize);
+    let host = crate::barriers::translate(guest);
+    if host.is_empty() {
+        return;
+    }
+    crate::rtcap::note_barriers(&host);
+    {
         let mut tracker = crate::texture_state::TRACKER.lock().unwrap();
-        // The x64 D3D12_RESOURCE_BARRIER ABI has a 32-byte stride.
-        for i in 0..n as usize {
-            let b = barriers.add(i * 32);
-            let word = |offset| b.add(offset).cast::<u32>().read_unaligned();
-            if word(0) == 0 {
-                let resource = b.add(8).cast::<usize>().read_unaligned();
-                let after = (word(4) != 1).then(|| word(24));
-                tracker.record(this as usize, resource, word(16), after);
+        for barrier in host.iter() {
+            if let Some(t) = barrier.transition() {
+                tracker.record(this as usize, t.resource as usize, t.subresource, barrier.completed_state(t));
             }
         }
     }
-    let f: unsafe extern "system" fn(*mut c_void, u32, *const u8) = core::mem::transmute(*REAL_VT_PTR.add(26));
-    f(this, n, barriers)
+    forward(this, host.len() as u32, host.as_ptr().cast());
 }
 
 // Draw-trace hooks (installed only with the diagnostic capture): note, then forward.

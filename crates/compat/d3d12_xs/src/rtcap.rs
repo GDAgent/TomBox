@@ -55,8 +55,8 @@ struct Target {
     order: usize,
 }
 static TARGETS: Mutex<Vec<Target>> = Mutex::new(Vec::new());
-/// Last known state per resource (from creation, then the title's transition barriers).
-static STATES: Mutex<Option<HashMap<usize, u32>>> = Mutex::new(None);
+/// Host state of subresource zero, unavailable while a split transition is pending.
+static STATES: Mutex<Option<HashMap<usize, Option<u32>>>> = Mutex::new(None);
 
 /// Remember a freshly created render-target / depth texture (takes a reference).
 pub unsafe fn register(res: *mut c_void, desc: &[u8], init_state: u32) {
@@ -72,25 +72,21 @@ pub unsafe fn register(res: *mut c_void, desc: &[u8], init_state: u32) {
     let mut t = TARGETS.lock().unwrap();
     let order = t.len();
     t.push(Target { res: res as usize, desc: desc[..0x38].try_into().unwrap(), order });
-    STATES.lock().unwrap().get_or_insert_with(HashMap::new).insert(res as usize, init_state);
+    STATES.lock().unwrap().get_or_insert_with(HashMap::new).insert(res as usize, Some(init_state));
 }
 
-/// Record transition barriers issued by the title (D3D12_RESOURCE_BARRIER is 32 bytes).
-pub unsafe fn note_barriers(n: u32, p: *const u8) {
-    if !enabled() || p.is_null() {
-        return;
-    }
+/// Capture copies subresource zero. Track host transitions that affect it.
+pub fn note_barriers(barriers: &[crate::barriers::Barrier]) {
+    if !enabled() { return; }
     let mut g = STATES.lock().unwrap();
     let Some(m) = g.as_mut() else { return };
-    for i in 0..n as usize {
-        let b = p.add(i * 32);
-        if core::ptr::read_unaligned(b as *const u32) != 0 {
-            continue; // not a transition
-        }
-        let res = core::ptr::read_unaligned(b.add(8) as *const usize);
-        let after = core::ptr::read_unaligned(b.add(24) as *const u32);
-        if let Some(s) = m.get_mut(&res) {
-            *s = after;
+    for barrier in barriers {
+        if let Some(t) = barrier.transition() {
+            if matches!(t.subresource, 0 | u32::MAX) {
+                if let Some(state) = m.get_mut(&(t.resource as usize)) {
+                    *state = barrier.completed_state(t);
+                }
+            }
         }
     }
 }
@@ -198,7 +194,7 @@ fn write_bmp(path: &std::path::Path, w: usize, h: usize, rgb: &[u8]) {
 }
 
 fn barrier(res: usize, before: u32, after: u32) -> [u64; 4] {
-    [0, res as u64, 0xffff_ffffu64 | ((before as u64) << 32), after as u64]
+    [0, res as u64, (before as u64) << 32, after as u64]
 }
 
 /// Called at PresentX. Captures when the trigger file exists.
@@ -252,7 +248,10 @@ pub unsafe fn maybe_capture(queue: *mut c_void) {
         let u32at = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
         let (w, h) = (u64::from_le_bytes(d[0x10..0x18].try_into().unwrap()) as usize, u32at(0x18) as usize);
         let (fmt, samples, flags) = (u32at(0x20), u32at(0x24), u32at(0x30));
-        let state = states.get(&res).copied().unwrap_or(0);
+        let Some(state) = states.get(&res).copied().flatten() else {
+            let _ = writeln!(report, "#{order:03} subresource zero has no completed state - skipped");
+            continue;
+        };
         let head = format!("#{order:03} {w}x{h} fmt={fmt} flags={flags:#x} state={state:#x}");
         let Some((ch, is_float, bpp, kind)) = layout(fmt) else {
             let _ = writeln!(report, "{head}: format not decoded - skipped");

@@ -107,7 +107,8 @@ struct SpriteAtlas {
     }
 
     int init_cpu(Frame& frame, UINT w, UINT h, UINT16 levels, size_t bytes,
-                 DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM, UINT16 slices = 1) {
+                 DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM, UINT16 slices = 1,
+                 D3D12_RESOURCE_STATES initial = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) {
         D3D12_RESOURCE_DESC d = {};
         d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         d.Width = w;
@@ -116,7 +117,7 @@ struct SpriteAtlas {
         d.SampleDesc.Count = 1;
         d.MipLevels = levels;
         d.Format = format;
-        if (create_placed(frame, d, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, bytes)) return 1;
+        if (create_placed(frame, d, initial, bytes)) return 1;
         cpu_tiled = true;
         return create_views(frame);
     }
