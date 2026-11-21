@@ -328,19 +328,7 @@ unsafe extern "system" fn get_resource_alloc_info(
     // device + fully-sanitized valid desc still crashes at vtbl+0x25829). Compute the
     // info ourselves from the D3D12 64 KiB standard-swizzle tile model. We OVER-estimate
     // (round each mip up to whole tiles) so the pool allocator never under-reserves.
-    let total = (0..count).map(|i| {
-        let b = &descs[i * 0x48..];
-        let u16at = |o: usize| u16::from_le_bytes([b[o], b[o + 1]]);
-        let u32at = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
-        let u64at = |o: usize| u64::from_le_bytes(b[o..o + 8].try_into().unwrap());
-        let dim = u32at(0);
-        let width = u64at(16).max(1);
-        let height = (u32at(24) as u64).max(1);
-        let arr = (u16at(28) as u64).max(1);
-        let mips = (u16at(30) as u64).max(1);
-        let samples = (u32at(36) as u64).max(1);
-        alloc_size_for(dim, width, height, arr, mips, u32at(32), samples)
-    }).max().unwrap_or(0x10000);
+    let total = descs.chunks_exact(0x48).map(allocation_size).max().unwrap_or(0x10000);
     let align = if descs.len() >= 16 && u64::from_le_bytes(descs[8..16].try_into().unwrap()) == 0x1000 && total <= 0x10000 {
         0x1000
     } else {
@@ -352,6 +340,19 @@ unsafe extern "system" fn get_resource_alloc_info(
     }
     let _ = (this, visible_mask);
     info
+}
+
+fn allocation_size(b: &[u8]) -> u64 {
+    let u16at = |o: usize| u16::from_le_bytes([b[o], b[o + 1]]);
+    let u32at = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+    let u64at = |o: usize| u64::from_le_bytes(b[o..o + 8].try_into().unwrap());
+    let dim = u32at(0);
+    let width = u64at(16).max(1);
+    let height = (u32at(24) as u64).max(1);
+    let arr = (u16at(28) as u64).max(1);
+    let mips = (u16at(30) as u64).max(1);
+    let samples = (u32at(36) as u64).max(1);
+    alloc_size_for(dim, width, height, arr, mips, u32at(32), samples)
 }
 
 /// Bytes per pixel for the common DXGI formats (block-compressed reported as their
@@ -472,6 +473,13 @@ unsafe extern "system" fn create_committed_resource(
     };
     let hr = unsafe { f(real, pheap, heap_flags, desc_ptr, init_state, pclear, use_riid, ppv) };
     if hr >= 0 && !ppv.is_null() && !pdesc.is_null() {
+        if let Some(sites) = crate::resource_map::sites() {
+            if !pheap.is_null() && heap_flags & crate::resource_map::CREATE_NOT_ZEROED == 0
+                && unsafe { crate::resource_map::gpu_only(*pheap, *pheap.add(1)) }
+                && crate::resource_map::caller() == sites.create {
+                unsafe { crate::resource_map::arm(*ppv, allocation_size(desc_copy) as usize) };
+            }
+        }
         unsafe { crate::rtcap::register(*ppv, &desc_copy[..0x38], init_state) };
         if crate::rtcap::enabled() && desc_copy[0] == 1 && !pheap.is_null() {
             let width = u64::from_le_bytes(desc_copy[0x10..0x18].try_into().unwrap());

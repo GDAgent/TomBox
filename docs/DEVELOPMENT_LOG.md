@@ -1435,3 +1435,31 @@ invalid flags), and that every hooked `kernelbase` export can take the patch.
 was German before), and Fortnite, started without `-culture=`, logs `Using OS detected
 language (en-US)` and `locale (en-US)`. The install log lists all five entry points as
 overridden.
+
+## 2026-11-21 — `Map` of GPU-only resources (unified memory)
+
+A second GDK title faulted right after creating its first render target: its helper for new
+committed resources calls `CreateCommittedResource`, then `Map(0, NULL, &p)` without checking
+the HRESULT, then `memset(p, 0, GetResourceAllocationInfo(desc).SizeInBytes)` and `Unmap`,
+for every heap kind including DEFAULT-heap render targets (disassembly of the helper). On the
+console every resource is CPU-visible; PC D3D12 refuses `Map` on a heap without CPU access
+(`E_INVALIDARG`, debug layer `MAP_INVALIDHEAP`) and leaves `p` NULL.
+
+**Scope.** The initial prototype returned CPU scratch memory for GPU-only resources generally.
+Its author reported that the title presented on Windows with the companion texture-state
+change. Reads and nonzero writes through that prototype could disagree with GPU memory.
+
+The revised implementation enables scratch memory only for a configured executable build
+and a verified pair of creation and mapping call sites. The helper must clear the entire
+allocation before any GPU use. The creation and map must run on the same thread. Scratch
+storage belongs to the resource through D3D12 private data and is released on unmap or
+resource destruction. Other callers use the host resource's own Map and Unmap methods.
+
+The Proton real-device regression exercises the synthetic helper on a 1904 × 1041 RGBA8
+render target, checks the 0x870000-byte allocation, rejects unrelated and repeated maps,
+and releases a resource with a mapping still open. An upload buffer retains a nonzero
+pattern across a native unmap and remap. A separate executable loaded the release DLL,
+copied 64 KiB of nonzero data through a DEFAULT buffer on the GPU and verified every byte
+via a READBACK buffer. The direct map after GPU use was refused with the workaround both
+enabled and disabled. The retail executable timestamp and call-site RVAs are still
+needed to verify this revision on that title.
