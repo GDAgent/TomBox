@@ -1445,21 +1445,21 @@ for every heap kind including DEFAULT-heap render targets (disassembly of the he
 console every resource is CPU-visible; PC D3D12 refuses `Map` on a heap without CPU access
 (`E_INVALIDARG`, debug layer `MAP_INVALIDHEAP`) and leaves `p` NULL.
 
-**Change.** `d3d12_xs::resource_map` patches the real `ID3D12Resource` vtable in place
-(slots 8/9), like `heap_wrap` does for the descriptor-heap getters, so resources stay real
-objects. `Map` asks for the heap first: CPU heaps go to the runtime unchanged; for a GPU-only
-heap (DEFAULT, or CUSTOM with `CPU_PAGE_PROPERTY_NOT_AVAILABLE`) it returns a zero-filled CPU
-shadow sized by the same allocation model as our `GetResourceAllocationInfo`, so the title's
-writes stay inside it. Nested maps share the shadow. A `CreatePlacedResourceX` resource maps to
-its title address, which `upload.rs` already mirrors. On the last `Unmap`, an all-zero shadow
-of a committed resource mapped for the first time after creation, on a heap without
-`CREATE_NOT_ZEROED`, already matches the GPU contents (D3D12 zero-fills such memory); any
-other CPU write is reported as not transferred.
+**Scope.** The initial prototype returned CPU scratch memory for GPU-only resources generally.
+Its author reported that the title presented on Windows with the companion texture-state
+change. Reads and nonzero writes through that prototype could disagree with GPU memory.
 
-**Tests.** `resource_map::tests`: heap classification, the unmap decision, and a real-device
-test (DEFAULT-heap RGBA8 render target of the observed size: the runtime refuses `Map`, the
-patched `Map` returns a 0x870000-byte shadow, nested maps share it, subresource 1 is refused,
-an upload buffer still maps through the runtime). `cargo test --release -p d3d12_xs` passes.
+The revised implementation enables scratch memory only for a configured executable build
+and a verified pair of creation and mapping call sites. The helper must clear the entire
+allocation before any GPU use. The creation and map must run on the same thread. Scratch
+storage belongs to the resource through D3D12 private data and is released on unmap or
+resource destruction. Other callers use the host resource's own Map and Unmap methods.
 
-**In game (native Windows 11; not run under Proton).** The title gets past resource creation and presents (with the texture-state fix
-in a separate change); every shadow was all zero on unmap, so no data was dropped.
+The Proton real-device regression exercises the synthetic helper on a 1904 × 1041 RGBA8
+render target, checks the 0x870000-byte allocation, rejects unrelated and repeated maps,
+and releases a resource with a mapping still open. An upload buffer retains a nonzero
+pattern across a native unmap and remap. A separate executable loaded the release DLL,
+copied 64 KiB of nonzero data through a DEFAULT buffer on the GPU and verified every byte
+via a READBACK buffer. The direct map after GPU use was refused with the workaround both
+enabled and disabled. The retail executable timestamp and call-site RVAs are still
+needed to verify this revision on that title.

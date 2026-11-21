@@ -235,7 +235,9 @@
   the patch (checked per function) keeps the host answer for that query and logs it.
 
 ## Map of GPU-only resources (2026-11-21)
-- Only subresource 0 maps: the console returns an offset in its tiled layout for others.
-- CPU writes to a GPU-only resource are not uploaded; only the all-zero first fill of a
-  committed resource is known to match. Other writes are logged as not transferred.
-- A CPU read through the shadow sees zeros, not the GPU contents.
+
+The verified helper pattern is limited to a zero fill immediately after committed
+resource creation. General CPU access to GPU-only resources still needs synchronized
+readback and upload, including Xbox subresource layouts and queue state. The initial
+retail report did not include the executable timestamp and call-site RVAs needed to
+enable and retest the scoped workaround. [Configuration](RUNNING.md#gpu-resource-zero-initialization)

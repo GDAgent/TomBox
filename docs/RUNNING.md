@@ -75,3 +75,18 @@ game logs only through the debugger channel; `tools/dev/mdbg.rs` is a small trac
 | `TOMBOX_D3D12_DEBUG=1` | Direct3D validation layer |
 | `TOMBOX_RTCAP=1` | Diagnostics: render-target capture, per-draw trace, shader skip list and override, binding trace (see `docs/DEVELOPMENT_LOG.md`) |
 | `TOMBOX_OWN_WINDOW=1` | Present into a separate window |
+
+### GPU resource zero initialization
+
+For a verified game helper that immediately clears a new committed GPU-only resource
+before submitting it to the GPU, add the following line to `tuxbox.cfg` beside the game
+executable. Omit it for ordinary execution.
+
+```ini
+zero_init_map=<PE timestamp>:<CreateCommittedResource return RVA>:<Map return RVA>
+```
+
+All three fields are hexadecimal. Each RVA identifies the instruction immediately after
+the corresponding call in the executable. The helper must map subresource zero with a
+null read range, write only zeros, then unmap. Only the configured paths in that build
+can use the workaround. General GPU resource readback and upload remain open work.
